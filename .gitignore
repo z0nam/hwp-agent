@@ -1,0 +1,49 @@
+# --- hwp-agent specific ---------------------------------------------------
+# Real institutional documents must never be committed; keep the dir, drop contents.
+tests/fixtures/*
+!tests/fixtures/.gitkeep
+# Vendored converter jar is a reproducible build artifact (see scripts/bootstrap.sh).
+vendor/*.jar
+# but keep the directory tracked
+!vendor/.gitkeep
+
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# uv
+.uv/
+
+# Test / coverage / type-check caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# --- Editors / OS ---------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# --- Java build scratch (bootstrap uses a temp dir, but just in case) -----
+*.class
+target/

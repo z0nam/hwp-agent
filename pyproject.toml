@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hwp-agent"
+version = "0.1.0"
+description = "Edit HWP/HWPX documents directly with AI, without a lossy DOCX round-trip."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Namun Cho" }]
+keywords = ["hwp", "hwpx", "hancom", "document", "ai", "agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business",
+    "Topic :: Text Processing :: Markup",
+]
+dependencies = [
+    # Pure-Python HWPX read/write/validate.
+    "python-hwpx>=2.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+hwp-agent = "hwp_agent.cli.main:main"
+
+[project.urls]
+Homepage = "https://github.com/z0nam/hwp-agent"
+Repository = "https://github.com/z0nam/hwp-agent"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hwp_agent"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

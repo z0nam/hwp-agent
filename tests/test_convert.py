@@ -65,7 +65,7 @@ def test_convert_builds_expected_java_command(tmp_path: Path, monkeypatch) -> No
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    backend = Hwp2HwpxBackend(jar_path=jar)
+    backend = Hwp2HwpxBackend(jar_path=jar, normalize=False)
     result = backend.convert(src, out)
 
     assert captured["cmd"] == ["java", "-jar", str(jar), str(src), str(out)]
@@ -81,6 +81,41 @@ def test_convert_raises_on_missing_input(tmp_path: Path) -> None:
         backend.convert(tmp_path / "absent.hwp", tmp_path / "out.hwpx")
 
 
+# --- normalization (no Java needed) ---------------------------------------
+
+
+_CONTAINER_XML = (
+    b'<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>'
+    b'<ocf:container xmlns:ocf="urn:oasis:names:tc:opendocument:xmlns:container">'
+    b"<ocf:rootfiles>"
+    b'<ocf:rootfile full-path="Contents/content.hpf" media-type="application/hwpml-package+xml"/>'
+    b'<ocf:rootfile full-path="Preview/PrvText.txt" media-type="text/plain"/>'
+    b"</ocf:rootfiles></ocf:container>"
+)
+
+
+def _write_hwpx_missing_preview(path: Path) -> None:
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", "application/hwp+zip")
+        zf.writestr("META-INF/container.xml", _CONTAINER_XML)
+        zf.writestr("Contents/content.hpf", "<hpf/>")  # declared part present
+
+
+def test_normalize_adds_declared_but_missing_preview(tmp_path: Path) -> None:
+    from hwp_agent.convert.hwp2hwpx_backend import _normalize_hwpx
+
+    pkg = tmp_path / "doc.hwpx"
+    _write_hwpx_missing_preview(pkg)
+
+    added = _normalize_hwpx(pkg)
+    assert added == ("Preview/PrvText.txt",)
+    with zipfile.ZipFile(pkg) as zf:
+        assert "Preview/PrvText.txt" in zf.namelist()
+
+    # idempotent: a second pass adds nothing
+    assert _normalize_hwpx(pkg) == ()
+
+
 # --- optional end-to-end --------------------------------------------------
 
 
@@ -91,7 +126,7 @@ def _first_sample_hwp() -> Path | None:
 
 
 @pytest.mark.skipif(not VENDOR_JAR.is_file(), reason="vendor/hwp2hwpx.jar not built")
-def test_end_to_end_produces_valid_zip(tmp_path: Path) -> None:
+def test_end_to_end_produces_openable_hwpx(tmp_path: Path) -> None:
     sample = _first_sample_hwp()
     if sample is None:
         pytest.skip("no tests/fixtures/*.hwp sample available")
@@ -100,3 +135,10 @@ def test_end_to_end_produces_valid_zip(tmp_path: Path) -> None:
     result = Hwp2HwpxBackend().convert(sample, out)
     assert result.ok, result.stderr
     assert zipfile.is_zipfile(out), "HWPX output is not a valid ZIP container"
+
+    # hwp2hwpx omits the Preview part it declares; normalization must fix it
+    # so the package opens under a strict OPC reader (python-hwpx).
+    from hwpx.document import HwpxDocument
+
+    doc = HwpxDocument.open(out)
+    assert len(doc.sections) >= 1

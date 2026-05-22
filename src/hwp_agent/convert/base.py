@@ -21,6 +21,9 @@ class ConvertResult:
     returncode: int
     stdout: str = ""
     stderr: str = ""
+    #: Package entries the backend synthesized to make the output a valid HWPX
+    #: (e.g. a ``Preview/`` part declared in container.xml but never written).
+    normalized: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:

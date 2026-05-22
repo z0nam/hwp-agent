@@ -9,12 +9,49 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 from .base import ConverterBackend, ConvertResult
 
 # <repo>/src/hwp_agent/convert/hwp2hwpx_backend.py -> parents[3] == <repo>
 _DEFAULT_JAR = Path(__file__).resolve().parents[3] / "vendor" / "hwp2hwpx.jar"
+
+_OCF_NS = "urn:oasis:names:tc:opendocument:xmlns:container"
+
+
+def _normalize_hwpx(hwpx_path: Path) -> tuple[str, ...]:
+    """Materialize ``Preview/`` parts hwp2hwpx declares but never writes.
+
+    hwp2hwpx emits a ``META-INF/container.xml`` that lists ``Preview/PrvText.txt``
+    as a rootfile yet omits the file, so strict OPC readers (python-hwpx) reject
+    the package. We add empty placeholders for any declared-but-missing rootfile
+    under ``Preview/`` — narrow on purpose, so genuine structural gaps elsewhere
+    still surface. Returns the entries that were added.
+    """
+    with zipfile.ZipFile(hwpx_path) as zf:
+        names = set(zf.namelist())
+        try:
+            container = zf.read("META-INF/container.xml")
+        except KeyError:
+            return ()
+
+    root = ET.fromstring(container)
+    missing = [
+        fp
+        for rf in root.iter(f"{{{_OCF_NS}}}rootfile")
+        if (fp := rf.get("full-path"))
+        and fp not in names
+        and fp.startswith("Preview/")
+    ]
+    if not missing:
+        return ()
+
+    with zipfile.ZipFile(hwpx_path, "a", zipfile.ZIP_DEFLATED) as zf:
+        for fp in missing:
+            zf.writestr(fp, b"")
+    return tuple(missing)
 
 
 def _resolve_jar(explicit: Path | str | None) -> Path:
@@ -31,9 +68,12 @@ class Hwp2HwpxBackend(ConverterBackend):
         self,
         jar_path: Path | str | None = None,
         java_bin: str | None = None,
+        normalize: bool = True,
     ) -> None:
         self.jar_path = _resolve_jar(jar_path)
         self.java_bin = java_bin or os.environ.get("JAVA_BIN") or "java"
+        # Patch up hwp2hwpx's incomplete package (see _normalize_hwpx).
+        self.normalize = normalize
 
     def is_available(self) -> bool:
         return self.jar_path.is_file() and shutil.which(self.java_bin) is not None
@@ -52,10 +92,16 @@ class Hwp2HwpxBackend(ConverterBackend):
         hwpx_path.parent.mkdir(parents=True, exist_ok=True)
         cmd = [self.java_bin, "-jar", str(self.jar_path), str(hwp_path), str(hwpx_path)]
         proc = subprocess.run(cmd, capture_output=True, text=True)  # noqa: S603
+
+        normalized: tuple[str, ...] = ()
+        if self.normalize and proc.returncode == 0 and hwpx_path.is_file():
+            normalized = _normalize_hwpx(hwpx_path)
+
         return ConvertResult(
             hwpx_path=hwpx_path,
             backend=self.name,
             returncode=proc.returncode,
             stdout=proc.stdout,
             stderr=proc.stderr,
+            normalized=normalized,
         )

@@ -249,6 +249,24 @@ def test_explicit_chapter_label_in_caption(tmp_path: Path) -> None:
     assert "7-" in caption(out)
 
 
+def test_clone_caption_inline_forced_chapter_wins() -> None:
+    import xml.etree.ElementTree as ET
+
+    from hwp_agent.ops.author import _clone_caption
+
+    HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    tbl = ET.fromstring(
+        f'<hp:tbl xmlns:hp="{HP}"><hp:caption><hp:subList><hp:p><hp:run>'
+        f"<hp:t>&lt;표 </hp:t><hp:ctrl><hp:autoNum num='1' numType='TABLE'/></hp:ctrl>"
+        f"<hp:t>{{{{chapter_number=3}}}}&gt; </hp:t></hp:run></hp:p></hp:subList>"
+        f"</hp:caption></hp:tbl>"
+    )
+    # inline {{chapter_number=3}} forces "3" even when an explicit chapter is given
+    clone = _clone_caption(tbl, "제목", "9")
+    text = "".join(t.text or "" for t in clone.iter(f"{{{HP}}}t"))
+    assert text == "<표 3> 제목"
+
+
 def test_clone_caption_replaces_chapter_token_and_title() -> None:
     import xml.etree.ElementTree as ET
 

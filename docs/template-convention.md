@@ -45,7 +45,9 @@ Two channels, both visible and editable inside Hangul:
   A `{{table…}}` token (e.g. `{{table_template}}`) in a table's **caption** marks
   that table as the **format reference** for generated tables; the token is stripped
   from the caption on fill (the table stays). Without it, the first table in the
-  template is the format reference. See `docs/tables.md`.
+  template is the format reference. A `{{chapter_number}}` token in that caption is
+  replaced with the `--chapter` value; `{{chapter_number=3}}` **forces** a value
+  inline (wins over `--chapter`) as a worst-case override. See `docs/tables.md`.
 
 ## Authoring model (Markdown, first cut)
 

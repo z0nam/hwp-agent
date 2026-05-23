@@ -58,9 +58,11 @@ table copies the reference's `pos` (treatAsChar=0, floating) and `repeatHeader`.
   substituted with the **explicit `chapter=` / `--chapter`** value (the AI knows the
   chapter): `hwp-agent author form.hwpx --md c.md --chapter 7` (or `--chapter 가`).
   Counting is **best-effort fallback only** — real documents use outline styles too
-  inconsistently (chapters not reliably level-0; survey items etc. in outline styles)
-  and restart/relabel numbering per section (an appendix in A/B/C), so a reliable
-  count isn't feasible; pass the label.
+  inconsistently (chapters not reliably level-0; survey items etc. in outline styles),
+  put chapter titles inside tables/boxes, and restart/relabel numbering per section
+  (an appendix in A/B/C), so a reliable count isn't feasible; pass the label. Chapter
+  precedence: an inline **`{{chapter_number=3}}`** in the caption (forced) >
+  `--chapter` > best-effort count.
 - **Note/source row** = lines directly below the table starting with `주)` / `출처)`
   / `자료:` (etc.). The note row is merged into one hidden-bordered cell and filled;
   with no such line it's kept empty (invisible). (`merge_cells` leaves covered cells

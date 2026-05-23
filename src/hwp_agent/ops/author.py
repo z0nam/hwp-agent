@@ -36,9 +36,11 @@ _INLINE_RE = re.compile(r"\*\*(.+?)\*\*|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 _ORDERED_RE = re.compile(r"^(\s*)\d+[.)]\s+(.*)$")
 # a table note/source line: 주) / 주: / <주> / 출처) / 자료: …
 _NOTE_RE = re.compile(r"^\s*<?\s*(주|출처|자료)\s*[>)\].:]")
-# caption placeholder for the current chapter number (cross-refs don't work in
-# captions, so the toolkit substitutes the computed chapter number).
-_CHAPTER_TOKEN_RE = re.compile(r"\{\{\s*chapter[\w]*\s*\}\}", re.IGNORECASE)
+# caption placeholder for the chapter number (cross-refs don't work in captions).
+# Optional inline value forces it: {{chapter_number=3}} / {{chapter = 가}} → group 1.
+_CHAPTER_TOKEN_RE = re.compile(
+    r"\{\{\s*chapter\w*\s*(?:=\s*([^}]*?))?\s*\}\}", re.IGNORECASE
+)
 
 
 @dataclass
@@ -374,19 +376,24 @@ def _clone_caption(ref_el, title: str, chapter: str | None):
     clone = copy.deepcopy(cap)
     texts = clone.findall(f".//{{{_HP}}}t")
 
-    # chapter: substitute a {{chapter_number}} placeholder if present; else, given an
-    # explicit chapter, replace the chapter token in a "표 X-" framing (X precedes the
-    # table auto-number) so e.g. "[표 I-" becomes "[표 Ⅲ-".
-    if chapter:
-        if any(t.text and _CHAPTER_TOKEN_RE.search(t.text) for t in texts):
-            for t in texts:
-                if t.text:
-                    t.text = _CHAPTER_TOKEN_RE.sub(chapter, t.text)
-        else:
-            for t in texts:
-                if t.text and re.search(r"표\s*\S+\s*-\s*$", t.text):
-                    t.text = re.sub(r"(표\s*)\S+(\s*-\s*)$", rf"\g<1>{chapter}\g<2>", t.text)
-                    break
+    # chapter, in precedence order:
+    #   {{chapter_number=3}} inline value (forced) > --chapter > "" ;
+    # if no {{chapter…}} token but an explicit chapter is given, replace the chapter
+    # token in a "표 X-" framing (X precedes the table auto-number): "[표 I-" -> "[표 Ⅲ-".
+    has_token = any(t.text and _CHAPTER_TOKEN_RE.search(t.text) for t in texts)
+    if has_token:
+        def _chapter_sub(m: re.Match[str]) -> str:
+            inline = m.group(1)
+            return inline.strip() if inline is not None else (chapter or "")
+
+        for t in texts:
+            if t.text:
+                t.text = _CHAPTER_TOKEN_RE.sub(_chapter_sub, t.text)
+    elif chapter:
+        for t in texts:
+            if t.text and re.search(r"표\s*\S+\s*-\s*$", t.text):
+                t.text = re.sub(r"(표\s*)\S+(\s*-\s*)$", rf"\g<1>{chapter}\g<2>", t.text)
+                break
 
     # title: the last text node holds "framing + {old title / token}"; keep the
     # framing up to the first ">" or "]" and replace the rest with the new title.

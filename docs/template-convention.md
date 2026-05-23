@@ -42,6 +42,9 @@ Two channels, both visible and editable inside Hangul:
   `{{body}}` token (its own paragraph) marks where the authored Markdown body is
   inserted; `fill_from_markdown` places the content there and removes the marker.
   Without a `{{body}}` marker, content is appended to the last section.
+  A `{{table}}` token (its own paragraph) before a sample table marks that table as
+  the **format reference** for generated tables; the sample + marker are removed on
+  fill. Without it, the first table in the template is the format reference.
 
 ## Authoring model (Markdown, first cut)
 
@@ -52,6 +55,7 @@ The AI writes Markdown; it is projected onto the template's styles:
 | `# H1` / `## H2` / `### H3` | `HEADING_n` | template outline style → Hangul auto-numbers it |
 | `1.` / `2.` (indent = nesting) | `ORDERED_n` | template's numbered-list style → auto "1. 2. 3." |
 | `- item` (indent = nesting) | `BULLET_n` | template bullet style |
+| `\| a \| b \|` + `\|---\|` | (table) | HWPX table copying a template table's format (see `docs/tables.md`) |
 | paragraph text | `BODY` | 바탕글/Normal |
 | `**bold**` / `*italic*` | (run) | separate run in the same font family's bold/italic |
 

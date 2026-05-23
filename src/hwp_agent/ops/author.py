@@ -25,6 +25,9 @@ from .styles import INSTRUCTION, read_style_system, role_map
 
 #: token that marks where the authored body is inserted (a paragraph of its own)
 BODY_MARKER = "{{body}}"
+#: token marking a template table as the format reference for generated tables
+TABLE_MARKER = "{{table}}"
+_HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
 _INLINE_RE = re.compile(r"\*\*(.+?)\*\*|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
@@ -43,6 +46,23 @@ class Segment:
     text: str
     bold: bool = False
     italic: bool = False
+
+
+@dataclass
+class TableBlock:
+    """A simple (rectangular) Markdown pipe table."""
+
+    rows: list[list[str]]  # rows[0] is the header when has_header is True
+    aligns: list[str]  # "left" | "center" | "right" per column
+    has_header: bool = True
+
+    @property
+    def n_rows(self) -> int:
+        return len(self.rows)
+
+    @property
+    def n_cols(self) -> int:
+        return max((len(r) for r in self.rows), default=0)
 
 
 @dataclass
@@ -83,13 +103,39 @@ def plain_text(text: str) -> str:
     return "".join(s.text for s in inline_segments(text))
 
 
-def parse_markdown(markdown: str) -> list[Block]:
-    """Parse Markdown into headings, paragraphs, and bullets (minimal).
+def _split_table_row(line: str) -> list[str]:
+    """Split a pipe-table row into trimmed cells (outer pipes optional)."""
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
+def _delimiter_aligns(line: str) -> list[str] | None:
+    """Return per-column alignments if *line* is a GFM table delimiter, else None."""
+    cells = _split_table_row(line)
+    aligns = []
+    for c in cells:
+        if not re.fullmatch(r":?-+:?", c):
+            return None
+        aligns.append(
+            "center" if c.startswith(":") and c.endswith(":")
+            else "right" if c.endswith(":")
+            else "left"
+        )
+    return aligns or None
+
+
+def parse_markdown(markdown: str) -> list[Block | TableBlock]:
+    """Parse Markdown into headings, paragraphs, bullets, ordered lists, and tables.
 
     Inline ``**bold**`` / ``*italic*`` markers are kept in ``Block.text`` and
-    resolved into runs at fill time via :func:`inline_segments`.
+    resolved into runs at fill time via :func:`inline_segments`. Pipe tables
+    (header row + ``|---|`` delimiter + body rows) become :class:`TableBlock`.
     """
-    blocks: list[Block] = []
+    blocks: list[Block | TableBlock] = []
     para: list[str] = []
 
     def flush() -> None:
@@ -97,12 +143,29 @@ def parse_markdown(markdown: str) -> list[Block]:
             blocks.append(Block("paragraph", 0, " ".join(para)))
             para.clear()
 
-    for raw in markdown.splitlines():
-        line = raw.rstrip()
+    lines = markdown.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].rstrip()
+        # GFM pipe table: a header line with '|', then a delimiter row
+        if (
+            "|" in line
+            and i + 1 < len(lines)
+            and (aligns := _delimiter_aligns(lines[i + 1]))
+        ):
+            flush()
+            header = _split_table_row(line)
+            rows = [header]
+            i += 2
+            while i < len(lines) and "|" in lines[i] and lines[i].strip():
+                rows.append(_split_table_row(lines[i]))
+                i += 1
+            aligns += ["left"] * (len(header) - len(aligns))
+            blocks.append(TableBlock(rows=rows, aligns=aligns[: len(header)]))
+            continue
         if not line.strip():
             flush()
-            continue
-        if m := _HEADING_RE.match(line):
+        elif m := _HEADING_RE.match(line):
             flush()
             blocks.append(Block("heading", len(m.group(1)), m.group(2).strip()))
         elif m := _ORDERED_RE.match(line):
@@ -115,8 +178,98 @@ def parse_markdown(markdown: str) -> list[Block]:
             blocks.append(Block("bullet", level, m.group(2).strip()))
         else:
             para.append(line.strip())
+        i += 1
     flush()
     return blocks
+
+
+@dataclass
+class TableFormat:
+    """Format borrowed from a template table, applied to generated tables."""
+
+    table_border_fill: str | None = None
+    header_border_fill: str | None = None
+    header_para_pr: str | None = None
+    header_char_pr: str | None = None
+    body_border_fill: str | None = None
+    body_para_pr: str | None = None
+    body_char_pr: str | None = None
+
+
+def _cell_style(tc) -> tuple[str | None, str | None, str | None]:
+    """(borderFillIDRef, paraPrIDRef, charPrIDRef) of a ``<hp:tc>``."""
+    sub = tc.find(f"{{{_HP}}}subList")
+    p = sub.find(f"{{{_HP}}}p") if sub is not None else None
+    run = p.find(f"{{{_HP}}}run") if p is not None else None
+    return (
+        tc.get("borderFillIDRef"),
+        p.get("paraPrIDRef") if p is not None else None,
+        run.get("charPrIDRef") if run is not None else None,
+    )
+
+
+def _table_format(tbl) -> TableFormat:
+    """Read a representative format (borders + header/body cell styles) from a table."""
+    rows = tbl.findall(f"{{{_HP}}}tr")
+    fmt = TableFormat(table_border_fill=tbl.get("borderFillIDRef"))
+    if not rows:
+        return fmt
+
+    def first_cell(tr):
+        cells = tr.findall(f"{{{_HP}}}tc")
+        return cells[0] if cells else None
+
+    fmt.header_border_fill, fmt.header_para_pr, fmt.header_char_pr = _cell_style(
+        first_cell(rows[0])
+    )
+    body_row = rows[1] if len(rows) > 1 else rows[0]
+    fmt.body_border_fill, fmt.body_para_pr, fmt.body_char_pr = _cell_style(
+        first_cell(body_row)
+    )
+    return fmt
+
+
+def _find_reference_table(doc: HwpxDocument):
+    """Find the table whose format generated tables copy.
+
+    A ``{{table}}`` marker designates the next table as the reference (and marks
+    it a removable sample); otherwise the first table in the document is used.
+    Returns ``(table, marker_paragraph_or_None)``.
+    """
+    designated = any(TABLE_MARKER in (p.text or "") for p in doc.paragraphs)
+    after, marker = not designated, None
+    for p in doc.paragraphs:
+        if TABLE_MARKER in (p.text or ""):
+            after, marker = True, p
+            continue
+        if after and p.tables:
+            return p.tables[0], marker
+    return None, marker
+
+
+def _build_table(doc, section, block: TableBlock, fmt: TableFormat | None, add_runs):
+    """Create a table sized to *block*, styled like *fmt*, and fill its cells."""
+    table = doc.add_table(
+        block.n_rows,
+        block.n_cols,
+        section=section,
+        border_fill_id_ref=(fmt.table_border_fill if fmt else None),
+    )
+    for r, row in enumerate(block.rows):
+        is_header = block.has_header and r == 0
+        border = (fmt.header_border_fill if is_header else fmt.body_border_fill) if fmt else None
+        para_pr = (fmt.header_para_pr if is_header else fmt.body_para_pr) if fmt else None
+        char_pr = (fmt.header_char_pr if is_header else fmt.body_char_pr) if fmt else None
+        for c in range(block.n_cols):
+            cell = table.cell(r, c)
+            if border:
+                cell.element.set("borderFillIDRef", border)
+            cp = cell.paragraphs[0]
+            if para_pr:
+                cp.para_pr_id_ref = para_pr
+            cp.clear_text()
+            add_runs(cp, row[c] if c < len(row) else "", char_pr)
+    return table
 
 
 def _find_body_marker(doc: HwpxDocument):
@@ -190,7 +343,33 @@ def fill_from_markdown(
     target_section = marker_section or doc.sections[-1]
     result.inserted_at_marker = marker is not None
 
+    # tables generated below copy a template table's format (house style)
+    ref_table, table_marker = _find_reference_table(doc)
+    table_fmt = _table_format(ref_table.element) if ref_table is not None else None
+
+    def place(element) -> None:
+        """Move a freshly-built element before the {{body}} marker (else leave appended)."""
+        if marker is not None:
+            element.getparent().remove(element)
+            marker.element.addprevious(element)
+
+    def add_runs(para, text: str, base_char: str | None) -> None:
+        for seg in inline_segments(text):
+            if seg.bold or seg.italic:
+                char = doc.ensure_run_style(
+                    bold=seg.bold, italic=seg.italic, base_char_pr_id=base_char
+                )
+            else:
+                char = base_char
+            para.add_run(seg.text, char_pr_id_ref=char)
+
     for block in parse_markdown(markdown):
+        if isinstance(block, TableBlock):
+            table = _build_table(doc, target_section, block, table_fmt, add_runs)
+            place(table.paragraph.element)
+            result.placed += 1
+            continue
+
         style_id, role = resolve(block)
         if style_id is None:
             style_id = roles.get("BODY")
@@ -205,20 +384,15 @@ def fill_from_markdown(
         para = target_section.add_paragraph(
             "", style_id_ref=style_id, para_pr_id_ref=para_pr, include_run=False
         )
-        for seg in inline_segments(block.text):
-            if seg.bold or seg.italic:
-                char = doc.ensure_run_style(
-                    bold=seg.bold, italic=seg.italic, base_char_pr_id=base_char
-                )
-            else:
-                char = base_char
-            para.add_run(seg.text, char_pr_id_ref=char)
-
-        if marker is not None:  # move the freshly-built paragraph before the marker
-            element = para.element
-            element.getparent().remove(element)
-            marker.element.addprevious(element)
+        add_runs(para, block.text, base_char)
+        place(para.element)
         result.placed += 1
+
+    # a {{table}}-designated reference table is a format sample → drop it + its marker
+    if table_marker is not None:
+        if ref_table is not None:
+            ref_table.paragraph.element.getparent().remove(ref_table.paragraph.element)
+        table_marker.element.getparent().remove(table_marker.element)
 
     if marker is not None:
         marker.element.getparent().remove(marker.element)

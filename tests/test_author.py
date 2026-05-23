@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from hwp_agent.ops import (
+    TableBlock,
     fill_from_markdown,
     inline_segments,
     parse_markdown,
@@ -51,6 +52,49 @@ def test_inline_segments_splits_emphasis() -> None:
     assert [(s.text, s.bold, s.italic) for s in inline_segments("그냥")] == [
         ("그냥", False, False)
     ]
+
+
+def test_parse_markdown_detects_pipe_table() -> None:
+    md = "본문\n\n| 항목 | 값 |\n|------|:--:|\n| 인구 | 67만 |\n\n다음 a | b 아님\n"
+    blocks = parse_markdown(md)
+    tables = [b for b in blocks if isinstance(b, TableBlock)]
+    assert len(tables) == 1
+    t = tables[0]
+    assert t.n_rows == 2 and t.n_cols == 2
+    assert t.rows == [["항목", "값"], ["인구", "67만"]]
+    assert t.aligns == ["left", "center"]
+    # the trailing "a | b" line (no delimiter) is NOT a table
+    assert any(b.__class__.__name__ == "Block" and "아님" in b.text for b in blocks)
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_fill_table_copies_template_format(tmp_path: Path) -> None:
+    import zipfile
+
+    from hwpx.document import HwpxDocument
+
+    out = tmp_path / "out.hwpx"
+    md = "| 항목 | 값 |\n|------|----|\n| 인구 | **67만** |\n"
+    result = fill_from_markdown(TYPE1, md, output=out)
+    assert result.placed == 1
+
+    HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+    doc = HwpxDocument.open(str(out))
+    tbls = [t for s in doc.sections for t in s.element.iter(f"{HP}tbl")]
+    ref_bf = tbls[0].get("borderFillIDRef")  # reference = first table
+    gen = tbls[-1]  # our generated table is appended last
+    # generated table reuses the reference table's border-fill (house style)
+    assert gen.get("borderFillIDRef") == ref_bf
+    assert gen.get("rowCnt") == "2" and gen.get("colCnt") == "2"
+    cells = ["".join(t.text or "" for t in tc.iter(f"{HP}t")) for tc in gen.iter(f"{HP}tc")]
+    assert cells == ["항목", "값", "인구", "67만"]  # **67만** -> run, plain text "67만"
+
+    # no replacement chars introduced
+    with zipfile.ZipFile(out) as zf:
+        body = b"".join(
+            zf.read(n) for n in zf.namelist() if n.startswith("Contents/section")
+        )
+    assert b"\xef\xbf\xbd" not in body
 
 
 def test_parse_markdown_ordered_vs_bullet() -> None:

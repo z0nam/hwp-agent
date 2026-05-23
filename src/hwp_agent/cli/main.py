@@ -102,6 +102,43 @@ def _cmd_form(args: argparse.Namespace) -> int:
     return 1 if result.missing and not result.filled else 0
 
 
+def _cmd_classify(args: argparse.Namespace) -> int:
+    from ..ops import classify_document
+
+    print(classify_document(args.file))
+    return 0
+
+
+def _cmd_styles(args: argparse.Namespace) -> int:
+    import json
+
+    from ..ops import read_style_system, role_map
+
+    roles = role_map(args.file)
+    if args.json:
+        infos = [i.as_dict() for i in read_style_system(args.file)]
+        print(json.dumps({"roles": roles, "styles": infos}, ensure_ascii=False, indent=2))
+        return 0
+    if not roles:
+        print("(no machine roles detected)")
+    for role, sid in sorted(roles.items()):
+        print(f"{role:<12} -> style {sid}")
+    return 0
+
+
+def _cmd_author(args: argparse.Namespace) -> int:
+    from ..ops import fill_from_markdown
+
+    markdown = Path(args.md).read_text(encoding="utf-8")
+    result = fill_from_markdown(args.template, markdown, output=args.output)
+    print(f"placed {result.placed} block(s) -> {args.output or args.template}")
+    if result.instructions_removed:
+        print(f"  removed {result.instructions_removed} instruction paragraph(s)")
+    if result.unmapped_roles:
+        print(f"  unmapped (fell back to BODY): {', '.join(result.unmapped_roles)}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hwp-agent",
@@ -159,6 +196,23 @@ def build_parser() -> argparse.ArgumentParser:
     ff.set_defaults(func=_cmd_form)
 
     form.set_defaults(func=lambda _args: (form.print_help(), 0)[1])
+
+    cls = sub.add_parser("classify", help="classify a doc: structured | weak | flat")
+    cls.add_argument("file", type=Path, help=".hwpx file")
+    cls.set_defaults(func=_cmd_classify)
+
+    sty = sub.add_parser("styles", help="show machine style roles (for an AI)")
+    sty.add_argument("file", type=Path, help=".hwpx file")
+    sty.add_argument("--json", action="store_true", help="emit roles + styles as JSON")
+    sty.set_defaults(func=_cmd_styles)
+
+    auth = sub.add_parser(
+        "author", help="fill a structured template from Markdown, using its styles"
+    )
+    auth.add_argument("template", type=Path, help=".hwpx template")
+    auth.add_argument("--md", type=Path, required=True, help="Markdown content file")
+    auth.add_argument("-o", "--output", type=Path, default=None, help="output file")
+    auth.set_defaults(func=_cmd_author)
 
     return parser
 

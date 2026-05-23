@@ -29,11 +29,14 @@ substrate because it loses too much.
    overlaid hwplib patch) and repairs known output defects in `_normalize_hwpx`.
    Other backends (e.g. hwpilot) can be dropped in behind `ConverterBackend`.
 2. **ops** (`hwp_agent.ops`) — structured edits on the HWPX. ◀ **active phase:
-   AI-driven direct HWPX editing.** Shipped (first cut): **document metadata**
-   (`ops.metadata`) and the **form-fill engine** (`ops.form` — `analyze_form`
-   discovers `{{placeholder}}` and empty label-cell slots; `fill_form` fills by
-   name / cell path). CLI: `hwp-agent meta`, `hwp-agent form analyze|fill`.
-   Roadmap and schedule in `docs/poc-plan.md`.
+   AI-driven direct HWPX editing.** Shipped (first cut): **metadata**
+   (`ops.metadata`), the **form-fill engine** (`ops.form`), and for
+   **well-structured (type-1) documents** a **style role map + classifier**
+   (`ops.styles`) and **Markdown→styled fill** (`ops.author`). CLI:
+   `hwp-agent meta | form | classify | styles | author`. See
+   `docs/strategy.md` (3 document classes, type-1 first),
+   `docs/template-convention.md` (machine-friendly markup), and
+   `docs/poc-plan.md` (schedule).
 3. **verify** (`hwp_agent.verify`) — round-trip and structural checks that an
    edit didn't corrupt the package. *Later slice.*
 

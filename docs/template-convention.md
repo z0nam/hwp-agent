@@ -1,0 +1,70 @@
+# Machine-friendly HWPX template convention
+
+A convention for marking up an HWPX template so an AI knows what each part is for.
+It is **structure-first, naming-second**: most roles are inferred from the data the
+document already carries; explicit names only *override* or *add* roles. A plain
+type-1 document works with **zero** extra markup.
+
+## Style roles
+
+`ops.styles.role_map(doc)` returns a map of **role → style id**. Roles:
+
+| Role | Meaning | How it's detected |
+|------|---------|-------------------|
+| `HEADING_1` … `HEADING_n` | outline headings (auto-numbered) | a style whose paragraph-property heading is `OUTLINE level=N` → `HEADING_{N+1}` |
+| `BULLET_1` … `BULLET_n` | bullet list levels | heading `BULLET level=N` → `BULLET_{N+1}` |
+| `BODY` | normal body text | `engName="Normal"` / `name="바탕글"` |
+| `TITLE`, `CAPTION_TABLE`, … | optional named roles | `AI:<ROLE>` naming only |
+| `INSTRUCTION` | directions to the AI (not content) | `AI:INSTRUCTION` naming only |
+
+### Auto (no markup needed)
+
+Outline level lives in the data (`<hh:heading type="OUTLINE" level="N">`), so any
+template that uses real heading styles is understood as-is. When several styles share
+a level, the canonical `engName="Outline N"` wins, then most-used, then lowest id.
+
+### Naming override (opt-in)
+
+A style whose **name or engName** matches `AI:<ROLE>` claims that role outright,
+e.g. `AI:H1`, `AI:BODY`, `AI:CAPTION_TABLE`, `AI:INSTRUCTION`. Use this to label
+intent unambiguously, or to mark roles that have no structural signal (instructions,
+captions, title slots).
+
+## Passing instructions to the AI
+
+Two channels, both visible and editable inside Hangul:
+
+- **Instruction paragraphs** — write directions in a paragraph styled with an
+  `AI:INSTRUCTION` style (e.g. "여기에 3문단으로 배경을 서술"). `read_instructions`
+  returns their text; `fill_from_markdown` **removes** them from the output.
+- **Slots / fill positions** — `{{slot}}` tokens (e.g. `{{title}}`, `{{author}}`)
+  mark where specific values go; discovered by `ops.form` and filled by name. A
+  `{{body}}` token marks where the authored Markdown body belongs (insertion at the
+  marker is a planned refinement; today content is appended).
+
+## Authoring model (Markdown, first cut)
+
+The AI writes Markdown; it is projected onto the template's styles:
+
+| Markdown | Role | Result |
+|----------|------|--------|
+| `# H1` / `## H2` / `### H3` | `HEADING_n` | template outline style → Hangul auto-numbers it |
+| `- item` (indent = nesting) | `BULLET_n` | template bullet style |
+| paragraph text | `BODY` | 바탕글/Normal |
+| `**bold**` / `*italic*` | — | flattened to text (inline styling: later) |
+
+Heading depth is clamped to the deepest `HEADING_n` the template defines.
+
+## Example
+
+A minimal type-1 template needs no markup at all — just real heading styles. To add
+guidance, the author inserts (in Hangul):
+
+```
+[paragraph in style "AI:INSTRUCTION"]  배경 → 현황 → 제언 순서로 작성. 표는 '표 N' 캡션 사용.
+{{title}}                              ← filled via `hwp-agent form fill`
+{{body}}                               ← authored Markdown lands here
+```
+
+Then: `hwp-agent classify form.hwpx` → `structured`; `hwp-agent styles form.hwpx`
+shows the role map; `hwp-agent author form.hwpx --md content.md -o out.hwpx` fills it.

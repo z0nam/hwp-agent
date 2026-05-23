@@ -127,6 +127,24 @@ def test_table_format_uses_caption_designated_reference(tmp_path: Path) -> None:
     assert "{{table" not in texts
 
 
+def test_strip_table_token_keeps_caption_frame() -> None:
+    import xml.etree.ElementTree as ET
+
+    from hwp_agent.ops.author import _caption_text, _strip_table_token
+
+    HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    # caption "<표 II-" + (autonum) + "> {{table_template}}" — the closing ">"
+    # shares a text node with the token and must survive stripping.
+    tbl = ET.fromstring(
+        f'<hp:tbl xmlns:hp="{HP}"><hp:caption><hp:subList><hp:p><hp:run>'
+        f"<hp:t>&lt;표 II-</hp:t></hp:run><hp:run>"
+        f"<hp:t>&gt; {{{{table_template}}}}</hp:t></hp:run></hp:p></hp:subList>"
+        f"</hp:caption></hp:tbl>"
+    )
+    _strip_table_token(tbl)
+    assert _caption_text(tbl) == "<표 II->"  # token gone, closing ">" kept
+
+
 def test_parse_markdown_ordered_vs_bullet() -> None:
     blocks = parse_markdown("1. 첫째\n2. 둘째\n\n- 불릿\n")
     assert [(b.kind, b.level) for b in blocks] == [

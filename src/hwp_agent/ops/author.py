@@ -296,7 +296,8 @@ def _strip_table_token(tbl_element) -> None:
         return
     for t in cap.iter(f"{{{_HP}}}t"):
         if t.text and _TABLE_TOKEN_RE.search(t.text):
-            t.text = re.sub(r"\s*>?\s*$", "", _TABLE_TOKEN_RE.sub("", t.text))
+            # remove only the token; keep caption framing like a closing ">"
+            t.text = _TABLE_TOKEN_RE.sub("", t.text).rstrip()
 
 
 def _build_table(doc, section, block: TableBlock, fmt: TableFormat | None, add_runs):

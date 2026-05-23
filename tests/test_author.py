@@ -202,6 +202,31 @@ def test_generated_table_caption_and_note(tmp_path: Path) -> None:
     assert "제주연구원" in note_text
 
 
+@pytest.mark.skipif(
+    not _TABLE_TEMPLATE.is_file(), reason="caption-marked table template not present"
+)
+def test_caption_chapter_number_and_merged_note(tmp_path: Path) -> None:
+    from hwpx.document import HwpxDocument
+
+    HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+    out = tmp_path / "out.hwpx"
+    # an authored chapter heading bumps the chapter count used in the caption
+    md = "# 새 장\n\n현황표\n| 코드 | 값 |\n|--|--|\n| P01 | 1 |\n출처) 제주연구원\n"
+    fill_from_markdown(_TABLE_TEMPLATE, md, output=out)
+
+    doc = HwpxDocument.open(str(out))
+    gen = [t for s in doc.sections for t in s.element.iter(f"{HP}tbl")][-1]
+    cap_text = "".join(t.text or "" for t in gen.find(f"{HP}caption").iter(f"{HP}t"))
+    assert "{{chapter" not in cap_text  # placeholder substituted with a number
+    assert "현황표" in cap_text
+
+    note_row = gen.findall(f"{HP}tr")[-1]
+    assert len(note_row.findall(f"{HP}tc")) == 1  # note row merged into one cell
+    span = note_row.find(f"{HP}tc").find(f"{HP}cellSpan")
+    assert span is not None and int(span.get("colSpan")) >= 2
+    assert "제주연구원" in "".join(t.text or "" for t in note_row.iter(f"{HP}t"))
+
+
 def test_parse_markdown_ordered_vs_bullet() -> None:
     blocks = parse_markdown("1. 첫째\n2. 둘째\n\n- 불릿\n")
     assert [(b.kind, b.level) for b in blocks] == [

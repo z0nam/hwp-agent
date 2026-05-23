@@ -52,10 +52,16 @@ table copies the reference's `pos` (treatAsChar=0, floating) and `repeatHeader`.
 ### Caption and note (from the Markdown around the table)
 
 - **Caption title** = the line directly above the table. The generated table clones
-  the reference's caption (auto-number + 표제목 style → "<표 N-M> {title}").
+  the reference's caption (auto-number + 표제목 style → "<표 N-M> {title}"). The
+  table number stays an `autoNum` field. The **chapter number** can't use a cross-ref
+  inside a caption, so a `{{chapter_number}}` placeholder in the reference caption is
+  substituted with the computed chapter (count of `HEADING_1` paragraphs up to the
+  table). It's rendered as a plain number today; matching the chapter's numbering
+  *format* (Roman, etc.) is a refinement.
 - **Note/source row** = lines directly below the table starting with `주)` / `출처)`
-  / `자료:` (etc.). Filled into the hidden note row; otherwise the note row is kept
-  empty (invisible).
+  / `자료:` (etc.). The note row is merged into one hidden-bordered cell and filled;
+  with no such line it's kept empty (invisible). (`merge_cells` leaves covered cells
+  behind, so the merge is done by hand: set the anchor `colSpan` and drop the rest.)
 
-Column widths, per-cell border variety, multi-row note paragraphs, and inline bold
-inside cells remain approximations / refinements.
+Column widths, per-cell border variety, multi-line note paragraphs, chapter-number
+*format*, and inline bold inside cells remain approximations / refinements.

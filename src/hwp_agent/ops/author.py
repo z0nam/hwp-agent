@@ -36,6 +36,9 @@ _INLINE_RE = re.compile(r"\*\*(.+?)\*\*|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 _ORDERED_RE = re.compile(r"^(\s*)\d+[.)]\s+(.*)$")
 # a table note/source line: 주) / 주: / <주> / 출처) / 자료: …
 _NOTE_RE = re.compile(r"^\s*<?\s*(주|출처|자료)\s*[>)\].:]")
+# caption placeholder for the current chapter number (cross-refs don't work in
+# captions, so the toolkit substitutes the computed chapter number).
+_CHAPTER_TOKEN_RE = re.compile(r"\{\{\s*chapter[\w]*\s*\}\}", re.IGNORECASE)
 
 
 @dataclass
@@ -342,18 +345,22 @@ def _strip_table_token(tbl_element) -> None:
             t.text = _TABLE_TOKEN_RE.sub("", t.text).rstrip()
 
 
-def _clone_caption(ref_el, title: str):
+def _clone_caption(ref_el, title: str, chapter: str | None):
     """Clone the reference table's caption (auto-number + 표제목 style) with *title*.
 
-    The caption text is like "<표 II-" + autoNum + "> {title}"; we keep the number
-    framing and replace the title portion. Returns a detached caption element, or
-    None when the reference has no caption.
+    The caption text is like "<표 {{chapter_number}}-" + autoNum + "> {title}". We
+    substitute the chapter placeholder with *chapter* (the table auto-number stays an
+    autoNum field), keep the framing, and set the title. Returns a detached caption
+    element, or None when the reference has no caption.
     """
     cap = ref_el.find(f"{{{_HP}}}caption")
     if cap is None:
         return None
     clone = copy.deepcopy(cap)
     texts = clone.findall(f".//{{{_HP}}}t")
+    for t in texts:  # cross-refs don't work in captions → substitute the chapter no.
+        if t.text and _CHAPTER_TOKEN_RE.search(t.text):
+            t.text = _CHAPTER_TOKEN_RE.sub(chapter or "", t.text)
     if texts:  # last text node holds "> {title-or-token}" → keep ">", set title
         framing = _TABLE_TOKEN_RE.sub("", texts[-1].text or "").rstrip()
         texts[-1].text = f"{framing} {title}".rstrip()
@@ -375,7 +382,7 @@ def _style_cell(cell, zone: Zone, col: int, ncols: int, text: str) -> None:
 
 
 def _build_table(
-    doc, section, block: TableBlock, fmt: TableFormat | None, body_style, body_para, ref_el
+    doc, section, block: TableBlock, fmt, body_style, body_para, ref_el, chapter=None
 ):
     """Create a table sized to *block*, styled by *fmt*'s zones, and fill its cells.
 
@@ -427,15 +434,27 @@ def _build_table(
                 cell.element.set("header", "1")  # repeat across page breaks
             _style_cell(cell, zone, c, ncols, row[c] if c < len(row) else "")
 
-    if has_note:  # note/source row: hidden-bordered, kept even when empty
+    if has_note:  # note/source row: one merged, hidden-bordered cell (kept if empty)
         note_r = total_rows - 1
+        note_tr = table.element.findall(f"{{{_HP}}}tr")[note_r]
+        tcs = note_tr.findall(f"{{{_HP}}}tc")
+        if len(tcs) > 1:  # merge across all columns (merge_cells leaves covered cells)
+            span = tcs[0].find(f"{{{_HP}}}cellSpan")
+            if span is not None:
+                span.set("colSpan", str(ncols))
+            sz = tcs[0].find(f"{{{_HP}}}cellSz")
+            widths = [tc.find(f"{{{_HP}}}cellSz") for tc in tcs]
+            total_w = sum(int(s.get("width", "0")) for s in widths if s is not None)
+            if sz is not None and total_w:
+                sz.set("width", str(total_w))
+            for extra in tcs[1:]:
+                note_tr.remove(extra)
         note_text = block.note.replace("\n", "  ") if block.note else ""
-        for c in range(ncols):
-            _style_cell(table.cell(note_r, c), fmt.note, c, ncols, note_text if c == 0 else "")
+        _style_cell(table.cell(note_r, 0), fmt.note, 0, 1, note_text)
 
     # caption "<표 N-M> {title}" cloned from the reference (auto-number + 표제목 style)
     if block.caption and ref_el is not None:
-        clone = _clone_caption(ref_el, block.caption)
+        clone = _clone_caption(ref_el, block.caption, chapter)
         if clone is not None:
             first_tr = table.element.find(f"{{{_HP}}}tr")
             if first_tr is not None:
@@ -539,16 +558,30 @@ def fill_from_markdown(
     body_style = roles.get("BODY")
     body_para = infos[body_style].para_pr_id if body_style in infos else None
 
+    # current chapter number for table captions ({{chapter_number}}): existing
+    # HEADING_1 paragraphs before the insertion point, plus authored ones as placed.
+    h1_style = roles.get("HEADING_1")
+    chapter = 0
+    if h1_style is not None:
+        for p in doc.paragraphs:
+            if marker is not None and p.element is marker.element:
+                break
+            if str(p.style_id_ref) == h1_style:
+                chapter += 1
+
     for block in parse_markdown(markdown):
         if isinstance(block, TableBlock):
             table = _build_table(
-                doc, target_section, block, table_fmt, body_style, body_para, ref_element
+                doc, target_section, block, table_fmt, body_style, body_para,
+                ref_element, str(chapter) if chapter else None,
             )
             place(table.paragraph.element)
             result.placed += 1
             continue
 
         style_id, role = resolve(block)
+        if role == "HEADING_1":
+            chapter += 1
         if style_id is None:
             style_id = roles.get("BODY")
             if role not in result.unmapped_roles and role != "BODY":

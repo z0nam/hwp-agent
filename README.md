@@ -29,7 +29,9 @@ documents directly — packaged as a Claude Code Skill / MCP integration.
 
 ## Requirements
 
-- macOS / Linux (developed on Apple Silicon)
+- macOS / Linux (developed on Apple Silicon). The Python CLI itself is
+  cross-platform; only the bash install/build scripts are POSIX — full Windows
+  support is tracked as M5 in `docs/poc-plan.md`.
 - Python ≥ 3.11
 - JDK 17+ and Maven — used only to *build* the converter jar
   - `brew install openjdk@17 maven`

@@ -62,6 +62,21 @@ Dates are proposals from 2026-05-23; adjust freely.
   End-to-end: give the AI a real blank form + content brief; it produces a filled
   HWPX, verified visually in Hangul. Capture fidelity gaps in `findings.md`.
 
+- **M5 — Windows / cross-platform support** *(unscheduled; needed for in-institution use)*
+  The institution runs Windows, so the toolkit must work there. The **core CLI is
+  already portable** — pure Python on pathlib, `subprocess.run([...])` (no shell),
+  `shutil.which("java")` (resolves `java.exe`); lxml & python-hwpx ship Windows
+  wheels. The gaps are the POSIX-only periphery:
+  1. **Installer/build scripts are bash** (`install.sh`, `bootstrap.sh`) — add a
+     PowerShell installer (`install.ps1`) or document running under Git Bash / WSL;
+     `bootstrap.sh`'s Maven build needs a Windows path too (or ship a prebuilt jar).
+  2. **Skill registration uses a symlink** (`ln`) — on Windows, *copy* the skill
+     folder into `%USERPROFILE%\.claude\skills\` instead (symlinks need dev mode).
+  3. **Distribute the converter jar** so Windows users needn't build it (JDK/Maven
+     on Windows is a high bar) — e.g. attach it to a GitHub release.
+  4. **Verify on Windows**: convert (Java present), the editing ops, and a Hangul
+     round-trip; fix any path/encoding (cp949 vs utf-8) surprises.
+
 ## Open questions
 
 - Slot identity for ambiguous forms (duplicate labels, nested tables).

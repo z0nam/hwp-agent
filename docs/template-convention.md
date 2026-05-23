@@ -39,8 +39,9 @@ Two channels, both visible and editable inside Hangul:
   returns their text; `fill_from_markdown` **removes** them from the output.
 - **Slots / fill positions** — `{{slot}}` tokens (e.g. `{{title}}`, `{{author}}`)
   mark where specific values go; discovered by `ops.form` and filled by name. A
-  `{{body}}` token marks where the authored Markdown body belongs (insertion at the
-  marker is a planned refinement; today content is appended).
+  `{{body}}` token (its own paragraph) marks where the authored Markdown body is
+  inserted; `fill_from_markdown` places the content there and removes the marker.
+  Without a `{{body}}` marker, content is appended to the last section.
 
 ## Authoring model (Markdown, first cut)
 

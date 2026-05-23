@@ -62,3 +62,28 @@ def test_fill_from_markdown_applies_outline_styles(tmp_path: Path) -> None:
             zf.read(n) for n in zf.namelist() if n.startswith("Contents/section")
         )
     assert b"\xef\xbf\xbd" not in body
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_fill_inserts_at_body_marker(tmp_path: Path) -> None:
+    from hwpx.document import HwpxDocument
+
+    # build a template with a {{body}} marker as the 4th paragraph of section 0
+    tmpl = tmp_path / "tmpl.hwpx"
+    doc = HwpxDocument.open(str(TYPE1))
+    sec = doc.sections[0]
+    marker = sec.add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    el = marker.element
+    el.getparent().remove(el)
+    sec.paragraphs[3].element.addprevious(el)
+    doc.save_to_path(str(tmpl))
+
+    out = tmp_path / "out.hwpx"
+    result = fill_from_markdown(tmpl, "# 삽입장\n\n본문.\n", output=out)
+    assert result.inserted_at_marker is True
+
+    filled = HwpxDocument.open(str(out))
+    texts = [p.text for p in filled.sections[0].paragraphs]
+    assert "{{body}}" not in "".join(texts)  # marker consumed
+    # authored heading sits at the marker position (index 3), not appended at the end
+    assert "삽입장" in texts[3]

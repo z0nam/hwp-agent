@@ -6,10 +6,10 @@ ids — so outline numbering, fonts, and spacing come from the template (we neve
 synthesize numbering). Heading `#`→`HEADING_1`, `##`→`HEADING_2`, …; bullets →
 `BULLET_n`; plain text → `BODY`.
 
-This is a first cut: authored content is appended (insertion at a ``{{body}}``
-marker is a later refinement), and inline ``**bold**``/``*italic*`` is flattened
-to text. ``AI:INSTRUCTION``-styled paragraphs are read by :func:`read_instructions`
-and stripped on fill.
+Content is inserted at a ``{{body}}`` marker paragraph when present, else appended
+to the last section. ``AI:INSTRUCTION``-styled paragraphs are read by
+:func:`read_instructions` and stripped on fill. Inline ``**bold**``/``*italic*`` is
+currently flattened to text (run-level styling is a later refinement).
 """
 
 from __future__ import annotations
@@ -23,6 +23,8 @@ from hwpx.document import HwpxDocument
 from .form import extract_placeholders
 from .styles import INSTRUCTION, read_style_system, role_map
 
+#: token that marks where the authored body is inserted (a paragraph of its own)
+BODY_MARKER = "{{body}}"
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
@@ -41,12 +43,14 @@ class AuthorResult:
     placed: int = 0
     unmapped_roles: list[str] = field(default_factory=list)
     instructions_removed: int = 0
+    inserted_at_marker: bool = False  # False = appended (no {{body}} marker found)
 
     def as_dict(self) -> dict:
         return {
             "placed": self.placed,
             "unmapped_roles": self.unmapped_roles,
             "instructions_removed": self.instructions_removed,
+            "inserted_at_marker": self.inserted_at_marker,
         }
 
 
@@ -83,6 +87,15 @@ def parse_markdown(markdown: str) -> list[Block]:
             para.append(line.strip())
     flush()
     return blocks
+
+
+def _find_body_marker(doc: HwpxDocument):
+    """Locate the top-level paragraph holding the ``{{body}}`` marker, if any."""
+    for section in doc.sections:
+        for paragraph in section.paragraphs:
+            if BODY_MARKER in (paragraph.text or ""):
+                return section, paragraph
+    return None, None
 
 
 def read_instructions(template: Path | str) -> dict:
@@ -133,8 +146,13 @@ def fill_from_markdown(
     inst_style = roles.get(INSTRUCTION)
     if inst_style is not None:
         for p in [p for p in doc.paragraphs if str(p.style_id_ref) == inst_style]:
-            doc.remove_paragraph(p)
+            p.remove()
             result.instructions_removed += 1
+
+    # insert at the {{body}} marker if present, else append to the last section
+    marker_section, marker = _find_body_marker(doc)
+    target_section = marker_section or doc.sections[-1]
+    result.inserted_at_marker = marker is not None
 
     for block in parse_markdown(markdown):
         style_id, role = resolve(block)
@@ -143,8 +161,17 @@ def fill_from_markdown(
             if role not in result.unmapped_roles and role != "BODY":
                 result.unmapped_roles.append(role)
         para_pr = infos[style_id].para_pr_id if style_id in infos else None
-        doc.add_paragraph(block.text, style_id_ref=style_id, para_pr_id_ref=para_pr)
+        para = target_section.add_paragraph(
+            block.text, style_id_ref=style_id, para_pr_id_ref=para_pr
+        )
+        if marker is not None:  # move the freshly-appended paragraph before the marker
+            element = para.element
+            element.getparent().remove(element)
+            marker.element.addprevious(element)
         result.placed += 1
+
+    if marker is not None:
+        marker.element.getparent().remove(marker.element)
 
     doc.save_to_path(str(output or template))
     return result

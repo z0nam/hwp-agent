@@ -185,48 +185,83 @@ def parse_markdown(markdown: str) -> list[Block | TableBlock]:
 
 
 @dataclass
+class Zone:
+    """Per-row-band cell format: edge-aware border fills + the cell content style."""
+
+    left_bf: str | None = None  # first-column cell border fill
+    mid_bf: str | None = None  # interior cell border fill
+    right_bf: str | None = None  # last-column cell border fill
+    style: str | None = None  # cell paragraph styleIDRef (e.g. JRI_표내용)
+    para: str | None = None  # cell paragraph paraPrIDRef
+    char: str | None = None  # cell run charPrIDRef
+
+    def border(self, col: int, ncols: int) -> str | None:
+        if col == 0:
+            return self.left_bf
+        if col == ncols - 1:
+            return self.right_bf
+        return self.mid_bf
+
+
+@dataclass
 class TableFormat:
-    """Format borrowed from a template table, applied to generated tables."""
+    """Format borrowed from a template table, applied to generated tables.
+
+    Border fills are position-aware (left/interior/right columns) per row band —
+    header, interior body, and the last body row (which carries the thick bottom).
+    Content styles (styleIDRef / para / char) come from the reference's cells so a
+    generated table reuses e.g. the JRI_표내용 style instead of falling back to Normal.
+    """
 
     table_border_fill: str | None = None
-    header_border_fill: str | None = None
-    header_para_pr: str | None = None
-    header_char_pr: str | None = None
-    body_border_fill: str | None = None
-    body_para_pr: str | None = None
-    body_char_pr: str | None = None
+    header: Zone = field(default_factory=Zone)
+    body: Zone = field(default_factory=Zone)
+    last: Zone = field(default_factory=Zone)
 
 
-def _cell_style(tc) -> tuple[str | None, str | None, str | None]:
-    """(borderFillIDRef, paraPrIDRef, charPrIDRef) of a ``<hp:tc>``."""
+def _cell_attrs(tc):
     sub = tc.find(f"{{{_HP}}}subList")
     p = sub.find(f"{{{_HP}}}p") if sub is not None else None
     run = p.find(f"{{{_HP}}}run") if p is not None else None
     return (
         tc.get("borderFillIDRef"),
+        p.get("styleIDRef") if p is not None else None,
         p.get("paraPrIDRef") if p is not None else None,
         run.get("charPrIDRef") if run is not None else None,
     )
 
 
+def _zone(tr) -> Zone:
+    """Read a Zone from a row: edge border fills + the (shared) content style."""
+    cells = tr.findall(f"{{{_HP}}}tc")
+    if not cells:
+        return Zone()
+    left_bf, style, para, char = _cell_attrs(cells[0])
+    mid_bf = _cell_attrs(cells[1])[0] if len(cells) > 2 else left_bf
+    right_bf = _cell_attrs(cells[-1])[0]
+    return Zone(left_bf, mid_bf, right_bf, style, para, char)
+
+
 def _table_format(tbl) -> TableFormat:
-    """Read a representative format (borders + header/body cell styles) from a table."""
+    """Read header / body / last-row zones from a reference table."""
     rows = tbl.findall(f"{{{_HP}}}tr")
     fmt = TableFormat(table_border_fill=tbl.get("borderFillIDRef"))
     if not rows:
         return fmt
 
-    def first_cell(tr):
-        cells = tr.findall(f"{{{_HP}}}tc")
-        return cells[0] if cells else None
-
-    fmt.header_border_fill, fmt.header_para_pr, fmt.header_char_pr = _cell_style(
-        first_cell(rows[0])
-    )
-    body_row = rows[1] if len(rows) > 1 else rows[0]
-    fmt.body_border_fill, fmt.body_para_pr, fmt.body_char_pr = _cell_style(
-        first_cell(body_row)
-    )
+    fmt.header = _zone(rows[0])
+    header_style = fmt.header.style
+    # body rows share the header's content style; a trailing row with a *different*
+    # style (e.g. JRI_각주 note row) is excluded so the thick bottom comes from the
+    # last real body row.
+    body_rows = [
+        tr for tr in rows[1:] if _zone(tr).style == header_style or header_style is None
+    ]
+    if body_rows:
+        fmt.body = _zone(body_rows[0])
+        fmt.last = _zone(body_rows[-1])
+    else:
+        fmt.body = fmt.last = fmt.header
     return fmt
 
 
@@ -265,27 +300,42 @@ def _strip_table_token(tbl_element) -> None:
 
 
 def _build_table(doc, section, block: TableBlock, fmt: TableFormat | None, add_runs):
-    """Create a table sized to *block*, styled like *fmt*, and fill its cells."""
+    """Create a table sized to *block*, styled by *fmt*'s zones, and fill its cells.
+
+    Each row band picks a zone (header / interior body / last body row), and within
+    a row the border fill is chosen by column position (first / interior / last) so
+    the template's edge rules (no outer left/right line, thick bottom) are preserved
+    even when the row/column counts differ from the reference.
+    """
+    ncols, nrows = block.n_cols, block.n_rows
     table = doc.add_table(
-        block.n_rows,
-        block.n_cols,
+        nrows,
+        ncols,
         section=section,
         border_fill_id_ref=(fmt.table_border_fill if fmt else None),
     )
     for r, row in enumerate(block.rows):
-        is_header = block.has_header and r == 0
-        border = (fmt.header_border_fill if is_header else fmt.body_border_fill) if fmt else None
-        para_pr = (fmt.header_para_pr if is_header else fmt.body_para_pr) if fmt else None
-        char_pr = (fmt.header_char_pr if is_header else fmt.body_char_pr) if fmt else None
-        for c in range(block.n_cols):
+        if fmt is None:
+            zone = None
+        elif block.has_header and r == 0:
+            zone = fmt.header
+        elif r == nrows - 1:
+            zone = fmt.last  # last body row carries the thick bottom border
+        else:
+            zone = fmt.body
+        for c in range(ncols):
             cell = table.cell(r, c)
-            if border:
-                cell.element.set("borderFillIDRef", border)
+            if zone is not None:
+                if (bf := zone.border(c, ncols)) is not None:
+                    cell.element.set("borderFillIDRef", bf)
+                cp = cell.paragraphs[0]
+                if zone.style is not None:
+                    cp.style_id_ref = zone.style
+                if zone.para is not None:
+                    cp.para_pr_id_ref = zone.para
             cp = cell.paragraphs[0]
-            if para_pr:
-                cp.para_pr_id_ref = para_pr
             cp.clear_text()
-            add_runs(cp, row[c] if c < len(row) else "", char_pr)
+            add_runs(cp, row[c] if c < len(row) else "", zone.char if zone else None)
     return table
 
 

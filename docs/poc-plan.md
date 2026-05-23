@@ -95,6 +95,25 @@ Dates are proposals from 2026-05-23; adjust freely.
     the loop: messy HWP → MD (intent) → styled HWPX. Until then, type-2/3 docs
     (weak/flat) are handled in place; M6 is the "rebuild it cleanly" path.
 
+- **M7 — usable from other assistants (Claude.ai chat / ChatGPT / Codex)** *(unscheduled)*
+  Today the surface is the Claude Code skill + CLI. Broaden it so the same ops
+  drive from other agents. Builds on the MCP server (M3). Two tiers, by how the
+  client runs tools:
+  1. **Local-process clients (Codex, Claude Code/Desktop)** — speak MCP over
+     **stdio**; the same local MCP server works. Mostly a config/docs task
+     (publish the server command + an mcp.json snippet per client).
+  2. **Web chat clients (claude.ai, ChatGPT)** — *cannot spawn a local process*,
+     so they need a **remote (HTTP/SSE) MCP server** (a "connector"), which means
+     **hosting + auth + file upload/download** (the HWP comes in as an upload, is
+     processed server-side with the jar, and the result is handed back). ChatGPT
+     without MCP can fall back to a **custom GPT with Actions (OpenAPI)** over the
+     same hosted endpoints. Note: claude.ai can also load uploaded *Skills*, but a
+     skill alone can't execute the CLI/jar in web chat — it still needs the hosted
+     backend.
+  - **Open issues:** hosting/runtime for the Java converter, auth, file-size and
+    privacy limits (institutional documents leaving the building), and keeping one
+    ops core behind both the CLI and the (local + remote) MCP surfaces.
+
 ## Open questions
 
 - Slot identity for ambiguous forms (duplicate labels, nested tables).

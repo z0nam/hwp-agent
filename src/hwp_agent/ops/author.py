@@ -14,6 +14,7 @@ currently flattened to text (run-level styling is a later refinement).
 
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +34,8 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
 _INLINE_RE = re.compile(r"\*\*(.+?)\*\*|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 _ORDERED_RE = re.compile(r"^(\s*)\d+[.)]\s+(.*)$")
+# a table note/source line: 주) / 주: / <주> / 출처) / 자료: …
+_NOTE_RE = re.compile(r"^\s*<?\s*(주|출처|자료)\s*[>)\].:]")
 
 
 @dataclass
@@ -56,6 +59,8 @@ class TableBlock:
     rows: list[list[str]]  # rows[0] is the header when has_header is True
     aligns: list[str]  # "left" | "center" | "right" per column
     has_header: bool = True
+    caption: str | None = None  # title line directly above the table
+    note: str | None = None  # 주)/출처) line(s) directly below the table
 
     @property
     def n_rows(self) -> int:
@@ -154,6 +159,9 @@ def parse_markdown(markdown: str) -> list[Block | TableBlock]:
             and i + 1 < len(lines)
             and (aligns := _delimiter_aligns(lines[i + 1]))
         ):
+            # caption = the line directly above the table (last buffered paragraph
+            # line, with no blank line between); the rest of the buffer is flushed.
+            caption = para.pop().strip() if para else None
             flush()
             header = _split_table_row(line)
             rows = [header]
@@ -161,8 +169,20 @@ def parse_markdown(markdown: str) -> list[Block | TableBlock]:
             while i < len(lines) and "|" in lines[i] and lines[i].strip():
                 rows.append(_split_table_row(lines[i]))
                 i += 1
+            # note = consecutive 주)/출처)/자료) lines directly below the table
+            note_lines = []
+            while i < len(lines) and _NOTE_RE.match(lines[i]):
+                note_lines.append(lines[i].strip())
+                i += 1
             aligns += ["left"] * (len(header) - len(aligns))
-            blocks.append(TableBlock(rows=rows, aligns=aligns[: len(header)]))
+            blocks.append(
+                TableBlock(
+                    rows=rows,
+                    aligns=aligns[: len(header)],
+                    caption=caption,
+                    note="\n".join(note_lines) or None,
+                )
+            )
             continue
         if not line.strip():
             flush()
@@ -322,6 +342,24 @@ def _strip_table_token(tbl_element) -> None:
             t.text = _TABLE_TOKEN_RE.sub("", t.text).rstrip()
 
 
+def _clone_caption(ref_el, title: str):
+    """Clone the reference table's caption (auto-number + 표제목 style) with *title*.
+
+    The caption text is like "<표 II-" + autoNum + "> {title}"; we keep the number
+    framing and replace the title portion. Returns a detached caption element, or
+    None when the reference has no caption.
+    """
+    cap = ref_el.find(f"{{{_HP}}}caption")
+    if cap is None:
+        return None
+    clone = copy.deepcopy(cap)
+    texts = clone.findall(f".//{{{_HP}}}t")
+    if texts:  # last text node holds "> {title-or-token}" → keep ">", set title
+        framing = _TABLE_TOKEN_RE.sub("", texts[-1].text or "").rstrip()
+        texts[-1].text = f"{framing} {title}".rstrip()
+    return clone
+
+
 def _style_cell(cell, zone: Zone, col: int, ncols: int, text: str) -> None:
     if (bf := zone.border(col, ncols)) is not None:
         cell.element.set("borderFillIDRef", bf)
@@ -389,10 +427,21 @@ def _build_table(
                 cell.element.set("header", "1")  # repeat across page breaks
             _style_cell(cell, zone, c, ncols, row[c] if c < len(row) else "")
 
-    if has_note:  # note/source row: every cell hidden-bordered (kept even when empty)
+    if has_note:  # note/source row: hidden-bordered, kept even when empty
         note_r = total_rows - 1
+        note_text = block.note.replace("\n", "  ") if block.note else ""
         for c in range(ncols):
-            _style_cell(table.cell(note_r, c), fmt.note, c, ncols, "")
+            _style_cell(table.cell(note_r, c), fmt.note, c, ncols, note_text if c == 0 else "")
+
+    # caption "<표 N-M> {title}" cloned from the reference (auto-number + 표제목 style)
+    if block.caption and ref_el is not None:
+        clone = _clone_caption(ref_el, block.caption)
+        if clone is not None:
+            first_tr = table.element.find(f"{{{_HP}}}tr")
+            if first_tr is not None:
+                first_tr.addprevious(clone)
+            else:
+                table.element.append(clone)
     return table
 
 

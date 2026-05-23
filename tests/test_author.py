@@ -166,6 +166,42 @@ def test_generated_header_row_is_marked_and_repeats(tmp_path: Path) -> None:
     assert gen.get("repeatHeader") == "1"
 
 
+def test_parse_table_caption_and_note() -> None:
+    md = (
+        "표 제목입니다\n"
+        "| 코드 | 값 |\n|--|--|\n| P01 | 1 |\n"
+        "출처) 제주연구원\n"
+        "주) 단위 백만원\n"
+    )
+    (table,) = [b for b in parse_markdown(md) if isinstance(b, TableBlock)]
+    assert table.caption == "표 제목입니다"
+    assert table.note == "출처) 제주연구원\n주) 단위 백만원"
+
+
+@pytest.mark.skipif(
+    not _TABLE_TEMPLATE.is_file(), reason="caption-marked table template not present"
+)
+def test_generated_table_caption_and_note(tmp_path: Path) -> None:
+    from hwpx.document import HwpxDocument
+
+    HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+    out = tmp_path / "out.hwpx"
+    md = "축제사업 현황\n| 코드 | 값 |\n|--|--|\n| P01 | 1 |\n출처) 제주연구원, 2025.\n"
+    fill_from_markdown(_TABLE_TEMPLATE, md, output=out)
+
+    doc = HwpxDocument.open(str(out))
+    gen = [t for s in doc.sections for t in s.element.iter(f"{HP}tbl")][-1]
+    cap = gen.find(f"{HP}caption")
+    assert cap is not None
+    cap_text = "".join(t.text or "" for t in cap.iter(f"{HP}t"))
+    assert "축제사업 현황" in cap_text and "{{table" not in cap_text
+    # caption uses the table-title style copied from the reference
+    assert cap.find(f"{HP}subList").find(f"{HP}p").get("styleIDRef") is not None
+    # the note row carries the 출처 line
+    note_text = "".join(t.text or "" for t in gen.findall(f"{HP}tr")[-1].iter(f"{HP}t"))
+    assert "제주연구원" in note_text
+
+
 def test_parse_markdown_ordered_vs_bullet() -> None:
     blocks = parse_markdown("1. 첫째\n2. 둘째\n\n- 불릿\n")
     assert [(b.kind, b.level) for b in blocks] == [

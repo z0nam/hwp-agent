@@ -38,6 +38,24 @@ body-row cell border-fill, and the cell paragraph/character styles.
 
 `_find_reference_table()` scans live section trees for a caption token (else the
 first table); `_table_format()` reads the reference; `_build_table()` applies it.
-Column-width distribution and per-cell border variety (in complex references) are
-approximated — a representative header/body style is used — candidates for later
-refinement.
+
+### What's copied from the reference, by row band
+
+`_table_format` extracts four border/style zones — **header** (detected by the cell
+`header="1"` attribute, not "row 0", so multi-row headers work), **first body row**
+(its double top pairs the header's double bottom — one separator, no doubling),
+**interior body** (thin), and **last body row** (thick bottom) — plus a hidden
+**note** zone. Generated cells reuse the reference's cell style (e.g. JRI_표내용),
+header cells are marked `header="1"` (so the header repeats across pages), and the
+table copies the reference's `pos` (treatAsChar=0, floating) and `repeatHeader`.
+
+### Caption and note (from the Markdown around the table)
+
+- **Caption title** = the line directly above the table. The generated table clones
+  the reference's caption (auto-number + 표제목 style → "<표 N-M> {title}").
+- **Note/source row** = lines directly below the table starting with `주)` / `출처)`
+  / `자료:` (etc.). Filled into the hidden note row; otherwise the note row is kept
+  empty (invisible).
+
+Column widths, per-cell border variety, multi-row note paragraphs, and inline bold
+inside cells remain approximations / refinements.

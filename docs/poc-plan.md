@@ -77,6 +77,24 @@ Dates are proposals from 2026-05-23; adjust freely.
   4. **Verify on Windows**: convert (Java present), the editing ops, and a Hangul
      round-trip; fix any path/encoding (cp949 vs utf-8) surprises.
 
+- **M6 — HWPX → Markdown extraction** *(low priority; unscheduled)*
+  The inverse of `author`: read an HWPX and emit **body-focused Markdown**. Low
+  priority because a DOCX export already gives a rough read — its value is as the
+  *input stage of the conform-to-template workflow* (see below), not as a reader.
+  Proposed rules (reuse the table channel strategy from `docs/tables.md`, in
+  reverse):
+  1. **Front matter (표지·목차) → core info only.** Don't transcribe cover layout
+     or a TOC verbatim; keep just the title/metadata and drop to the body.
+  2. **Body → Markdown.** Map outline styles back to `#`/`##`, lists to `-`/`1.`,
+     emphasis to `**`/`*` — the inverse of the role-map projection.
+  3. **Tables: simple → Markdown pipe; complex/merged → HTML `<table>`.** Mirrors
+     the authoring channels (Markdown can't express merges; HTML can).
+  - **North-star use case:** a draft or **non-conforming HWP** (written without
+    following the house form) → extract to Markdown → re-`author` it onto a proper
+    template's styles, i.e. *make a messy draft conform to the form*. This closes
+    the loop: messy HWP → MD (intent) → styled HWPX. Until then, type-2/3 docs
+    (weak/flat) are handled in place; M6 is the "rebuild it cleanly" path.
+
 ## Open questions
 
 - Slot identity for ambiguous forms (duplicate labels, nested tables).

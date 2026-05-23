@@ -2,6 +2,8 @@
 # Real institutional documents must never be committed; keep the dir, drop contents.
 tests/fixtures/*
 !tests/fixtures/.gitkeep
+# Conversion scratch/output — regenerable cache, never committed.
+tests/tmp/
 # Vendored converter jar is a reproducible build artifact (see scripts/bootstrap.sh).
 vendor/*.jar
 # but keep the directory tracked

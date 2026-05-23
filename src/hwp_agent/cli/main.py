@@ -30,6 +30,8 @@ def _cmd_convert(args: argparse.Namespace) -> int:
         return 1
 
     print(f"wrote {result.hwpx_path}")
+    if result.normalized:
+        print(f"  normalized: {', '.join(result.normalized)}")
     return 0
 
 

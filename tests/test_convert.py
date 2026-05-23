@@ -101,19 +101,70 @@ def _write_hwpx_missing_preview(path: Path) -> None:
         zf.writestr("Contents/content.hpf", "<hpf/>")  # declared part present
 
 
+def _write_hwpx(path: Path, entries: dict[str, bytes | str]) -> None:
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", "application/hwp+zip")
+        for name, content in entries.items():
+            zf.writestr(name, content)
+
+
 def test_normalize_adds_declared_but_missing_preview(tmp_path: Path) -> None:
     from hwp_agent.convert.hwp2hwpx_backend import _normalize_hwpx
 
     pkg = tmp_path / "doc.hwpx"
     _write_hwpx_missing_preview(pkg)
 
-    added = _normalize_hwpx(pkg)
-    assert added == ("Preview/PrvText.txt",)
+    changes = _normalize_hwpx(pkg)
+    assert changes == ("preview:Preview/PrvText.txt",)
     with zipfile.ZipFile(pkg) as zf:
         assert "Preview/PrvText.txt" in zf.namelist()
+        assert zf.namelist()[0] == "mimetype"  # mimetype stays first after rewrite
 
-    # idempotent: a second pass adds nothing
+    # idempotent: a second pass changes nothing
     assert _normalize_hwpx(pkg) == ()
+
+
+def test_normalize_fixes_inflated_linespacing(tmp_path: Path) -> None:
+    from hwp_agent.convert.hwp2hwpx_backend import _normalize_hwpx
+
+    header = (
+        '<?xml version="1.0"?><hh:head xmlns:hh="x">'
+        '<hh:paraPr id="1"><hh:lineSpacing type="PERCENT" value="1600" unit="HWPUNIT"/></hh:paraPr>'
+        '<hh:paraPr id="2"><hh:lineSpacing type="PERCENT" value="150" unit="HWPUNIT"/></hh:paraPr>'
+        "</hh:head>"
+    )
+    pkg = tmp_path / "doc.hwpx"
+    _write_hwpx(pkg, {"Contents/header.xml": header})
+
+    changes = _normalize_hwpx(pkg)
+    assert changes == ("linespacing:1",)
+    with zipfile.ZipFile(pkg) as zf:
+        out = zf.read("Contents/header.xml").decode("utf-8")
+    assert 'value="160"' in out  # 1600 -> 160
+    assert 'value="150"' in out  # legitimate value untouched
+    assert _normalize_hwpx(pkg) == ()  # idempotent
+
+
+def test_normalize_fixes_table_pagebreak(tmp_path: Path) -> None:
+    from hwp_agent.convert.hwp2hwpx_backend import _normalize_hwpx
+
+    section = (
+        '<?xml version="1.0"?><hs:sec xmlns:hs="x" xmlns:hp="y">'
+        '<hp:p pageBreak="0"><hp:tbl pageBreak="TABLE"/></hp:p>'
+        '<hp:p pageBreak="1"><hp:tbl pageBreak="TABLE"/></hp:p>'
+        "</hs:sec>"
+    )
+    pkg = tmp_path / "doc.hwpx"
+    _write_hwpx(pkg, {"Contents/section0.xml": section})
+
+    changes = _normalize_hwpx(pkg)
+    assert changes == ("pagebreak:2",)
+    with zipfile.ZipFile(pkg) as zf:
+        out = zf.read("Contents/section0.xml").decode("utf-8")
+    assert 'pageBreak="TABLE"' not in out
+    assert out.count('pageBreak="CELL"') == 2
+    assert 'pageBreak="0"' in out and 'pageBreak="1"' in out  # paragraphs untouched
+    assert _normalize_hwpx(pkg) == ()  # idempotent
 
 
 # --- optional end-to-end --------------------------------------------------

@@ -21,8 +21,8 @@ class ConvertResult:
     returncode: int
     stdout: str = ""
     stderr: str = ""
-    #: Package entries the backend synthesized to make the output a valid HWPX
-    #: (e.g. a ``Preview/`` part declared in container.xml but never written).
+    #: Tags describing post-conversion repairs the backend applied, e.g.
+    #: ``"preview:Preview/PrvText.txt"``, ``"linespacing:14"``, ``"pagebreak:51"``.
     normalized: tuple[str, ...] = ()
 
     @property

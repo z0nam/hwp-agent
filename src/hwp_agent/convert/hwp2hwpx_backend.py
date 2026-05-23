@@ -7,6 +7,7 @@ thin ``Hwp2HwpxCli`` entry point, and lands at ``vendor/hwp2hwpx.jar``.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
@@ -19,39 +20,101 @@ from .base import ConverterBackend, ConvertResult
 _DEFAULT_JAR = Path(__file__).resolve().parents[3] / "vendor" / "hwp2hwpx.jar"
 
 _OCF_NS = "urn:oasis:names:tc:opendocument:xmlns:container"
+_SECTION_RE = re.compile(r"Contents/section\d+\.xml$")
+_LINESPACING_RE = re.compile(r'type="PERCENT" value="(\d+)" unit="HWPUNIT"')
+# A real line-spacing percentage is never four digits; hwp2hwpx inflates some
+# by exactly 10x. Anything at/above this is treated as the 10x bug.
+_LINESPACING_MAX = 1000
+
+
+def _fix_linespacing(header_xml: str) -> tuple[str, int]:
+    """Undo hwp2hwpx's 10x line-spacing inflation (see docs/findings.md)."""
+    count = 0
+
+    def repl(m: re.Match[str]) -> str:
+        nonlocal count
+        value = int(m.group(1))
+        if value >= _LINESPACING_MAX:
+            count += 1
+            return f'type="PERCENT" value="{value // 10}" unit="HWPUNIT"'
+        return m.group(0)
+
+    return _LINESPACING_RE.sub(repl, header_xml), count
 
 
 def _normalize_hwpx(hwpx_path: Path) -> tuple[str, ...]:
-    """Materialize ``Preview/`` parts hwp2hwpx declares but never writes.
+    """Repair known hwp2hwpx output defects, in place. See docs/findings.md.
 
-    hwp2hwpx emits a ``META-INF/container.xml`` that lists ``Preview/PrvText.txt``
-    as a rootfile yet omits the file, so strict OPC readers (python-hwpx) reject
-    the package. We add empty placeholders for any declared-but-missing rootfile
-    under ``Preview/`` — narrow on purpose, so genuine structural gaps elsewhere
-    still surface. Returns the entries that were added.
+    Each fix relies only on information preserved in the converted file:
+
+    * ``preview:<path>`` — add empty placeholders for ``Preview/`` rootfiles that
+      ``container.xml`` declares but hwp2hwpx never writes (else strict OPC
+      readers such as python-hwpx reject the package).
+    * ``linespacing:<n>`` — divide back 10x-inflated ``PERCENT`` line spacings.
+    * ``pagebreak:<n>`` — restore table ``pageBreak="CELL"`` (hwp2hwpx rewrites it
+      as ``"TABLE"``, collapsing full-page border frames). Safe by string match:
+      paragraphs use ``pageBreak="0"/"1"``; only tables use the TABLE/CELL/NONE
+      enum.
+
+    Returns a tuple of ``"<fix>:<detail>"`` tags describing what changed (empty
+    if nothing did). The character-loss bug (non-BMP -> U+FFFD) is *not* fixable
+    here — it originates in hwplib at read time; see docs/findings.md.
     """
     with zipfile.ZipFile(hwpx_path) as zf:
-        names = set(zf.namelist())
-        try:
-            container = zf.read("META-INF/container.xml")
-        except KeyError:
-            return ()
+        names = [i.filename for i in zf.infolist()]
+        data = {n: zf.read(n) for n in names}
 
-    root = ET.fromstring(container)
-    missing = [
-        fp
-        for rf in root.iter(f"{{{_OCF_NS}}}rootfile")
-        if (fp := rf.get("full-path"))
-        and fp not in names
-        and fp.startswith("Preview/")
-    ]
-    if not missing:
+    changes: list[str] = []
+
+    # (1) Preview rootfiles declared in container.xml but missing.
+    container = data.get("META-INF/container.xml")
+    if container is not None:
+        nameset = set(names)
+        for rf in ET.fromstring(container).iter(f"{{{_OCF_NS}}}rootfile"):
+            fp = rf.get("full-path")
+            if fp and fp not in nameset and fp.startswith("Preview/"):
+                data[fp] = b""
+                names.append(fp)
+                changes.append(f"preview:{fp}")
+
+    # (2) 10x line-spacing inflation in header.xml.
+    header = data.get("Contents/header.xml")
+    if header is not None:
+        fixed, n = _fix_linespacing(header.decode("utf-8"))
+        if n:
+            data["Contents/header.xml"] = fixed.encode("utf-8")
+            changes.append(f"linespacing:{n}")
+
+    # (3) Table pageBreak CELL -> TABLE swap, across all sections.
+    pagebreaks = 0
+    for name in names:
+        if not _SECTION_RE.search(name):
+            continue
+        text = data[name].decode("utf-8")
+        c = text.count('pageBreak="TABLE"')
+        if c:
+            data[name] = text.replace('pageBreak="TABLE"', 'pageBreak="CELL"').encode(
+                "utf-8"
+            )
+            pagebreaks += c
+    if pagebreaks:
+        changes.append(f"pagebreak:{pagebreaks}")
+
+    if not changes:
         return ()
 
-    with zipfile.ZipFile(hwpx_path, "a", zipfile.ZIP_DEFLATED) as zf:
-        for fp in missing:
-            zf.writestr(fp, b"")
-    return tuple(missing)
+    # Rewrite the package: mimetype first and stored, per the HWPX/OPC convention.
+    tmp = hwpx_path.with_name(hwpx_path.name + ".tmp")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+        if "mimetype" in data:
+            info = zipfile.ZipInfo("mimetype")
+            info.compress_type = zipfile.ZIP_STORED
+            zf.writestr(info, data["mimetype"])
+        for name in names:
+            if name != "mimetype":
+                zf.writestr(name, data[name])
+    tmp.replace(hwpx_path)
+    return tuple(changes)
 
 
 def _resolve_jar(explicit: Path | str | None) -> Path:

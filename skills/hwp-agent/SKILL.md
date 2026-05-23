@@ -1,5 +1,5 @@
 ---
-name: hwp-author
+name: hwp-agent
 description: >-
   Author and fill Korean HWP/HWPX documents in their native format (no lossy
   DOCX round-trip), using the `hwp-agent` CLI. Use this when asked to convert

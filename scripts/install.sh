@@ -9,7 +9,7 @@
 #   1. builds vendor/hwp2hwpx.jar (via bootstrap.sh) if it's missing,
 #   2. installs the `hwp-agent` CLI on your PATH (editable, so the jar is
 #      auto-discovered — no env var needed),
-#   3. symlinks the hwp-author skill into ~/.claude/skills/.
+#   3. symlinks the hwp-agent skill into ~/.claude/skills/.
 #
 # Skip the converter (HWPX-only, no JDK/Maven) with:  SKIP_JAR=1 ./scripts/install.sh
 set -euo pipefail
@@ -53,13 +53,13 @@ command -v hwp-agent >/dev/null 2>&1 \
   || warn "hwp-agent not on PATH yet — open a new shell, or add the installer's bin dir to PATH."
 
 # --- 3. Register the Claude Code skill -------------------------------------
-log "Installing hwp-author skill into $SKILLS_DIR ..."
+log "Installing hwp-agent skill into $SKILLS_DIR ..."
 mkdir -p "$SKILLS_DIR"
-ln -sfn "$REPO_ROOT/skills/hwp-author" "$SKILLS_DIR/hwp-author"
-log "Skill linked: $SKILLS_DIR/hwp-author -> $REPO_ROOT/skills/hwp-author"
+ln -sfn "$REPO_ROOT/skills/hwp-agent" "$SKILLS_DIR/hwp-agent"
+log "Skill linked: $SKILLS_DIR/hwp-agent -> $REPO_ROOT/skills/hwp-agent"
 
 cat <<'DONE'
 
-Done. Start (or restart) Claude Code and type "/" — you should see /hwp-author.
+Done. Start (or restart) Claude Code and type "/" — you should see /hwp-agent.
 Try:  hwp-agent classify <file.hwpx>
 DONE

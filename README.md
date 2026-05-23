@@ -55,7 +55,7 @@ finds the jar automatically — no environment variable to set.
 ```bash
 ./scripts/bootstrap.sh                        # 1. build vendor/hwp2hwpx.jar
 uv tool install --editable .                  # 2. CLI on PATH (or: pip install -e ".[dev]")
-ln -s "$PWD/skills/hwp-author" ~/.claude/skills/hwp-author   # 3. register the skill
+ln -s "$PWD/skills/hwp-agent" ~/.claude/skills/hwp-agent   # 3. register the skill
 ```
 </details>
 
@@ -78,19 +78,19 @@ locates the bundled jar on its own).
 
 ## Claude Code Skill
 
-`skills/hwp-author/` packages the authoring workflow as a [Claude Code
+`skills/hwp-agent/` packages the authoring workflow as a [Claude Code
 Skill](https://docs.claude.com/en/docs/claude-code/skills) — it teaches Claude
 the inspect-first loop (`classify` → `styles` → `instructions` → `author`/`form
 fill` → verify), the template token conventions (`{{body}}`,
 `{{table_template}}`, `{{chapter_number=N}}`), and the Markdown→HWPX rules.
 
-`./scripts/install.sh` registers it globally at `~/.claude/skills/hwp-author`.
+`./scripts/install.sh` registers it globally at `~/.claude/skills/hwp-agent`.
 For a single project instead, symlink it there:
-`ln -s "$PWD/skills/hwp-author" .claude/skills/hwp-author`.
+`ln -s "$PWD/skills/hwp-agent" .claude/skills/hwp-agent`.
 
 Then Claude Code invokes it automatically for HWP/HWPX tasks, or on demand with
-`/hwp-author`. The skill's `references/` are snapshots of `docs/`; refresh them
-with `cp docs/{template-convention,tables}.md skills/hwp-author/references/`.
+`/hwp-agent`. The skill's `references/` are snapshots of `docs/`; refresh them
+with `cp docs/{template-convention,tables}.md skills/hwp-agent/references/`.
 
 ## Development
 

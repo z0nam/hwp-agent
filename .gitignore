@@ -49,3 +49,6 @@ htmlcov/
 # --- Java build scratch (bootstrap uses a temp dir, but just in case) -----
 *.class
 target/
+
+# Local Claude Code skill symlinks (skills live in skills/)
+.claude/

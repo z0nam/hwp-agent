@@ -53,6 +53,33 @@ def test_inline_segments_splits_emphasis() -> None:
     ]
 
 
+def test_parse_markdown_ordered_vs_bullet() -> None:
+    blocks = parse_markdown("1. 첫째\n2. 둘째\n\n- 불릿\n")
+    assert [(b.kind, b.level) for b in blocks] == [
+        ("ordered", 1),
+        ("ordered", 1),
+        ("bullet", 1),
+    ]
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_fill_ordered_list_uses_numbered_outline_style(tmp_path: Path) -> None:
+    from hwpx.document import HwpxDocument
+
+    from hwp_agent.ops import role_map
+
+    out = tmp_path / "out.hwpx"
+    result = fill_from_markdown(TYPE1, "1. 첫 단계\n2. 둘째 단계\n", output=out)
+    assert result.unmapped_roles == []  # ordered mapped to a numbered style
+
+    doc = HwpxDocument.open(str(out))
+    item = next(p for p in doc.paragraphs if p.text == "첫 단계")
+    # the ordered item resolves to an OUTLINE (auto-numbered) style, not Body
+    heading = doc.paragraph_property(item.para_pr_id_ref).heading
+    assert heading.type == "OUTLINE"
+    assert str(item.style_id_ref) != role_map(TYPE1)["BODY"]
+
+
 @pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
 def test_fill_from_markdown_applies_outline_styles(tmp_path: Path) -> None:
     md = "# 새 장\n\n본문 문단.\n\n## 새 절\n\n- 불릿 항목\n"

@@ -28,12 +28,13 @@ BODY_MARKER = "{{body}}"
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
 _INLINE_RE = re.compile(r"\*\*(.+?)\*\*|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
+_ORDERED_RE = re.compile(r"^(\s*)\d+[.)]\s+(.*)$")
 
 
 @dataclass
 class Block:
-    kind: str  # "heading" | "paragraph" | "bullet"
-    level: int  # heading level 1-6, bullet nesting 1+, 0 for paragraph
+    kind: str  # "heading" | "paragraph" | "bullet" | "ordered"
+    level: int  # heading level 1-6, list nesting 1+, 0 for paragraph
     text: str  # raw inline text (** / * markers kept; segmented at fill time)
 
 
@@ -104,6 +105,10 @@ def parse_markdown(markdown: str) -> list[Block]:
         if m := _HEADING_RE.match(line):
             flush()
             blocks.append(Block("heading", len(m.group(1)), m.group(2).strip()))
+        elif m := _ORDERED_RE.match(line):
+            flush()
+            level = len(m.group(1).expandtabs(2)) // 2 + 1
+            blocks.append(Block("ordered", level, m.group(2).strip()))
         elif m := _BULLET_RE.match(line):
             flush()
             level = len(m.group(1).expandtabs(2)) // 2 + 1
@@ -148,18 +153,24 @@ def fill_from_markdown(
     """Append Markdown content to a template, styled with its own outline styles."""
     roles = role_map(template)
     infos = {i.style_id: i for i in read_style_system(template)}
-    max_heading = max(
-        (int(r.split("_")[1]) for r in roles if r.startswith("HEADING_")), default=0
-    )
-    max_bullet = max(
-        (int(r.split("_")[1]) for r in roles if r.startswith("BULLET_")), default=0
-    )
+    def _levels(prefix: str) -> list[int]:
+        return sorted(int(r.split("_")[1]) for r in roles if r.startswith(prefix))
+
+    max_heading = max(_levels("HEADING_"), default=0)
+    bullet_levels, ordered_levels = _levels("BULLET_"), _levels("ORDERED_")
+
+    def _ranked(prefix: str, levels: list[int], depth: int) -> str:
+        # list styles may not start at level 1; map by rank (shallowest md depth
+        # -> shallowest available level), clamped to the deepest defined.
+        return f"{prefix}{levels[min(depth - 1, len(levels) - 1)]}"
 
     def resolve(block: Block) -> tuple[str | None, str]:
         if block.kind == "heading" and max_heading:
             role = f"HEADING_{min(block.level, max_heading)}"
-        elif block.kind == "bullet" and max_bullet:
-            role = f"BULLET_{min(block.level, max_bullet)}"
+        elif block.kind == "ordered" and ordered_levels:
+            role = _ranked("ORDERED_", ordered_levels, block.level)
+        elif block.kind == "bullet" and bullet_levels:
+            role = _ranked("BULLET_", bullet_levels, block.level)
         else:
             role = "BODY"
         return roles.get(role), role

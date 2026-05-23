@@ -30,6 +30,11 @@ TITLE = "TITLE"
 _AI_ROLE_RE = re.compile(r"^\s*AI:([A-Za-z_][A-Za-z0-9_]*)\s*$")
 _ENG_OUTLINE_RE = re.compile(r"^\s*Outline\s+(\d+)\s*$", re.IGNORECASE)
 _BODY_NAMES = {"normal", "바탕글"}
+# names that look like an enumerator: "1.", "1)", "가.", "I.", "①" — i.e. a
+# numbered-list style rather than a semantic heading.
+_ENUM_NAME_RE = re.compile(
+    r"^\s*(?:\d+|[IVXivx]+|[A-Za-z]|[가-힣]|[①-⑳Ⅰ-Ⅿ])\s*[.)]?\s*$"
+)
 
 
 @dataclass
@@ -128,7 +133,15 @@ def role_map(doc_or_path: HwpxDocument | Path | str) -> dict[str, str]:
             body.append(info)
 
     for level, cands in by_outline.items():
-        roles.setdefault(f"HEADING_{level + 1}", _best(cands, prefer_outline_n=level + 1))
+        heading = _best(cands, prefer_outline_n=level + 1)
+        roles.setdefault(f"HEADING_{level + 1}", heading)
+        # an enumerator-named outline style at this level (other than the chosen
+        # heading) is a numbered-list style → ORDERED_{level+1}.
+        ordered = [
+            c for c in cands if c.style_id != heading and _ENUM_NAME_RE.match(c.name)
+        ]
+        if ordered:
+            roles.setdefault(f"ORDERED_{level + 1}", _best(ordered))
     for level, cands in by_bullet.items():
         roles.setdefault(f"BULLET_{level + 1}", _best(cands))
     if body:

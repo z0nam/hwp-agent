@@ -50,11 +50,16 @@ The AI writes Markdown; it is projected onto the template's styles:
 | Markdown | Role | Result |
 |----------|------|--------|
 | `# H1` / `## H2` / `### H3` | `HEADING_n` | template outline style → Hangul auto-numbers it |
+| `1.` / `2.` (indent = nesting) | `ORDERED_n` | template's numbered-list style → auto "1. 2. 3." |
 | `- item` (indent = nesting) | `BULLET_n` | template bullet style |
 | paragraph text | `BODY` | 바탕글/Normal |
-| `**bold**` / `*italic*` | — | flattened to text (inline styling: later) |
+| `**bold**` / `*italic*` | (run) | separate run in the same font family's bold/italic |
 
-Heading depth is clamped to the deepest `HEADING_n` the template defines.
+Headings map by absolute level (`#`→`HEADING_1`), clamped to the deepest defined.
+Bullets/ordered lists map by **rank** — the shallowest Markdown depth → the
+shallowest available `BULLET_n`/`ORDERED_n` (templates often start lists at outline
+level 1, not 0). `ORDERED_n` is detected from enumerator-named outline styles
+("1.", "1)", "가."). With no matching list style, items fall back to `BODY`.
 
 ## Example
 

@@ -35,6 +35,33 @@ def _cmd_convert(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_meta(args: argparse.Namespace) -> int:
+    from ..ops import read_metadata, update_metadata
+
+    if args.set:
+        values: dict[str, str] = {}
+        for item in args.set:
+            if "=" not in item:
+                print(f"error: --set expects KEY=VALUE, got {item!r}", file=sys.stderr)
+                return 2
+            key, value = item.split("=", 1)
+            values[key.strip()] = value
+        try:
+            written = update_metadata(args.file, output=args.output, **values)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"updated {', '.join(written)} -> {args.output or args.file}")
+        return 0
+
+    data = read_metadata(args.file).as_dict()
+    if not data:
+        print("(no metadata)")
+    for key, value in data.items():
+        print(f"{key}: {value}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hwp-agent",
@@ -55,6 +82,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="path to hwp2hwpx.jar (default: vendor/hwp2hwpx.jar or $HWP2HWPX_JAR)",
     )
     conv.set_defaults(func=_cmd_convert)
+
+    meta = sub.add_parser("meta", help="show or set HWPX document metadata")
+    meta.add_argument("file", type=Path, help=".hwpx file")
+    meta.add_argument(
+        "--set",
+        action="append",
+        metavar="KEY=VALUE",
+        help="set a field (repeatable); keys: title, language, creator, subject, "
+        "description, keyword, date, created, modified, lastsaveby",
+    )
+    meta.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
+        help="write to a different file (default: edit in place)",
+    )
+    meta.set_defaults(func=_cmd_meta)
 
     return parser
 

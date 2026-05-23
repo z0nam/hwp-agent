@@ -1,4 +1,8 @@
-"""Editing operations on HWPX documents (cover-page fill, metadata, ...).
+"""Editing operations on HWPX documents.
 
-Populated in a later slice; see docs/design.md.
+First slice: document metadata (cover/properties) — see :mod:`metadata`.
 """
+
+from .metadata import Metadata, read_metadata, update_metadata
+
+__all__ = ["Metadata", "read_metadata", "update_metadata"]

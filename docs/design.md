@@ -28,9 +28,12 @@ substrate because it loses too much.
    the default backend shells out to the vendored `hwp2hwpx` jar (with our
    overlaid hwplib patch) and repairs known output defects in `_normalize_hwpx`.
    Other backends (e.g. hwpilot) can be dropped in behind `ConverterBackend`.
-2. **ops** (`hwp_agent.ops`) — structured edits on the HWPX, via `python-hwpx`.
-   ◀ **active next phase: AI-driven direct HWPX editing.** First PoC slice:
-   cover-page / metadata auto-fill (slice **B**).
+2. **ops** (`hwp_agent.ops`) — structured edits on the HWPX. ◀ **active phase:
+   AI-driven direct HWPX editing.** First op shipped: **document metadata**
+   (`ops.metadata` — read/fill title, creator, keyword, … in `content.hpf`'s
+   `<opf:metadata>`, via the HwpxPackage API; CLI `hwp-agent meta`). Next:
+   cover-page text/table fill (using python-hwpx `find_cell_by_label` /
+   `fill_by_path` / `replace_text_in_runs`).
 3. **verify** (`hwp_agent.verify`) — round-trip and structural checks that an
    edit didn't corrupt the package. *Later slice.*
 

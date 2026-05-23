@@ -217,6 +217,7 @@ class TableFormat:
     header: Zone = field(default_factory=Zone)
     body: Zone = field(default_factory=Zone)
     last: Zone = field(default_factory=Zone)
+    note: Zone | None = None  # trailing note/source row (merged, hidden borders)
 
 
 def _cell_attrs(tc):
@@ -252,16 +253,18 @@ def _table_format(tbl) -> TableFormat:
     fmt.header = _zone(rows[0])
     header_style = fmt.header.style
     # body rows share the header's content style; a trailing row with a *different*
-    # style (e.g. JRI_각주 note row) is excluded so the thick bottom comes from the
-    # last real body row.
-    body_rows = [
-        tr for tr in rows[1:] if _zone(tr).style == header_style or header_style is None
-    ]
+    # style (e.g. JRI_각주 note row) is the note row, excluded so the thick bottom
+    # comes from the last real body row.
+    body_rows, note_rows = [], []
+    for tr in rows[1:]:
+        z = _zone(tr)
+        (note_rows if header_style and z.style not in (header_style, None) else body_rows).append(z)
     if body_rows:
-        fmt.body = _zone(body_rows[0])
-        fmt.last = _zone(body_rows[-1])
+        fmt.body, fmt.last = body_rows[0], body_rows[-1]
     else:
         fmt.body = fmt.last = fmt.header
+    if note_rows:
+        fmt.note = note_rows[-1]
     return fmt
 
 
@@ -300,43 +303,71 @@ def _strip_table_token(tbl_element) -> None:
             t.text = _TABLE_TOKEN_RE.sub("", t.text).rstrip()
 
 
-def _build_table(doc, section, block: TableBlock, fmt: TableFormat | None, add_runs):
+def _style_cell(cell, zone: Zone, col: int, ncols: int, text: str) -> None:
+    if (bf := zone.border(col, ncols)) is not None:
+        cell.element.set("borderFillIDRef", bf)
+    cp = cell.paragraphs[0]
+    if zone.style is not None:
+        cp.style_id_ref = zone.style
+    if zone.para is not None:
+        cp.para_pr_id_ref = zone.para
+    cp.clear_text()
+    # cell text is plain (no inline-bold variant): ensure_run_style ignores the cell
+    # base size and would blow up the font, so cells keep their content char style.
+    cp.add_run(plain_text(text), char_pr_id_ref=zone.char)
+
+
+def _build_table(
+    doc, section, block: TableBlock, fmt: TableFormat | None, body_style, body_para, ref_el
+):
     """Create a table sized to *block*, styled by *fmt*'s zones, and fill its cells.
 
-    Each row band picks a zone (header / interior body / last body row), and within
-    a row the border fill is chosen by column position (first / interior / last) so
-    the template's edge rules (no outer left/right line, thick bottom) are preserved
-    even when the row/column counts differ from the reference.
+    Each row band picks a zone (header / interior body / last body row), and within a
+    row the border fill is chosen by column position (first / interior / last) so the
+    template's edge rules (no outer left/right line, thick bottom) survive a resize.
+    A trailing note/source row (merged, hidden borders) is appended when the reference
+    has one. The wrapping paragraph uses the BODY style and the table copies the
+    reference's position (so it isn't anchored as a heading character).
     """
-    ncols, nrows = block.n_cols, block.n_rows
+    ncols = block.n_cols
+    data_rows = block.rows
+    has_note = fmt is not None and fmt.note is not None
+    total_rows = len(data_rows) + (1 if has_note else 0)
     table = doc.add_table(
-        nrows,
+        total_rows,
         ncols,
         section=section,
         border_fill_id_ref=(fmt.table_border_fill if fmt else None),
+        style_id_ref=body_style,  # wrapping paragraph = body, not the inherited heading
+        para_pr_id_ref=body_para,
     )
-    for r, row in enumerate(block.rows):
+    # match the reference table's anchoring (floating, repeats header across pages)
+    if ref_el is not None:
+        gen_pos = table.element.find(f"{{{_HP}}}pos")
+        ref_pos = ref_el.find(f"{{{_HP}}}pos")
+        if gen_pos is not None and ref_pos is not None:
+            for k, v in ref_pos.attrib.items():
+                gen_pos.set(k, v)
+        if ref_el.get("repeatHeader"):
+            table.element.set("repeatHeader", ref_el.get("repeatHeader"))
+
+    last_data = len(data_rows) - 1
+    for r, row in enumerate(data_rows):
         if fmt is None:
-            zone = None
+            zone = Zone()
         elif block.has_header and r == 0:
             zone = fmt.header
-        elif r == nrows - 1:
+        elif r == last_data:
             zone = fmt.last  # last body row carries the thick bottom border
         else:
             zone = fmt.body
         for c in range(ncols):
-            cell = table.cell(r, c)
-            if zone is not None:
-                if (bf := zone.border(c, ncols)) is not None:
-                    cell.element.set("borderFillIDRef", bf)
-                cp = cell.paragraphs[0]
-                if zone.style is not None:
-                    cp.style_id_ref = zone.style
-                if zone.para is not None:
-                    cp.para_pr_id_ref = zone.para
-            cp = cell.paragraphs[0]
-            cp.clear_text()
-            add_runs(cp, row[c] if c < len(row) else "", zone.char if zone else None)
+            _style_cell(table.cell(r, c), zone, c, ncols, row[c] if c < len(row) else "")
+
+    if has_note:  # note/source row: every cell hidden-bordered (kept even when empty)
+        note_r = total_rows - 1
+        for c in range(ncols):
+            _style_cell(table.cell(note_r, c), fmt.note, c, ncols, "")
     return table
 
 
@@ -431,9 +462,14 @@ def fill_from_markdown(
                 char = base_char
             para.add_run(seg.text, char_pr_id_ref=char)
 
+    body_style = roles.get("BODY")
+    body_para = infos[body_style].para_pr_id if body_style in infos else None
+
     for block in parse_markdown(markdown):
         if isinstance(block, TableBlock):
-            table = _build_table(doc, target_section, block, table_fmt, add_runs)
+            table = _build_table(
+                doc, target_section, block, table_fmt, body_style, body_para, ref_element
+            )
             place(table.paragraph.element)
             result.placed += 1
             continue

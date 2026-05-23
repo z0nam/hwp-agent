@@ -60,6 +60,24 @@ hwp-agent --version
 Point at a jar elsewhere with `--jar /path/to/hwp2hwpx.jar` or the
 `HWP2HWPX_JAR` environment variable.
 
+## Claude Code Skill
+
+`skills/hwp-author/` packages the authoring workflow as a [Claude Code
+Skill](https://docs.claude.com/en/docs/claude-code/skills) — it teaches Claude
+the inspect-first loop (`classify` → `styles` → `instructions` → `author`/`form
+fill` → verify), the template token conventions (`{{body}}`,
+`{{table_template}}`, `{{chapter_number=N}}`), and the Markdown→HWPX rules.
+
+Install it for a project (or globally at `~/.claude/skills/`):
+
+```bash
+ln -s "$PWD/skills/hwp-author" .claude/skills/hwp-author   # or copy it
+```
+
+Then Claude Code invokes it automatically for HWP/HWPX tasks, or on demand with
+`/hwp-author`. The skill's `references/` are snapshots of `docs/`; refresh them
+with `cp docs/{template-convention,tables}.md skills/hwp-author/references/`.
+
 ## Development
 
 ```bash

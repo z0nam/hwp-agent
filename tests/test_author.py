@@ -249,6 +249,20 @@ def test_explicit_chapter_label_in_caption(tmp_path: Path) -> None:
     assert "7-" in caption(out)
 
 
+@pytest.mark.skipif(not TYPE1.exists(), reason="sample fixture not present")
+def test_instructions_cli_emits_directions_and_slots(capsys) -> None:
+    import json
+
+    from hwp_agent.cli.main import build_parser
+
+    args = build_parser().parse_args(["instructions", str(TYPE1), "--json"])
+    assert args.func(args) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert set(data) == {"instructions", "slots"}
+    assert isinstance(data["instructions"], list)
+    assert isinstance(data["slots"], list)
+
+
 def test_clone_caption_inline_forced_chapter_wins() -> None:
     import xml.etree.ElementTree as ET
 

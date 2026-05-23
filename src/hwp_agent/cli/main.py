@@ -126,6 +126,31 @@ def _cmd_styles(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_instructions(args: argparse.Namespace) -> int:
+    import json
+
+    from ..ops import read_instructions
+
+    data = read_instructions(args.file)
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
+    instructions = data.get("instructions") or []
+    slots = data.get("slots") or []
+    if not instructions and not slots:
+        print("(no AI:INSTRUCTION directions or {{slots}} found)")
+        return 0
+    if instructions:
+        print("instructions:")
+        for line in instructions:
+            print(f"  - {line}")
+    if slots:
+        print("slots:")
+        for slot in slots:
+            print(f"  - {slot}")
+    return 0
+
+
 def _cmd_author(args: argparse.Namespace) -> int:
     from ..ops import fill_from_markdown
 
@@ -207,6 +232,13 @@ def build_parser() -> argparse.ArgumentParser:
     sty.add_argument("file", type=Path, help=".hwpx file")
     sty.add_argument("--json", action="store_true", help="emit roles + styles as JSON")
     sty.set_defaults(func=_cmd_styles)
+
+    ins = sub.add_parser(
+        "instructions", help="show a template's AI:INSTRUCTION directions and {{slots}}"
+    )
+    ins.add_argument("file", type=Path, help=".hwpx template")
+    ins.add_argument("--json", action="store_true", help="emit directions + slots as JSON")
+    ins.set_defaults(func=_cmd_instructions)
 
     auth = sub.add_parser(
         "author", help="fill a structured template from Markdown, using its styles"

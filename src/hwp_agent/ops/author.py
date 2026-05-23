@@ -217,6 +217,9 @@ class Zone:
     style: str | None = None  # cell paragraph styleIDRef (e.g. JRI_표내용)
     para: str | None = None  # cell paragraph paraPrIDRef
     char: str | None = None  # cell run charPrIDRef
+    height: str | None = None  # cellSz height (tight, like the template)
+    vert_align: str | None = None  # subList vertAlign (e.g. TOP, so text hugs the top)
+    margin: dict | None = None  # cellMargin attrs
 
     def border(self, col: int, ncols: int) -> str | None:
         if col == 0:
@@ -257,14 +260,23 @@ def _cell_attrs(tc):
 
 
 def _zone(tr) -> Zone:
-    """Read a Zone from a row: edge border fills + the (shared) content style."""
+    """Read a Zone from a row: edge border fills, content style, and geometry."""
     cells = tr.findall(f"{{{_HP}}}tc")
     if not cells:
         return Zone()
     left_bf, style, para, char = _cell_attrs(cells[0])
     mid_bf = _cell_attrs(cells[1])[0] if len(cells) > 2 else left_bf
     right_bf = _cell_attrs(cells[-1])[0]
-    return Zone(left_bf, mid_bf, right_bf, style, para, char)
+    # geometry (tight height + alignment + margins) from the representative cell
+    sz = cells[0].find(f"{{{_HP}}}cellSz")
+    sub = cells[0].find(f"{{{_HP}}}subList")
+    mg = cells[0].find(f"{{{_HP}}}cellMargin")
+    return Zone(
+        left_bf, mid_bf, right_bf, style, para, char,
+        height=sz.get("height") if sz is not None else None,
+        vert_align=sub.get("vertAlign") if sub is not None else None,
+        margin=dict(mg.attrib) if mg is not None else None,
+    )
 
 
 def _is_header_row(tr) -> bool:
@@ -303,6 +315,9 @@ def _table_format(tbl) -> TableFormat:
         # an interior row (neither first nor last) has thin top/bottom; fall back to
         # the first body row when the reference has too few rows to have an interior.
         fmt.body = body_rows[1] if len(body_rows) >= 3 else body_rows[0]
+        # use the interior (tight) row height for all body rows — the reference's
+        # first/last rows can be incidentally tall; borders still vary by band.
+        fmt.first_body.height = fmt.last.height = fmt.body.height
     else:
         fmt.first_body = fmt.body = fmt.last = fmt.header
     if note_rows:
@@ -368,8 +383,19 @@ def _clone_caption(ref_el, title: str, chapter: str | None):
 
 
 def _style_cell(cell, zone: Zone, col: int, ncols: int, text: str) -> None:
+    tc = cell.element
     if (bf := zone.border(col, ncols)) is not None:
-        cell.element.set("borderFillIDRef", bf)
+        tc.set("borderFillIDRef", bf)
+    # tight geometry from the template: short cell height + top alignment + margins
+    # (add_table defaults are loose — height ~3600, vertAlign CENTER, margins 0).
+    if zone.height is not None and (sz := tc.find(f"{{{_HP}}}cellSz")) is not None:
+        sz.set("height", zone.height)
+    sub = tc.find(f"{{{_HP}}}subList")
+    if sub is not None and zone.vert_align is not None:
+        sub.set("vertAlign", zone.vert_align)
+    if zone.margin is not None and (mg := tc.find(f"{{{_HP}}}cellMargin")) is not None:
+        for k, v in zone.margin.items():
+            mg.set(k, v)
     cp = cell.paragraphs[0]
     if zone.style is not None:
         cp.style_id_ref = zone.style
@@ -558,16 +584,17 @@ def fill_from_markdown(
     body_style = roles.get("BODY")
     body_para = infos[body_style].para_pr_id if body_style in infos else None
 
-    # current chapter number for table captions ({{chapter_number}}): existing
-    # HEADING_1 paragraphs before the insertion point, plus authored ones as placed.
-    h1_style = roles.get("HEADING_1")
+    # current chapter number for table captions ({{chapter_number}}): count
+    # outline level-0 paragraphs (chapters can use several level-0 styles, so count
+    # by outline level, not just the HEADING_1 style) before the insertion point,
+    # plus authored "# " headings as they are placed.
     chapter = 0
-    if h1_style is not None:
-        for p in doc.paragraphs:
-            if marker is not None and p.element is marker.element:
-                break
-            if str(p.style_id_ref) == h1_style:
-                chapter += 1
+    for p in doc.paragraphs:
+        if marker is not None and p.element is marker.element:
+            break
+        pp = doc.paragraph_property(p.para_pr_id_ref)
+        if pp and pp.heading and pp.heading.type == "OUTLINE" and pp.heading.level == 0:
+            chapter += 1
 
     for block in parse_markdown(markdown):
         if isinstance(block, TableBlock):

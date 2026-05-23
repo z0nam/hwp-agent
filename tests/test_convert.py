@@ -193,3 +193,11 @@ def test_end_to_end_produces_openable_hwpx(tmp_path: Path) -> None:
 
     doc = HwpxDocument.open(out)
     assert len(doc.sections) >= 1
+
+    # Regression guard for the hwplib surrogate-pair patch: non-BMP characters
+    # must survive conversion rather than degrade to U+FFFD replacement chars.
+    with zipfile.ZipFile(out) as zf:
+        section_bytes = b"".join(
+            zf.read(n) for n in zf.namelist() if n.startswith("Contents/section")
+        )
+    assert b"\xef\xbf\xbd" not in section_bytes, "non-BMP chars corrupted to U+FFFD"

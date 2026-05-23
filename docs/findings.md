@@ -124,20 +124,22 @@ as we test against real documents. Populate as evidence accumulates.
   byte info is gone at the very first stage — hwp2hwpx and hwpxlib are blameless.
 - **Version bump does NOT help:** rebuilt with `hwpxlib 1.0.9` (latest) →
   still 6 × FFFD, 0 × U+F0854. `hwplib` is already at its latest (1.1.10).
-- **Implication for fixes:** a PUA remap on the HWPX output is impossible (no
-  identity left), and even our conversion wrapper can't recover it from hwplib
-  (hwplib already returns FFFD). Realistic paths:
-  1. **Patch `hwplib`'s WCHAR/text reader** to combine surrogate pairs, build it
-     from source in `scripts/bootstrap.sh` (we already build the chain from
-     source), and ideally upstream the fix to neolord0/hwplib. This is the real
-     fix and it benefits every non-BMP char.
-  2. Byte-level recovery: re-read the HWP record bytes for the FFFD positions —
-     fragile, essentially reimplementing part of hwplib.
-  3. A Hancom-PUA → standard-Unicode map (U+F0854→『 U+300E) is still worth
-     building for portability/the editing layer, but only becomes applicable
-     once (1) restores the codepoint.
-- **Status:** UNRESOLVED; root cause is an upstream **hwplib** surrogate-pair
-  reading bug. Proper fix = patch hwplib (own task; worth an upstream PR).
+- **Exact location:** `HWPCharNormal.intToString(int code)` decodes each char's
+  2 bytes on its own via `new String(bytes, UTF_16LE)`. A lone surrogate half
+  decoded alone becomes U+FFFD; the two halves live in two separate
+  `HWPCharNormal` objects, so they never get a chance to combine.
+- **Fix (shipped):** one line — preserve the raw code unit instead of decoding
+  per-half: `return String.valueOf((char) code);`. The halves stay intact and
+  the StringBuilder that concatenates `getCh()` (in both hwplib's TextExtractor
+  and hwp2hwpx's `ForChars`) reunites the surrogate pair into the right code
+  point. We don't rebuild all of hwplib (its source needs the JDK-removed
+  `javax.xml.bind.DatatypeConverter`); instead `scripts/patches/HWPCharNormal.java`
+  is compiled against the resolved hwplib jar and its `.class` is overlaid into
+  `vendor/hwp2hwpx.jar` by `scripts/bootstrap.sh`. Verified: patched output has
+  FFFD=0 / U+F0854=2, byte-identical char encoding to the Hancom reference.
+- **Status:** FIXED via the overlaid patch. Worth upstreaming to neolord0/hwplib
+  (the patch file is kept upstream-PR-ready). A separate Hancom-PUA → standard
+  Unicode map (U+F0854→『 U+300E) remains optional, for non-Hancom portability.
 
 Template for further entries:
 

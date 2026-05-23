@@ -19,6 +19,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENDOR_DIR="$REPO_ROOT/vendor"
 WRAPPER_SRC="$SCRIPT_DIR/Hwp2HwpxCli.java"
+# Patched hwplib classes overlaid onto the fat jar (see scripts/patches/).
+PATCH_SRC="$SCRIPT_DIR/patches/HWPCharNormal.java"
 OUT_JAR="$VENDOR_DIR/hwp2hwpx.jar"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -37,6 +39,7 @@ jdk_major="$(javac -version 2>&1 | awk '{print $2}' | cut -d. -f1)"
 log "JDK ${jdk_major} · $(mvn -version 2>/dev/null | head -1)"
 
 [ -f "$WRAPPER_SRC" ] || die "wrapper source missing: $WRAPPER_SRC"
+[ -f "$PATCH_SRC" ]   || die "patch source missing: $PATCH_SRC"
 
 # --- 2. Clone --------------------------------------------------------------
 WORKDIR="$(mktemp -d)"
@@ -60,11 +63,14 @@ LIB_JAR="$(find "$SRC/target" -maxdepth 1 -name 'hwp2hwpx-*.jar' \
     ! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -1)"
 [ -n "$LIB_JAR" ] || die "Maven build produced no hwp2hwpx jar"
 
-# --- 4. Compile our CLI wrapper -------------------------------------------
-log "Compiling $(basename "$WRAPPER_SRC")"
+# --- 4. Compile our CLI wrapper + hwplib patch ----------------------------
+# The patched HWPCharNormal fixes hwplib's surrogate-pair handling (non-BMP /
+# Hancom-PUA chars -> U+FFFD); see scripts/patches/ and docs/findings.md. It is
+# compiled against the resolved hwplib jar and overlaid below so its .class wins.
+log "Compiling $(basename "$WRAPPER_SRC") + $(basename "$PATCH_SRC")"
 CLASSES="$WORKDIR/classes"
 mkdir -p "$CLASSES"
-javac -cp "${LIB_JAR}:${SRC}/target/deps/*" -d "$CLASSES" "$WRAPPER_SRC"
+javac -cp "${LIB_JAR}:${SRC}/target/deps/*" -d "$CLASSES" "$WRAPPER_SRC" "$PATCH_SRC"
 
 # --- 5. Assemble the fat jar ----------------------------------------------
 log "Assembling fat jar"
@@ -75,7 +81,7 @@ for jar in "$LIB_JAR" "$SRC"/target/deps/*.jar; do
     (cd "$STAGE" && jar -xf "$jar")
 done
 shopt -u nullglob
-# our wrapper classes take precedence
+# our wrapper + patched hwplib classes take precedence over the exploded jars
 cp -R "$CLASSES/." "$STAGE/"
 # strip upstream jar signatures — they don't survive a merged jar
 rm -f "$STAGE"/META-INF/*.SF "$STAGE"/META-INF/*.DSA "$STAGE"/META-INF/*.RSA 2>/dev/null || true

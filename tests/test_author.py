@@ -145,6 +145,27 @@ def test_strip_table_token_keeps_caption_frame() -> None:
     assert _caption_text(tbl) == "<표 II->"  # token gone, closing ">" kept
 
 
+@pytest.mark.skipif(
+    not _TABLE_TEMPLATE.is_file(), reason="caption-marked table template not present"
+)
+def test_generated_header_row_is_marked_and_repeats(tmp_path: Path) -> None:
+    from hwpx.document import HwpxDocument
+
+    HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+    out = tmp_path / "out.hwpx"
+    md = "| 코드 | 사업명 |\n|--|--|\n| P01 | 가 |\n| P02 | 나 |\n"
+    fill_from_markdown(_TABLE_TEMPLATE, md, output=out)
+
+    doc = HwpxDocument.open(str(out))
+    gen = [t for s in doc.sections for t in s.element.iter(f"{HP}tbl")][-1]
+    rows = gen.findall(f"{HP}tr")
+    # header row cells carry header="1" (so the header repeats on page breaks);
+    # body rows are header="0".
+    assert all(tc.get("header") == "1" for tc in rows[0].findall(f"{HP}tc"))
+    assert all(tc.get("header") == "0" for tc in rows[1].findall(f"{HP}tc"))
+    assert gen.get("repeatHeader") == "1"
+
+
 def test_parse_markdown_ordered_vs_bullet() -> None:
     blocks = parse_markdown("1. 첫째\n2. 둘째\n\n- 불릿\n")
     assert [(b.kind, b.level) for b in blocks] == [

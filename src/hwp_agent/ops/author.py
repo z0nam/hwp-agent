@@ -244,6 +244,12 @@ def _zone(tr) -> Zone:
     return Zone(left_bf, mid_bf, right_bf, style, para, char)
 
 
+def _is_header_row(tr) -> bool:
+    """A header row = its first cell carries header="1" (handles complex headers)."""
+    cells = tr.findall(f"{{{_HP}}}tc")
+    return bool(cells) and cells[0].get("header") == "1"
+
+
 def _table_format(tbl) -> TableFormat:
     """Read header / body / last-row zones from a reference table."""
     rows = tbl.findall(f"{{{_HP}}}tr")
@@ -251,8 +257,16 @@ def _table_format(tbl) -> TableFormat:
     if not rows:
         return fmt
 
-    fmt.header = _zone(rows[0])
+    # header band = leading rows whose cells are marked header="1" (more explicit
+    # than "row 0"; headers are sometimes multi-row). Only the band's *bottom* rule
+    # matters for the separator, so use the last header row's zone.
+    h = 0
+    while h < len(rows) and _is_header_row(rows[h]):
+        h += 1
+    h = h or 1  # fall back to one header row if none are marked
+    fmt.header = _zone(rows[h - 1])
     header_style = fmt.header.style
+    rows = [rows[h - 1], *rows[h:]]  # keep the header zone row first for body scan
     # body rows share the header's content style; a trailing row with a *different*
     # style (e.g. JRI_각주 note row) is the note row, excluded so the thick bottom
     # comes from the last real body row.
@@ -358,9 +372,10 @@ def _build_table(
 
     last_data = len(data_rows) - 1
     for r, row in enumerate(data_rows):
+        is_header = block.has_header and r == 0
         if fmt is None:
             zone = Zone()
-        elif block.has_header and r == 0:
+        elif is_header:
             zone = fmt.header
         elif r == last_data:
             zone = fmt.last  # last body row carries the thick bottom border
@@ -369,7 +384,10 @@ def _build_table(
         else:
             zone = fmt.body  # interior body row (thin top/bottom)
         for c in range(ncols):
-            _style_cell(table.cell(r, c), zone, c, ncols, row[c] if c < len(row) else "")
+            cell = table.cell(r, c)
+            if is_header:
+                cell.element.set("header", "1")  # repeat across page breaks
+            _style_cell(cell, zone, c, ncols, row[c] if c < len(row) else "")
 
     if has_note:  # note/source row: every cell hidden-bordered (kept even when empty)
         note_r = total_rows - 1

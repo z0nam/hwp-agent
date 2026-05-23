@@ -249,6 +249,25 @@ def test_explicit_chapter_label_in_caption(tmp_path: Path) -> None:
     assert "7-" in caption(out)
 
 
+def test_clone_caption_replaces_chapter_token_and_title() -> None:
+    import xml.etree.ElementTree as ET
+
+    from hwp_agent.ops.author import _clone_caption
+
+    HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    # caption "[표 I-" + autoNum + "] 참여 전문가 개요" wrapped in a table element;
+    # literal "I" (no {{chapter_number}}) and an existing sample title.
+    tbl = ET.fromstring(
+        f'<hp:tbl xmlns:hp="{HP}"><hp:caption><hp:subList><hp:p><hp:run>'
+        f"<hp:t>[표 I-</hp:t><hp:ctrl><hp:autoNum num='1' numType='TABLE'/></hp:ctrl>"
+        f"<hp:t>] 참여 전문가 개요</hp:t></hp:run></hp:p></hp:subList></hp:caption></hp:tbl>"
+    )
+    clone = _clone_caption(tbl, "제주 우주산업 여건 분석", "Ⅲ")
+    text = "".join(t.text or "" for t in clone.iter(f"{{{HP}}}t"))
+    assert text == "[표 Ⅲ-] 제주 우주산업 여건 분석"  # chapter replaced, title replaced
+    assert clone.find(f".//{{{HP}}}autoNum") is not None  # table auto-number kept
+
+
 def test_parse_markdown_ordered_vs_bullet() -> None:
     blocks = parse_markdown("1. 첫째\n2. 둘째\n\n- 불릿\n")
     assert [(b.kind, b.level) for b in blocks] == [

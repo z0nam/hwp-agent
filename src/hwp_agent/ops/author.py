@@ -373,12 +373,28 @@ def _clone_caption(ref_el, title: str, chapter: str | None):
         return None
     clone = copy.deepcopy(cap)
     texts = clone.findall(f".//{{{_HP}}}t")
-    for t in texts:  # cross-refs don't work in captions → substitute the chapter no.
-        if t.text and _CHAPTER_TOKEN_RE.search(t.text):
-            t.text = _CHAPTER_TOKEN_RE.sub(chapter or "", t.text)
-    if texts:  # last text node holds "> {title-or-token}" → keep ">", set title
-        framing = _TABLE_TOKEN_RE.sub("", texts[-1].text or "").rstrip()
-        texts[-1].text = f"{framing} {title}".rstrip()
+
+    # chapter: substitute a {{chapter_number}} placeholder if present; else, given an
+    # explicit chapter, replace the chapter token in a "표 X-" framing (X precedes the
+    # table auto-number) so e.g. "[표 I-" becomes "[표 Ⅲ-".
+    if chapter:
+        if any(t.text and _CHAPTER_TOKEN_RE.search(t.text) for t in texts):
+            for t in texts:
+                if t.text:
+                    t.text = _CHAPTER_TOKEN_RE.sub(chapter, t.text)
+        else:
+            for t in texts:
+                if t.text and re.search(r"표\s*\S+\s*-\s*$", t.text):
+                    t.text = re.sub(r"(표\s*)\S+(\s*-\s*)$", rf"\g<1>{chapter}\g<2>", t.text)
+                    break
+
+    # title: the last text node holds "framing + {old title / token}"; keep the
+    # framing up to the first ">" or "]" and replace the rest with the new title.
+    if texts:
+        last = texts[-1].text or ""
+        m = re.match(r"^([^\]>]*[>\]])", last)
+        framing = m.group(1) if m else _TABLE_TOKEN_RE.sub("", last).rstrip()
+        texts[-1].text = f"{framing} {title}".strip()
     return clone
 
 

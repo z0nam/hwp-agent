@@ -215,9 +215,10 @@ class TableFormat:
 
     table_border_fill: str | None = None
     header: Zone = field(default_factory=Zone)
-    body: Zone = field(default_factory=Zone)
-    last: Zone = field(default_factory=Zone)
-    note: Zone | None = None  # trailing note/source row (merged, hidden borders)
+    first_body: Zone = field(default_factory=Zone)  # row under header (pairs its double rule)
+    body: Zone = field(default_factory=Zone)  # interior body rows (thin top/bottom)
+    last: Zone = field(default_factory=Zone)  # last body row (thick bottom)
+    note: Zone | None = None  # trailing note/source row (hidden borders)
 
 
 def _cell_attrs(tc):
@@ -260,9 +261,13 @@ def _table_format(tbl) -> TableFormat:
         z = _zone(tr)
         (note_rows if header_style and z.style not in (header_style, None) else body_rows).append(z)
     if body_rows:
-        fmt.body, fmt.last = body_rows[0], body_rows[-1]
+        fmt.first_body = body_rows[0]  # top double rule pairs the header's bottom
+        fmt.last = body_rows[-1]  # thick bottom
+        # an interior row (neither first nor last) has thin top/bottom; fall back to
+        # the first body row when the reference has too few rows to have an interior.
+        fmt.body = body_rows[1] if len(body_rows) >= 3 else body_rows[0]
     else:
-        fmt.body = fmt.last = fmt.header
+        fmt.first_body = fmt.body = fmt.last = fmt.header
     if note_rows:
         fmt.note = note_rows[-1]
     return fmt
@@ -359,8 +364,10 @@ def _build_table(
             zone = fmt.header
         elif r == last_data:
             zone = fmt.last  # last body row carries the thick bottom border
+        elif r == 1 and block.has_header:
+            zone = fmt.first_body  # pairs the header's double separator (no doubling)
         else:
-            zone = fmt.body
+            zone = fmt.body  # interior body row (thin top/bottom)
         for c in range(ncols):
             _style_cell(table.cell(r, c), zone, c, ncols, row[c] if c < len(row) else "")
 

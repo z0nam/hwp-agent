@@ -36,13 +36,26 @@ documents directly — packaged as a Claude Code Skill / MCP integration.
 
 ## Setup
 
-```bash
-# 1. Build the HWP→HWPX converter into vendor/hwp2hwpx.jar
-./scripts/bootstrap.sh
+One command builds the converter, installs the `hwp-agent` CLI on your PATH,
+and registers the Claude Code skill:
 
-# 2. Install the Python package (editable)
-uv pip install -e ".[dev]"     # or:  pip install -e ".[dev]"
+```bash
+./scripts/install.sh
 ```
+
+It's re-runnable. Skip the converter (HWPX-only, no JDK/Maven needed) with
+`SKIP_JAR=1 ./scripts/install.sh`. Needs [`uv`](https://docs.astral.sh/uv/) or
+`pipx` to put the CLI on PATH. Because the install is *editable*, `convert`
+finds the jar automatically — no environment variable to set.
+
+<details><summary>Manual setup (if you'd rather do the steps yourself)</summary>
+
+```bash
+./scripts/bootstrap.sh                        # 1. build vendor/hwp2hwpx.jar
+uv tool install --editable .                  # 2. CLI on PATH (or: pip install -e ".[dev]")
+ln -s "$PWD/skills/hwp-author" ~/.claude/skills/hwp-author   # 3. register the skill
+```
+</details>
 
 `bootstrap.sh` clones [neolord0/hwp2hwpx](https://github.com/neolord0/hwp2hwpx)
 (a library with no CLI), builds it together with its dependencies
@@ -58,7 +71,8 @@ hwp-agent --version
 ```
 
 Point at a jar elsewhere with `--jar /path/to/hwp2hwpx.jar` or the
-`HWP2HWPX_JAR` environment variable.
+`HWP2HWPX_JAR` environment variable (rarely needed — the editable install
+locates the bundled jar on its own).
 
 ## Claude Code Skill
 
@@ -68,11 +82,9 @@ the inspect-first loop (`classify` → `styles` → `instructions` → `author`/
 fill` → verify), the template token conventions (`{{body}}`,
 `{{table_template}}`, `{{chapter_number=N}}`), and the Markdown→HWPX rules.
 
-Install it for a project (or globally at `~/.claude/skills/`):
-
-```bash
-ln -s "$PWD/skills/hwp-author" .claude/skills/hwp-author   # or copy it
-```
+`./scripts/install.sh` registers it globally at `~/.claude/skills/hwp-author`.
+For a single project instead, symlink it there:
+`ln -s "$PWD/skills/hwp-author" .claude/skills/hwp-author`.
 
 Then Claude Code invokes it automatically for HWP/HWPX tasks, or on demand with
 `/hwp-author`. The skill's `references/` are snapshots of `docs/`; refresh them

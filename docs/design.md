@@ -6,6 +6,17 @@ Let an AI edit HWP/HWPX documents in their native format, so Korean-specific
 formatting survives. DOCX conversion is explicitly rejected as the editing
 substrate because it loses too much.
 
+## Status
+
+- **Phase 1 — HWP → HWPX conversion: complete (1st pass).** Validated on a real
+  2.7 MB report against a Hancom-authored HWPX of the same document. Four
+  hwp2hwpx-chain fidelity defects were found and fixed (3 via post-conversion
+  normalization, 1 via an overlaid hwplib patch — also submitted upstream as
+  neolord0/hwplib#306). Text, images, tables, layout, and special characters
+  now round-trip with high fidelity. See `docs/findings.md`.
+- **Phase 2 — AI-driven direct HWPX editing: next.** This is the project's real
+  goal; conversion was the enabling groundwork.
+
 ## Pipeline
 
 ```
@@ -13,11 +24,13 @@ substrate because it loses too much.
 (truth)            (cache)          (edited)
 ```
 
-1. **convert** (`hwp_agent.convert`) — HWP → HWPX. Backend-abstracted; the
-   default backend shells out to the vendored `hwp2hwpx` jar. Other backends
-   (e.g. hwpilot) can be dropped in behind `ConverterBackend`.
+1. **convert** (`hwp_agent.convert`) — HWP → HWPX. ✅ Done. Backend-abstracted;
+   the default backend shells out to the vendored `hwp2hwpx` jar (with our
+   overlaid hwplib patch) and repairs known output defects in `_normalize_hwpx`.
+   Other backends (e.g. hwpilot) can be dropped in behind `ConverterBackend`.
 2. **ops** (`hwp_agent.ops`) — structured edits on the HWPX, via `python-hwpx`.
-   *Next slice:* cover-page / metadata auto-fill (PoC slice **B**).
+   ◀ **active next phase: AI-driven direct HWPX editing.** First PoC slice:
+   cover-page / metadata auto-fill (slice **B**).
 3. **verify** (`hwp_agent.verify`) — round-trip and structural checks that an
    edit didn't corrupt the package. *Later slice.*
 

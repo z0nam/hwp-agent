@@ -9,8 +9,10 @@ mangles Korean-specific formatting: cover-page layouts, 표(table) styling,
 so formatting is preserved. The end goal is to let an AI operate on HWP
 documents directly — packaged as a Claude Code Skill / MCP integration.
 
-> Status: **early scaffold.** Today it does HWP → HWPX conversion. Editing
-> operations and verification land in later slices (see `docs/design.md`).
+> Status: **HWP → HWPX conversion working (1st pass).** Validated on a real
+> report against a Hancom-authored HWPX; four hwp2hwpx-chain fidelity defects
+> found and fixed (see `docs/findings.md`). Next phase is AI-driven direct HWPX
+> editing — see `docs/design.md`.
 
 ## How it fits together
 

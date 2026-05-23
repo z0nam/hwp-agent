@@ -137,9 +137,10 @@ as we test against real documents. Populate as evidence accumulates.
   is compiled against the resolved hwplib jar and its `.class` is overlaid into
   `vendor/hwp2hwpx.jar` by `scripts/bootstrap.sh`. Verified: patched output has
   FFFD=0 / U+F0854=2, byte-identical char encoding to the Hancom reference.
-- **Status:** FIXED via the overlaid patch. Worth upstreaming to neolord0/hwplib
-  (the patch file is kept upstream-PR-ready). A separate Hancom-PUA → standard
-  Unicode map (U+F0854→『 U+300E) remains optional, for non-Hancom portability.
+- **Status:** FIXED via the overlaid patch. Also submitted upstream:
+  **neolord0/hwplib#306** (https://github.com/neolord0/hwplib/pull/306). A
+  separate Hancom-PUA → standard Unicode map (U+F0854→『 U+300E) remains
+  optional, for non-Hancom portability.
 
 Template for further entries:
 

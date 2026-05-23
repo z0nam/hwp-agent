@@ -39,9 +39,11 @@ Two channels, both visible and editable inside Hangul:
   returns their text; `fill_from_markdown` **removes** them from the output.
 - **Slots / fill positions** — `{{slot}}` tokens (e.g. `{{title}}`, `{{author}}`)
   mark where specific values go; discovered by `ops.form` and filled by name. A
-  `{{body}}` token (its own paragraph) marks where the authored Markdown body is
-  inserted; `fill_from_markdown` places the content there and removes the marker.
-  Without a `{{body}}` marker, content is appended to the last section.
+  `{{body}}` token (its own paragraph) marks **where the main body begins** — the
+  start of 본문 / chapter 1, after 표지·목차. `fill_from_markdown` inserts the
+  authored content starting at that point and removes the marker; it defines the
+  body's start boundary, not a generic "fill here" hole. Without a `{{body}}`
+  marker, content is appended to the last section.
   A `{{table…}}` token (e.g. `{{table_template}}`) in a table's **caption** marks
   that table as the **format reference** for generated tables; the token is stripped
   from the caption on fill (the table stays). Without it, the first table in the

@@ -76,8 +76,10 @@ The AI writes Markdown; the tool maps it onto the template's styles:
 
 ### Template tokens (placed in the template, in Hangul, by a human)
 
-- `{{body}}` — its own paragraph, marks where the authored body is inserted.
-  Without it, content is appended to the last section.
+- `{{body}}` — its own paragraph, marks **where the main body begins** (the
+  start of 본문 / chapter 1, after 표지·목차). Authored content is inserted
+  starting at that point; it defines the body's start boundary, not a generic
+  "fill here" hole. Without it, content is appended to the last section.
 - `{{table_template}}` (any `{{table…}}` form) in a **table's caption** marks
   that table as the **format reference** — generated tables copy its borders,
   cell styles, header look, and geometry. Without it, the first table is used.

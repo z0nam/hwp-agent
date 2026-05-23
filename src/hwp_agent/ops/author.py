@@ -520,8 +520,16 @@ def fill_from_markdown(
     markdown: str,
     *,
     output: Path | str | None = None,
+    chapter: str | int | None = None,
 ) -> AuthorResult:
-    """Append Markdown content to a template, styled with its own outline styles."""
+    """Fill a template from Markdown, styled with its own outline styles.
+
+    ``chapter`` sets the chapter label/number used in generated table captions
+    (the ``{{chapter_number}}`` placeholder). Pass it explicitly — real documents
+    use outline styles too inconsistently (and restart/relabel numbering per
+    section, e.g. an appendix in A/B/C) to count chapters reliably. When omitted, a
+    best-effort outline-level-0 count is used (fine for clean documents only).
+    """
     roles = role_map(template)
     infos = {i.style_id: i for i in read_style_system(template)}
     def _levels(prefix: str) -> list[int]:
@@ -584,31 +592,37 @@ def fill_from_markdown(
     body_style = roles.get("BODY")
     body_para = infos[body_style].para_pr_id if body_style in infos else None
 
-    # current chapter number for table captions ({{chapter_number}}): count
-    # outline level-0 paragraphs (chapters can use several level-0 styles, so count
-    # by outline level, not just the HEADING_1 style) before the insertion point,
-    # plus authored "# " headings as they are placed.
-    chapter = 0
-    for p in doc.paragraphs:
-        if marker is not None and p.element is marker.element:
-            break
-        pp = doc.paragraph_property(p.para_pr_id_ref)
-        if pp and pp.heading and pp.heading.type == "OUTLINE" and pp.heading.level == 0:
-            chapter += 1
+    # chapter label for table captions ({{chapter_number}}). Prefer the explicit
+    # value (the AI knows the chapter); else best-effort count of outline level-0
+    # paragraphs before the insertion point, incremented per authored "# " heading.
+    explicit_chapter = None if chapter is None else str(chapter)
+    chapter_count = 0
+    if explicit_chapter is None:
+        for p in doc.paragraphs:
+            if marker is not None and p.element is marker.element:
+                break
+            pp = doc.paragraph_property(p.para_pr_id_ref)
+            if pp and pp.heading and pp.heading.type == "OUTLINE" and pp.heading.level == 0:
+                chapter_count += 1
+
+    def chapter_label() -> str | None:
+        if explicit_chapter is not None:
+            return explicit_chapter
+        return str(chapter_count) if chapter_count else None
 
     for block in parse_markdown(markdown):
         if isinstance(block, TableBlock):
             table = _build_table(
                 doc, target_section, block, table_fmt, body_style, body_para,
-                ref_element, str(chapter) if chapter else None,
+                ref_element, chapter_label(),
             )
             place(table.paragraph.element)
             result.placed += 1
             continue
 
         style_id, role = resolve(block)
-        if role == "HEADING_1":
-            chapter += 1
+        if role == "HEADING_1" and explicit_chapter is None:
+            chapter_count += 1
         if style_id is None:
             style_id = roles.get("BODY")
             if role not in result.unmapped_roles and role != "BODY":

@@ -227,6 +227,28 @@ def test_caption_chapter_number_and_merged_note(tmp_path: Path) -> None:
     assert "제주연구원" in "".join(t.text or "" for t in note_row.iter(f"{HP}t"))
 
 
+@pytest.mark.skipif(
+    not _TABLE_TEMPLATE.is_file(), reason="caption-marked table template not present"
+)
+def test_explicit_chapter_label_in_caption(tmp_path: Path) -> None:
+    from hwpx.document import HwpxDocument
+
+    HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+
+    def caption(path) -> str:
+        doc = HwpxDocument.open(str(path))
+        gen = [t for s in doc.sections for t in s.element.iter(f"{HP}tbl")][-1]
+        return "".join(t.text or "" for t in gen.find(f"{HP}caption").iter(f"{HP}t"))
+
+    md = "현황표\n| 코드 | 값 |\n|--|--|\n| P01 | 1 |\n"
+    out = tmp_path / "out.hwpx"
+    # explicit chapter wins (number or alpha label, e.g. an appendix "가")
+    fill_from_markdown(_TABLE_TEMPLATE, md, output=out, chapter="가")
+    assert "가-" in caption(out)
+    fill_from_markdown(_TABLE_TEMPLATE, md, output=out, chapter=7)
+    assert "7-" in caption(out)
+
+
 def test_parse_markdown_ordered_vs_bullet() -> None:
     blocks = parse_markdown("1. 첫째\n2. 둘째\n\n- 불릿\n")
     assert [(b.kind, b.level) for b in blocks] == [

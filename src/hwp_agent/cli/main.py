@@ -130,7 +130,9 @@ def _cmd_author(args: argparse.Namespace) -> int:
     from ..ops import fill_from_markdown
 
     markdown = Path(args.md).read_text(encoding="utf-8")
-    result = fill_from_markdown(args.template, markdown, output=args.output)
+    result = fill_from_markdown(
+        args.template, markdown, output=args.output, chapter=args.chapter
+    )
     print(f"placed {result.placed} block(s) -> {args.output or args.template}")
     if result.instructions_removed:
         print(f"  removed {result.instructions_removed} instruction paragraph(s)")
@@ -211,6 +213,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     auth.add_argument("template", type=Path, help=".hwpx template")
     auth.add_argument("--md", type=Path, required=True, help="Markdown content file")
+    auth.add_argument(
+        "--chapter",
+        default=None,
+        help="chapter label/number for table captions (e.g. 7, A); "
+        "recommended — auto-detection is unreliable on real documents",
+    )
     auth.add_argument("-o", "--output", type=Path, default=None, help="output file")
     auth.set_defaults(func=_cmd_author)
 

@@ -55,9 +55,12 @@ table copies the reference's `pos` (treatAsChar=0, floating) and `repeatHeader`.
   the reference's caption (auto-number + 표제목 style → "<표 N-M> {title}"). The
   table number stays an `autoNum` field. The **chapter number** can't use a cross-ref
   inside a caption, so a `{{chapter_number}}` placeholder in the reference caption is
-  substituted with the computed chapter (count of `HEADING_1` paragraphs up to the
-  table). It's rendered as a plain number today; matching the chapter's numbering
-  *format* (Roman, etc.) is a refinement.
+  substituted with the **explicit `chapter=` / `--chapter`** value (the AI knows the
+  chapter): `hwp-agent author form.hwpx --md c.md --chapter 7` (or `--chapter 가`).
+  Counting is **best-effort fallback only** — real documents use outline styles too
+  inconsistently (chapters not reliably level-0; survey items etc. in outline styles)
+  and restart/relabel numbering per section (an appendix in A/B/C), so a reliable
+  count isn't feasible; pass the label.
 - **Note/source row** = lines directly below the table starting with `주)` / `출처)`
   / `자료:` (etc.). The note row is merged into one hidden-bordered cell and filled;
   with no such line it's kept empty (invisible). (`merge_cells` leaves covered cells

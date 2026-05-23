@@ -62,6 +62,46 @@ def _cmd_meta(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_form(args: argparse.Namespace) -> int:
+    import json
+
+    from ..ops import analyze_form, fill_form
+
+    if args.action == "analyze":
+        spec = analyze_form(args.file)
+        if args.json:
+            print(json.dumps(spec.as_dict(), ensure_ascii=False, indent=2))
+        else:
+            if not spec.slots:
+                print("(no fillable slots found)")
+            for s in spec.slots:
+                cur = f"  [{s.current}]" if s.current else ""
+                print(f"{s.kind:11} {s.name}  ->  {s.locator}{cur}")
+        return 0
+
+    # fill
+    mapping: dict[str, str] = {}
+    if args.map:
+        mapping.update(json.loads(Path(args.map).read_text(encoding="utf-8")))
+    for item in args.set or []:
+        if "=" not in item:
+            print(f"error: --set expects KEY=VALUE, got {item!r}", file=sys.stderr)
+            return 2
+        key, value = item.split("=", 1)
+        mapping[key.strip()] = value
+    if not mapping:
+        print("error: nothing to fill (use --map FILE or --set KEY=VALUE)", file=sys.stderr)
+        return 2
+
+    result = fill_form(args.file, mapping, output=args.output)
+    print(f"filled {len(result.filled)} -> {args.output or args.file}")
+    if result.filled:
+        print(f"  ok: {', '.join(result.filled)}")
+    if result.missing:
+        print(f"  missing: {', '.join(result.missing)}")
+    return 1 if result.missing and not result.filled else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hwp-agent",
@@ -100,6 +140,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="write to a different file (default: edit in place)",
     )
     meta.set_defaults(func=_cmd_meta)
+
+    form = sub.add_parser("form", help="discover or fill form slots in an HWPX")
+    form_sub = form.add_subparsers(dest="action", metavar="<analyze|fill>")
+
+    fa = form_sub.add_parser("analyze", help="list fillable slots")
+    fa.add_argument("file", type=Path, help=".hwpx form")
+    fa.add_argument("--json", action="store_true", help="emit slots as JSON (for an AI)")
+    fa.set_defaults(func=_cmd_form)
+
+    ff = form_sub.add_parser("fill", help="fill slots by name/path")
+    ff.add_argument("file", type=Path, help=".hwpx form")
+    ff.add_argument("--map", type=Path, default=None, help="JSON file of {slot: value}")
+    ff.add_argument(
+        "--set", action="append", metavar="KEY=VALUE", help="fill one slot (repeatable)"
+    )
+    ff.add_argument("-o", "--output", type=Path, default=None, help="output file")
+    ff.set_defaults(func=_cmd_form)
+
+    form.set_defaults(func=lambda _args: (form.print_help(), 0)[1])
 
     return parser
 

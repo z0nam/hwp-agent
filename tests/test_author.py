@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from hwp_agent.ops import fill_from_markdown, parse_markdown, role_map
+from hwp_agent.ops import (
+    fill_from_markdown,
+    inline_segments,
+    parse_markdown,
+    plain_text,
+    role_map,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TYPE1 = REPO_ROOT / "tests" / "fixtures" / "sample_hwpx.hwpx"
@@ -26,9 +32,25 @@ def test_parse_markdown_blocks() -> None:
     assert blocks[1].text == "본문 한 줄. 이어지는 줄."
 
 
-def test_parse_markdown_flattens_inline_emphasis() -> None:
+def test_parse_markdown_keeps_inline_markers() -> None:
     (block,) = parse_markdown("**굵게** 그리고 *기울임*")
-    assert block.text == "굵게 그리고 기울임"
+    assert block.text == "**굵게** 그리고 *기울임*"  # markers kept for run-building
+    assert plain_text(block.text) == "굵게 그리고 기울임"
+
+
+def test_inline_segments_splits_emphasis() -> None:
+    segs = inline_segments("앞 **굵게** 중간 *기울임* 끝")
+    assert [(s.text, s.bold, s.italic) for s in segs] == [
+        ("앞 ", False, False),
+        ("굵게", True, False),
+        (" 중간 ", False, False),
+        ("기울임", False, True),
+        (" 끝", False, False),
+    ]
+    # no emphasis -> single plain segment
+    assert [(s.text, s.bold, s.italic) for s in inline_segments("그냥")] == [
+        ("그냥", False, False)
+    ]
 
 
 @pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
@@ -87,3 +109,21 @@ def test_fill_inserts_at_body_marker(tmp_path: Path) -> None:
     assert "{{body}}" not in "".join(texts)  # marker consumed
     # authored heading sits at the marker position (index 3), not appended at the end
     assert "삽입장" in texts[3]
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_inline_bold_becomes_distinct_run(tmp_path: Path) -> None:
+    from hwpx.document import HwpxDocument
+
+    out = tmp_path / "out.hwpx"
+    fill_from_markdown(TYPE1, "보통 **굵게** 보통\n", output=out)
+
+    doc = HwpxDocument.open(str(out))
+    para = next(p for p in doc.paragraphs if "굵게" in (p.text or ""))
+    runs = para.runs
+    assert len(runs) == 3  # "보통 " | "굵게" | " 보통"
+    bold_run = next(r for r in runs if r.text == "굵게")
+    plain_run = next(r for r in runs if r.text.strip() == "보통")
+    # the bold span resolves to a different char style than the plain spans
+    assert bold_run.char_pr_id_ref != plain_run.char_pr_id_ref
+    assert plain_text("보통 **굵게** 보통") == "보통 굵게 보통"

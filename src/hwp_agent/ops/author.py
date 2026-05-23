@@ -27,15 +27,21 @@ from .styles import INSTRUCTION, read_style_system, role_map
 BODY_MARKER = "{{body}}"
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
-_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
-_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
+_INLINE_RE = re.compile(r"\*\*(.+?)\*\*|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 
 
 @dataclass
 class Block:
     kind: str  # "heading" | "paragraph" | "bullet"
     level: int  # heading level 1-6, bullet nesting 1+, 0 for paragraph
+    text: str  # raw inline text (** / * markers kept; segmented at fill time)
+
+
+@dataclass
+class Segment:
     text: str
+    bold: bool = False
+    italic: bool = False
 
 
 @dataclass
@@ -54,21 +60,40 @@ class AuthorResult:
         }
 
 
-def _inline(text: str) -> str:
-    """Flatten inline emphasis to plain text (first cut)."""
-    text = _BOLD_RE.sub(r"\1", text)
-    text = _ITALIC_RE.sub(r"\1", text)
-    return text
+def inline_segments(text: str) -> list[Segment]:
+    """Split inline ``**bold**`` / ``*italic*`` runs from plain text."""
+    segments: list[Segment] = []
+    pos = 0
+    for m in _INLINE_RE.finditer(text):
+        if m.start() > pos:
+            segments.append(Segment(text[pos : m.start()]))
+        if m.group(1) is not None:
+            segments.append(Segment(m.group(1), bold=True))
+        else:
+            segments.append(Segment(m.group(2), italic=True))
+        pos = m.end()
+    if pos < len(text):
+        segments.append(Segment(text[pos:]))
+    return segments or [Segment(text)]
+
+
+def plain_text(text: str) -> str:
+    """Inline text with emphasis markers removed."""
+    return "".join(s.text for s in inline_segments(text))
 
 
 def parse_markdown(markdown: str) -> list[Block]:
-    """Parse Markdown into headings, paragraphs, and bullets (minimal)."""
+    """Parse Markdown into headings, paragraphs, and bullets (minimal).
+
+    Inline ``**bold**`` / ``*italic*`` markers are kept in ``Block.text`` and
+    resolved into runs at fill time via :func:`inline_segments`.
+    """
     blocks: list[Block] = []
     para: list[str] = []
 
     def flush() -> None:
         if para:
-            blocks.append(Block("paragraph", 0, _inline(" ".join(para))))
+            blocks.append(Block("paragraph", 0, " ".join(para)))
             para.clear()
 
     for raw in markdown.splitlines():
@@ -78,11 +103,11 @@ def parse_markdown(markdown: str) -> list[Block]:
             continue
         if m := _HEADING_RE.match(line):
             flush()
-            blocks.append(Block("heading", len(m.group(1)), _inline(m.group(2).strip())))
+            blocks.append(Block("heading", len(m.group(1)), m.group(2).strip()))
         elif m := _BULLET_RE.match(line):
             flush()
             level = len(m.group(1).expandtabs(2)) // 2 + 1
-            blocks.append(Block("bullet", level, _inline(m.group(2).strip())))
+            blocks.append(Block("bullet", level, m.group(2).strip()))
         else:
             para.append(line.strip())
     flush()
@@ -161,10 +186,24 @@ def fill_from_markdown(
             if role not in result.unmapped_roles and role != "BODY":
                 result.unmapped_roles.append(role)
         para_pr = infos[style_id].para_pr_id if style_id in infos else None
+        base_char = doc.style(style_id).char_pr_id_ref if style_id is not None else None
+
+        # build the paragraph empty, then add one run per inline segment so
+        # **bold** / *italic* become real runs (bold uses the same font family's
+        # bold weight via ensure_run_style); plain text is a single run.
         para = target_section.add_paragraph(
-            block.text, style_id_ref=style_id, para_pr_id_ref=para_pr
+            "", style_id_ref=style_id, para_pr_id_ref=para_pr, include_run=False
         )
-        if marker is not None:  # move the freshly-appended paragraph before the marker
+        for seg in inline_segments(block.text):
+            if seg.bold or seg.italic:
+                char = doc.ensure_run_style(
+                    bold=seg.bold, italic=seg.italic, base_char_pr_id=base_char
+                )
+            else:
+                char = base_char
+            para.add_run(seg.text, char_pr_id_ref=char)
+
+        if marker is not None:  # move the freshly-built paragraph before the marker
             element = para.element
             element.getparent().remove(element)
             marker.element.addprevious(element)

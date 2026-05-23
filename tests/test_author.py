@@ -97,6 +97,36 @@ def test_fill_table_copies_template_format(tmp_path: Path) -> None:
     assert b"\xef\xbf\xbd" not in body
 
 
+_TABLE_TEMPLATE = REPO_ROOT / "tests" / "fixtures" / "authored_table_template.hwpx"
+
+
+@pytest.mark.skipif(
+    not _TABLE_TEMPLATE.is_file(), reason="caption-marked table template not present"
+)
+def test_table_format_uses_caption_designated_reference(tmp_path: Path) -> None:
+    """A table whose caption holds a {{table…}} token is the format reference."""
+    from hwpx.document import HwpxDocument
+
+    from hwp_agent.ops.author import _find_reference_table
+
+    HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+    src = HwpxDocument.open(str(_TABLE_TEMPLATE))
+    ref_el, _section, designated = _find_reference_table(src)
+    assert designated is True  # picked the marked table, not the first decorative one
+    ref_bf = ref_el.get("borderFillIDRef")
+
+    out = tmp_path / "out.hwpx"
+    md = "| 코드 | 사업명 |\n|------|--------|\n| P99 | 테스트 |\n"
+    fill_from_markdown(_TABLE_TEMPLATE, md, output=out)
+
+    doc = HwpxDocument.open(str(out))
+    tbls = [t for s in doc.sections for t in s.element.iter(f"{HP}tbl")]
+    assert tbls[-1].get("borderFillIDRef") == ref_bf  # generated copies marked format
+    # the designation token is cleaned from the caption
+    texts = "".join(t.text or "" for s in doc.sections for t in s.element.iter(f"{HP}t"))
+    assert "{{table" not in texts
+
+
 def test_parse_markdown_ordered_vs_bullet() -> None:
     blocks = parse_markdown("1. 첫째\n2. 둘째\n\n- 불릿\n")
     assert [(b.kind, b.level) for b in blocks] == [

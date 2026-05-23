@@ -48,6 +48,21 @@ collapses to a structure→style mapping.
 `classify_document` returns `structured` | `weak` | `flat`, gating which strategy a
 given document gets.
 
+## Later: 구역 (section) handling
+
+HWP **sections** (구역) are the coarsest division: a section break can reset/continue
+style & outline numbering, change the page-number format, and switch page orientation
+(e.g. one landscape page). Typical layout: 표지·목차·요약 = one section, 본문 = one,
+부록 이하 = one. A rarer case splits a section *without* changing numbering, just to
+make those pages landscape. Chapters may also restart **table/figure numbering** per
+chapter (표 II-1, 표 II-2 …).
+
+**Principle:** these settings live in the **template** (authored once in Hangul); the
+machine only adds/changes sections when *explicitly* required. So the toolkit should
+(a) preserve a template's existing section structure on fill, and (b) later expose an
+explicit, opt-in operation to insert a section break / set page format — not infer it.
+*(Not yet implemented; captured here so it isn't lost.)*
+
 ## How it plugs into the PoC
 
 This sits inside Phase 2 (AI-driven editing) of `docs/poc-plan.md`: `analyze`/`fill`

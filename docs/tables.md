@@ -31,10 +31,13 @@ of a reference table in the template: the table `borderFillIDRef`, the header-ro
 body-row cell border-fill, and the cell paragraph/character styles.
 
 - **Default reference:** the first table in the template (zero markup).
-- **Designated reference:** put `{{table}}` (its own paragraph) before a sample
-  table to mark it as the format source. A `{{table}}`-designated sample table and
-  its marker are treated as a format-only sample and **removed** from the output.
+- **Designated reference:** templates often contain many decorative tables (cover,
+  TOC), so the author marks the *standard* one by putting a `{{table…}}` token in its
+  **caption** — e.g. `표 II-1 {{table_template}}` (any `{{table…}}` form matches). On
+  fill the token is stripped from the caption; the table itself stays.
 
-`_table_format()` reads the reference; `_build_table()` applies it. Column-width
-distribution and per-cell border variety (in complex references) are approximated —
-a representative header/body style is used — and are candidates for later refinement.
+`_find_reference_table()` scans live section trees for a caption token (else the
+first table); `_table_format()` reads the reference; `_build_table()` applies it.
+Column-width distribution and per-cell border variety (in complex references) are
+approximated — a representative header/body style is used — candidates for later
+refinement.

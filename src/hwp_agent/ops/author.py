@@ -25,8 +25,9 @@ from .styles import INSTRUCTION, read_style_system, role_map
 
 #: token that marks where the authored body is inserted (a paragraph of its own)
 BODY_MARKER = "{{body}}"
-#: token marking a template table as the format reference for generated tables
-TABLE_MARKER = "{{table}}"
+#: a table whose caption carries a ``{{table…}}`` token (e.g. ``{{table}}``,
+#: ``{{table_template}}``) is the format reference for generated tables.
+_TABLE_TOKEN_RE = re.compile(r"\{\{\s*table[\w:-]*\s*\}\}", re.IGNORECASE)
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
@@ -229,22 +230,38 @@ def _table_format(tbl) -> TableFormat:
     return fmt
 
 
-def _find_reference_table(doc: HwpxDocument):
-    """Find the table whose format generated tables copy.
+def _caption_text(tbl_element) -> str:
+    cap = tbl_element.find(f"{{{_HP}}}caption")
+    return "".join(t.text or "" for t in cap.iter(f"{{{_HP}}}t")) if cap is not None else ""
 
-    A ``{{table}}`` marker designates the next table as the reference (and marks
-    it a removable sample); otherwise the first table in the document is used.
-    Returns ``(table, marker_paragraph_or_None)``.
+
+def _find_reference_table(doc: HwpxDocument):
+    """Find the *live* table element whose format generated tables copy.
+
+    A table whose **caption** carries a ``{{table…}}`` token is the designated
+    reference (templates often have many decorative tables, so the author marks
+    the standard one); otherwise the first table in the document is used. Returns
+    ``(tbl_element, designated)`` — a live element from the section tree so edits
+    (token stripping) persist on save.
     """
-    designated = any(TABLE_MARKER in (p.text or "") for p in doc.paragraphs)
-    after, marker = not designated, None
-    for p in doc.paragraphs:
-        if TABLE_MARKER in (p.text or ""):
-            after, marker = True, p
-            continue
-        if after and p.tables:
-            return p.tables[0], marker
-    return None, marker
+    first = first_section = None
+    for section in doc.sections:
+        for tbl in section.element.iter(f"{{{_HP}}}tbl"):
+            if first is None:
+                first, first_section = tbl, section
+            if _TABLE_TOKEN_RE.search(_caption_text(tbl)):
+                return tbl, section, True
+    return first, first_section, False
+
+
+def _strip_table_token(tbl_element) -> None:
+    """Remove the ``{{table…}}`` designation token from a table's caption text."""
+    cap = tbl_element.find(f"{{{_HP}}}caption")
+    if cap is None:
+        return
+    for t in cap.iter(f"{{{_HP}}}t"):
+        if t.text and _TABLE_TOKEN_RE.search(t.text):
+            t.text = re.sub(r"\s*>?\s*$", "", _TABLE_TOKEN_RE.sub("", t.text))
 
 
 def _build_table(doc, section, block: TableBlock, fmt: TableFormat | None, add_runs):
@@ -344,8 +361,8 @@ def fill_from_markdown(
     result.inserted_at_marker = marker is not None
 
     # tables generated below copy a template table's format (house style)
-    ref_table, table_marker = _find_reference_table(doc)
-    table_fmt = _table_format(ref_table.element) if ref_table is not None else None
+    ref_element, ref_section, designated = _find_reference_table(doc)
+    table_fmt = _table_format(ref_element) if ref_element is not None else None
 
     def place(element) -> None:
         """Move a freshly-built element before the {{body}} marker (else leave appended)."""
@@ -388,11 +405,10 @@ def fill_from_markdown(
         place(para.element)
         result.placed += 1
 
-    # a {{table}}-designated reference table is a format sample → drop it + its marker
-    if table_marker is not None:
-        if ref_table is not None:
-            ref_table.paragraph.element.getparent().remove(ref_table.paragraph.element)
-        table_marker.element.getparent().remove(table_marker.element)
+    # clean the {{table…}} designation token out of the reference table's caption
+    if designated and ref_element is not None:
+        _strip_table_token(ref_element)
+        ref_section.mark_dirty()  # so the edited section is re-serialized on save
 
     if marker is not None:
         marker.element.getparent().remove(marker.element)

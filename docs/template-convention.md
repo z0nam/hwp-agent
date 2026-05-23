@@ -42,9 +42,10 @@ Two channels, both visible and editable inside Hangul:
   `{{body}}` token (its own paragraph) marks where the authored Markdown body is
   inserted; `fill_from_markdown` places the content there and removes the marker.
   Without a `{{body}}` marker, content is appended to the last section.
-  A `{{table}}` token (its own paragraph) before a sample table marks that table as
-  the **format reference** for generated tables; the sample + marker are removed on
-  fill. Without it, the first table in the template is the format reference.
+  A `{{table…}}` token (e.g. `{{table_template}}`) in a table's **caption** marks
+  that table as the **format reference** for generated tables; the token is stripped
+  from the caption on fill (the table stays). Without it, the first table in the
+  template is the format reference. See `docs/tables.md`.
 
 ## Authoring model (Markdown, first cut)
 

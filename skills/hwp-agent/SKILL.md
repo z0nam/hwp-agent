@@ -83,6 +83,9 @@ The AI writes Markdown; the tool maps it onto the template's styles:
 - `{{table_template}}` (any `{{table…}}` form) in a **table's caption** marks
   that table as the **format reference** — generated tables copy its borders,
   cell styles, header look, and geometry. Without it, the first table is used.
+  The token is **consumed on each `author` run**: if you re-author a file, pass
+  `--table-template "<caption text>"` to keep copying the right table (the tool
+  warns when tables are authored with no token or pattern matched).
 - `{{chapter_number}}` in that caption is replaced with the chapter you supply
   via `--chapter`. `{{chapter_number=3}}` **forces** a value inline (wins over
   `--chapter`) — a worst-case override.
@@ -111,7 +114,7 @@ The AI writes Markdown; the tool maps it onto the template's styles:
 | `hwp-agent instructions FILE.hwpx [--json]` | AI:INSTRUCTION directions + `{{slots}}` |
 | `hwp-agent form analyze FILE.hwpx [--json]` | list fillable slots |
 | `hwp-agent form fill FILE.hwpx --set K=V [-o OUT]` | fill slots by name |
-| `hwp-agent author FILE.hwpx --md C.md [--chapter N] [-o OUT]` | author from Markdown |
+| `hwp-agent author FILE.hwpx --md C.md [--chapter N] [--table-template CAPTION] [-o OUT]` | author from Markdown |
 | `hwp-agent meta FILE.hwpx [--set K=V]` | read/set document metadata |
 
 `-o/--output` writes to a new file; omit it to edit in place. Point at a jar

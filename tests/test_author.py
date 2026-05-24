@@ -127,6 +127,101 @@ def test_table_format_uses_caption_designated_reference(tmp_path: Path) -> None:
     assert "{{table" not in texts
 
 
+_HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+_HH = "{http://www.hancom.co.kr/hwpml/2011/head}"
+
+
+def _find_authored_table(doc, marker: str):
+    for sec in doc.sections:
+        for tbl in sec.element.iter(f"{_HP}tbl"):
+            if marker in "".join(t.text or "" for t in tbl.iter(f"{_HP}t")):
+                return tbl, sec
+    return None, None
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 fixture not present")
+def test_table_width_fits_text_column(tmp_path: Path) -> None:
+    """Generated table rows are scaled to the section's text-column width (item E)."""
+    from hwpx.document import HwpxDocument
+
+    from hwp_agent.ops.author import _text_width
+
+    out = tmp_path / "out.hwpx"
+    md = "표 제목\n| 콜에이 | 콜비 | 콜시 |\n|---|---|---|\n| 엑스 | 와이 | 제트 |\n"
+    fill_from_markdown(TYPE1, md, output=out)
+    doc = HwpxDocument.open(str(out))
+    tbl, sec = _find_authored_table(doc, "콜에이")
+    assert tbl is not None
+    tw = _text_width(sec)
+    assert tw and tw > 0
+    for tr in tbl.findall(f"{_HP}tr"):
+        widths = [
+            int(tc.find(f"{_HP}cellSz").get("width"))
+            for tc in tr.findall(f"{_HP}tc")
+            if tc.find(f"{_HP}cellSz") is not None
+        ]
+        if widths:
+            assert sum(widths) == tw  # each row fills the text column exactly
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 fixture not present")
+def test_missing_table_token_warns(tmp_path: Path) -> None:
+    """Authoring tables without a {{table…}} token (or pattern) warns (item A)."""
+    md = "표\n| 에이 | 비 |\n|---|---|\n| 1 | 2 |\n"
+    res = fill_from_markdown(TYPE1, md, output=tmp_path / "o.hwpx")
+    assert any("{{table" in w for w in res.warnings)
+    if _TABLE_TEMPLATE.is_file():  # a token-marked template should not warn
+        res2 = fill_from_markdown(_TABLE_TEMPLATE, md, output=tmp_path / "o2.hwpx")
+        assert not res2.warnings
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 fixture not present")
+def test_authored_heading_has_linesegarray(tmp_path: Path) -> None:
+    """Authored headings carry a linesegarray so Hangul keeps them as headings (item C)."""
+    from hwpx.document import HwpxDocument
+
+    from hwp_agent.ops.author import _lineseg_index
+
+    src = HwpxDocument.open(str(TYPE1))
+    h1_style = role_map(str(TYPE1)).get("HEADING_1")
+    if h1_style is None or str(h1_style) not in _lineseg_index(src):
+        pytest.skip("template has no same-style heading linesegarray to clone")
+
+    out = tmp_path / "out.hwpx"
+    fill_from_markdown(TYPE1, "# 단일 헤딩 줄\n\n본문\n", output=out)
+    doc = HwpxDocument.open(str(out))
+    heading = next(p for p in doc.paragraphs if (p.text or "").strip() == "단일 헤딩 줄")
+    lsa = heading.element.find(f"{_HP}linesegarray")
+    assert lsa is not None and lsa.find(f"{_HP}lineseg") is not None
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 fixture not present")
+def test_inline_bold_preserves_base_size(tmp_path: Path) -> None:
+    """Inline **bold** keeps the base font size, not a 20pt charPr (item F)."""
+    from hwpx.document import HwpxDocument
+
+    out = tmp_path / "out.hwpx"
+    fill_from_markdown(TYPE1, "여기 **굵은말** 있음\n", output=out)
+    doc = HwpxDocument.open(str(out))
+    cps = doc._root._headers[0]._char_properties_element(create=False)
+
+    def height(cid):
+        el = cps.find(f"{_HH}charPr[@id='{cid}']")
+        return el.get("height") if el is not None else None
+
+    base_char = doc.style(role_map(str(TYPE1))["BODY"]).char_pr_id_ref
+    bold_run = None
+    for p in doc.paragraphs:
+        if "굵은말" in (p.text or ""):
+            for run in p.element.iter(f"{_HP}run"):
+                if "굵은말" in "".join(t.text or "" for t in run.iter(f"{_HP}t")):
+                    bold_run = run
+    assert bold_run is not None
+    cid = bold_run.get("charPrIDRef")
+    assert cps.find(f"{_HH}charPr[@id='{cid}']").find(f"{_HH}bold") is not None
+    assert height(cid) == height(str(base_char))  # size preserved (no 20pt jump)
+
+
 def test_strip_table_token_keeps_caption_frame() -> None:
     import xml.etree.ElementTree as ET
 

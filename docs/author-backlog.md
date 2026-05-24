@@ -2,10 +2,14 @@
 
 Concrete `hwp-agent author` defects and improvements found while authoring a real
 appendix (서귀포 보고서, 2026-05-24) — see `docs/section-split.md` for the case.
-Each item has the observed symptom, the diagnosis, and the fix direction. None
-implemented yet; ordered roughly by impact.
+Each item has the observed symptom, the diagnosis, and the fix direction.
 
-## A — `{{table_template}}` token is consumed on author *(format regression trap)*
+**Status (2026-05-24):** A, C, E, and the size-preserving half of F are
+**implemented** (verified structurally + `U+FFFD`-free; **C and F still want a
+Hangul render check**). The named-style sub-heading mapping (F) stays deferred,
+and B/D (section-split / custom outline numbering) are M8.
+
+## A — `{{table_template}}` token is consumed on author *(format regression trap)* — ✅ done
 
 - **Symptom:** a once-authored file reused as a base has **lost the token**, so
   the next `author` falls back to a generic default table style (pale blue/pink
@@ -18,8 +22,11 @@ implemented yet; ordered roughly by impact.
   (don't silently use the generic default); and/or accept the reference as an
   option, e.g. `--table-template "<caption pattern>"`, so it doesn't depend on a
   token surviving a prior run.
+- **Done:** `AuthorResult.warnings` carries the warning (CLI prints it to stderr)
+  when the Markdown has tables but no token/pattern matched; `--table-template
+  CAPTION` (a caption substring) selects the reference when the token was consumed.
 
-## C — author headings lack `<hp:linesegarray>` → Hangul demotes 2nd+ headings
+## C — author headings lack `<hp:linesegarray>` → Hangul demotes 2nd+ headings — ✅ done (needs Hangul check)
 
 - **Symptom:** only the **first** generated outline heading stays a heading;
   Hangul **demotes the rest to body**, even though style / paraPr / charPr are
@@ -30,8 +37,11 @@ implemented yet; ordered roughly by impact.
   the document's real headings** — in practice, clone a known-good heading
   paragraph of that style and replace only its text, rather than building from
   the style id alone.
+- **Done:** `_lineseg_index` maps each styleIDRef to a deep-copied `linesegarray`
+  from a real same-style paragraph; an authored heading gets that clone appended.
+  **Still wants Hangul confirmation that the demotion is actually gone.**
 
-## E — table width not aligned to the text column
+## E — table width not aligned to the text column — ✅ done
 
 - **Symptom:** generated tables have arbitrary absolute widths (seen
   21600–43200). A 6-column table **overflowed the text width (36850)**; small
@@ -41,8 +51,10 @@ implemented yet; ordered roughly by impact.
 - **Fix:** scale each table `<hp:sz width>` and every `<hp:cellSz width>` to the
   **text width (= page width − L/R margins)** proportionally — expand small
   tables, clamp large ones — and absorb rounding drift into the last cell per row.
+- **Done:** `_text_width` reads the section's `pagePr` width minus L/R margins;
+  `_fit_table_width` scales every row to it (drift → last cell) before styling.
 
-## F — inline bold / sub-headings map to oversized direct formatting
+## F — inline bold / sub-headings map to oversized direct formatting — ◑ partial (size-preserving done; sub-heading mapping deferred)
 
 - **Symptom:** a Markdown bold sub-heading (`**입력 데이터 구성**`) was mapped to a
   **20pt charPr** (chapter-title size). Related: appendix table data cells were
@@ -58,6 +70,11 @@ implemented yet; ordered roughly by impact.
   never a chapter-title charPr and never 1pt. Direct charPr edits are a last
   resort. (Item 6 of the report folds in here: with the `{{table_template}}` token
   present, author already styles cells correctly — see **A**.)
+- **Done (size half):** `_emphasis_char` builds a bold/italic charPr that
+  **preserves the base size** (matches the base charPr's height, cloning from it
+  when needed), so inline `**bold**` no longer grabs a 20pt charPr.
+- **Deferred:** mapping a whole-line bold paragraph to a named sub-heading style
+  (a heuristic) stays a future rule, as flagged in the report.
 
 ## B / D — section-split & custom outline numbering *(tracked as M8)*
 

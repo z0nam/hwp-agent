@@ -156,13 +156,19 @@ def _cmd_author(args: argparse.Namespace) -> int:
 
     markdown = Path(args.md).read_text(encoding="utf-8")
     result = fill_from_markdown(
-        args.template, markdown, output=args.output, chapter=args.chapter
+        args.template,
+        markdown,
+        output=args.output,
+        chapter=args.chapter,
+        table_template=args.table_template,
     )
     print(f"placed {result.placed} block(s) -> {args.output or args.template}")
     if result.instructions_removed:
         print(f"  removed {result.instructions_removed} instruction paragraph(s)")
     if result.unmapped_roles:
         print(f"  unmapped (fell back to BODY): {', '.join(result.unmapped_roles)}")
+    for warning in result.warnings:
+        print(f"  warning: {warning}", file=sys.stderr)
     return 0
 
 
@@ -250,6 +256,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="chapter label/number for table captions (e.g. 7, A); "
         "recommended — auto-detection is unreliable on real documents",
+    )
+    auth.add_argument(
+        "--table-template",
+        default=None,
+        metavar="CAPTION",
+        help="caption text of the table whose format generated tables copy "
+        "(use when the {{table_template}} token was consumed by a prior run)",
     )
     auth.add_argument("-o", "--output", type=Path, default=None, help="output file")
     auth.set_defaults(func=_cmd_author)

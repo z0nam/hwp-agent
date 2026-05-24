@@ -30,6 +30,7 @@ BODY_MARKER = "{{body}}"
 #: ``{{table_template}}``) is the format reference for generated tables.
 _TABLE_TOKEN_RE = re.compile(r"\{\{\s*table[\w:-]*\s*\}\}", re.IGNORECASE)
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+_HH = "http://www.hancom.co.kr/hwpml/2011/head"
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
 _INLINE_RE = re.compile(r"\*\*(.+?)\*\*|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
@@ -82,6 +83,7 @@ class AuthorResult:
     unmapped_roles: list[str] = field(default_factory=list)
     instructions_removed: int = 0
     inserted_at_marker: bool = False  # False = appended (no {{body}} marker found)
+    warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -89,6 +91,7 @@ class AuthorResult:
             "unmapped_roles": self.unmapped_roles,
             "instructions_removed": self.instructions_removed,
             "inserted_at_marker": self.inserted_at_marker,
+            "warnings": self.warnings,
         }
 
 
@@ -332,21 +335,26 @@ def _caption_text(tbl_element) -> str:
     return "".join(t.text or "" for t in cap.iter(f"{{{_HP}}}t")) if cap is not None else ""
 
 
-def _find_reference_table(doc: HwpxDocument):
+def _find_reference_table(doc: HwpxDocument, caption_pattern: re.Pattern | None = None):
     """Find the *live* table element whose format generated tables copy.
 
     A table whose **caption** carries a ``{{table…}}`` token is the designated
     reference (templates often have many decorative tables, so the author marks
-    the standard one); otherwise the first table in the document is used. Returns
-    ``(tbl_element, designated)`` — a live element from the section tree so edits
-    (token stripping) persist on save.
+    the standard one); a ``caption_pattern`` (from ``--table-template``) matches a
+    caption by text instead, so the reference survives a prior ``author`` run that
+    consumed the token. Otherwise the first table in the document is used. Returns
+    ``(tbl_element, section, designated)`` — a live element from the section tree
+    so edits (token stripping) persist on save.
     """
     first = first_section = None
     for section in doc.sections:
         for tbl in section.element.iter(f"{{{_HP}}}tbl"):
             if first is None:
                 first, first_section = tbl, section
-            if _TABLE_TOKEN_RE.search(_caption_text(tbl)):
+            caption = _caption_text(tbl)
+            if _TABLE_TOKEN_RE.search(caption) or (
+                caption_pattern is not None and caption_pattern.search(caption)
+            ):
                 return tbl, section, True
     return first, first_section, False
 
@@ -430,6 +438,45 @@ def _style_cell(cell, zone: Zone, col: int, ncols: int, text: str) -> None:
     cp.add_run(plain_text(text), char_pr_id_ref=zone.char)
 
 
+def _text_width(section) -> int | None:
+    """Text-column width = page width − left/right margins (HWPUNIT), from secPr."""
+    page = section.element.find(f".//{{{_HP}}}pagePr")
+    if page is None or not page.get("width"):
+        return None
+    margin = page.find(f"{{{_HP}}}margin")
+    left = int(margin.get("left", "0")) if margin is not None else 0
+    right = int(margin.get("right", "0")) if margin is not None else 0
+    width = int(page.get("width")) - left - right
+    return width if width > 0 else None
+
+
+def _fit_table_width(table_el, text_width: int) -> None:
+    """Scale every cell width so each row fills *text_width*, preserving column ratios.
+
+    ``add_table`` gives tables arbitrary absolute widths — a wide table overflows the
+    text column, a narrow one falls short. Scale each ``<hp:cellSz width>`` by
+    ``text_width / row_total`` and set the table's own ``<hp:sz width>``; rounding
+    drift is absorbed into the last cell of each row so the row sums exactly.
+    """
+    sz = table_el.find(f"{{{_HP}}}sz")
+    if sz is not None:
+        sz.set("width", str(text_width))
+    for tr in table_el.findall(f"{{{_HP}}}tr"):
+        cell_szs = [tc.find(f"{{{_HP}}}cellSz") for tc in tr.findall(f"{{{_HP}}}tc")]
+        cell_szs = [c for c in cell_szs if c is not None]
+        if not cell_szs:
+            continue
+        total = sum(int(c.get("width", "0")) for c in cell_szs)
+        if total <= 0:
+            continue
+        running = 0
+        for c in cell_szs[:-1]:
+            scaled = round(int(c.get("width", "0")) * text_width / total)
+            c.set("width", str(scaled))
+            running += scaled
+        cell_szs[-1].set("width", str(text_width - running))  # drift → last cell
+
+
 def _build_table(
     doc, section, block: TableBlock, fmt, body_style, body_para, ref_el, chapter=None
 ):
@@ -463,6 +510,12 @@ def _build_table(
                 gen_pos.set(k, v)
         if ref_el.get("repeatHeader"):
             table.element.set("repeatHeader", ref_el.get("repeatHeader"))
+
+    # fit the table to the text column (expand small tables, clamp wide ones) before
+    # styling, so a later note-row merge sums the already-fitted cell widths
+    tw = _text_width(section)
+    if tw:
+        _fit_table_width(table.element, tw)
 
     last_data = len(data_rows) - 1
     for r, row in enumerate(data_rows):
@@ -513,6 +566,62 @@ def _build_table(
     return table
 
 
+def _lineseg_index(doc: HwpxDocument) -> dict[str, object]:
+    """Map styleIDRef → a deep-copied ``<hp:linesegarray>`` from a real paragraph.
+
+    Hangul demotes an outline heading to body when its paragraph lacks the
+    ``<hp:linesegarray>`` (line-layout cache with the outline flags) that genuine
+    headings carry — so authored headings need one cloned from a same-style heading.
+    """
+    index: dict[str, object] = {}
+    for p in doc.paragraphs:
+        sid = p.style_id_ref
+        if sid is None or str(sid) in index:
+            continue
+        lsa = p.element.find(f"{{{_HP}}}linesegarray")
+        if lsa is not None:
+            index[str(sid)] = copy.deepcopy(lsa)
+    return index
+
+
+def _emphasis_char(doc: HwpxDocument, base_char: str | None, *, bold: bool, italic: bool):
+    """A bold/italic charPr that **preserves the base char's size**.
+
+    ``doc.ensure_run_style`` matches any existing charPr with the right flags,
+    ignoring size — so inline ``**bold**`` in 9pt body text can pick up a 20pt
+    chapter-title charPr. Match on the base size too, cloning from the base when no
+    same-size variant exists. Falls back safely to the base char on any problem.
+    """
+    if base_char is None:
+        return doc.ensure_run_style(bold=bold, italic=italic)
+    try:
+        header = doc._root._headers[0]
+        cps = header._char_properties_element(create=False)
+        base_el = cps.find(f"{{{_HH}}}charPr[@id='{base_char}']")
+        base_height = base_el.get("height") if base_el is not None else None
+        target = (bold, italic)
+
+        def predicate(el) -> bool:
+            flags = (el.find(f"{{{_HH}}}bold") is not None, el.find(f"{{{_HH}}}italic") is not None)
+            return flags == target and el.get("height") == base_height
+
+        def modifier(el) -> None:
+            for tag in ("bold", "italic"):
+                for c in el.findall(f"{{{_HH}}}{tag}"):
+                    el.remove(c)
+            if bold:
+                el.append(el.makeelement(f"{{{_HH}}}bold", {}))
+            if italic:
+                el.append(el.makeelement(f"{{{_HH}}}italic", {}))
+
+        el = header.ensure_char_property(
+            predicate=predicate, modifier=modifier, base_char_pr_id=base_char
+        )
+        return el.get("id") or base_char
+    except Exception:
+        return base_char  # never inflate the font; worst case the run stays plain-styled
+
+
 def _find_body_marker(doc: HwpxDocument):
     """Locate the top-level paragraph holding the ``{{body}}`` marker, if any."""
     for section in doc.sections:
@@ -544,6 +653,7 @@ def fill_from_markdown(
     *,
     output: Path | str | None = None,
     chapter: str | int | None = None,
+    table_template: str | None = None,
 ) -> AuthorResult:
     """Fill a template from Markdown, styled with its own outline styles.
 
@@ -552,6 +662,11 @@ def fill_from_markdown(
     use outline styles too inconsistently (and restart/relabel numbering per
     section, e.g. an appendix in A/B/C) to count chapters reliably. When omitted, a
     best-effort outline-level-0 count is used (fine for clean documents only).
+
+    ``table_template`` is a caption substring/regex naming the table whose format
+    generated tables copy — use it when the ``{{table…}}`` token was already
+    consumed by a prior ``author`` run (the token is removed on fill). When neither
+    a token nor this pattern matches and the Markdown has tables, a warning is added.
     """
     roles = role_map(template)
     infos = {i.style_id: i for i in read_style_system(template)}
@@ -593,8 +708,13 @@ def fill_from_markdown(
     result.inserted_at_marker = marker is not None
 
     # tables generated below copy a template table's format (house style)
-    ref_element, ref_section, designated = _find_reference_table(doc)
+    caption_pattern = re.compile(re.escape(table_template), re.I) if table_template else None
+    ref_element, ref_section, designated = _find_reference_table(doc, caption_pattern)
     table_fmt = _table_format(ref_element) if ref_element is not None else None
+
+    # headings need a linesegarray cloned from a real same-style heading, or Hangul
+    # demotes the 2nd+ authored heading to body (see docs/author-backlog.md item C)
+    lineseg_by_style = _lineseg_index(doc)
 
     def place(element) -> None:
         """Move a freshly-built element before the {{body}} marker (else leave appended)."""
@@ -604,12 +724,13 @@ def fill_from_markdown(
 
     def add_runs(para, text: str, base_char: str | None) -> None:
         for seg in inline_segments(text):
-            if seg.bold or seg.italic:
-                char = doc.ensure_run_style(
-                    bold=seg.bold, italic=seg.italic, base_char_pr_id=base_char
-                )
-            else:
-                char = base_char
+            # size-preserving bold/italic (plain ensure_run_style can grab a 20pt
+            # charPr); plain text keeps the paragraph style's base char
+            char = (
+                _emphasis_char(doc, base_char, bold=seg.bold, italic=seg.italic)
+                if seg.bold or seg.italic
+                else base_char
+            )
             para.add_run(seg.text, char_pr_id_ref=char)
 
     body_style = roles.get("BODY")
@@ -633,7 +754,16 @@ def fill_from_markdown(
             return explicit_chapter
         return str(chapter_count) if chapter_count else None
 
-    for block in parse_markdown(markdown):
+    blocks = parse_markdown(markdown)
+    if any(isinstance(b, TableBlock) for b in blocks) and not designated:
+        result.warnings.append(
+            "no {{table…}} token found — generated tables use "
+            + ("the first table's format" if ref_element is not None else "a generic default")
+            + "; mark the reference table's caption with {{table_template}} or pass "
+            "--table-template '<caption text>' to copy the house style."
+        )
+
+    for block in blocks:
         if isinstance(block, TableBlock):
             table = _build_table(
                 doc, target_section, block, table_fmt, body_style, body_para,
@@ -660,6 +790,14 @@ def fill_from_markdown(
             "", style_id_ref=style_id, para_pr_id_ref=para_pr, include_run=False
         )
         add_runs(para, block.text, base_char)
+        # headings: clone a linesegarray from a real same-style heading so Hangul
+        # keeps them as outline headings (item C) — only when one isn't already there
+        if (
+            block.kind == "heading"
+            and str(style_id) in lineseg_by_style
+            and para.element.find(f"{{{_HP}}}linesegarray") is None
+        ):
+            para.element.append(copy.deepcopy(lineseg_by_style[str(style_id)]))
         place(para.element)
         result.placed += 1
 

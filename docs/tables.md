@@ -70,3 +70,9 @@ table copies the reference's `pos` (treatAsChar=0, floating) and `repeatHeader`.
 
 Column widths, per-cell border variety, multi-line note paragraphs, chapter-number
 *format*, and inline bold inside cells remain approximations / refinements.
+
+> **Known issues from real authoring** (see `docs/author-backlog.md`): the
+> `{{table…}}` token is **consumed on each `author` run**, so re-authoring a file
+> loses it and falls back to the generic table style (item A); generated table
+> **widths aren't fit to the text column** and can overflow (item E); cells should
+> always use the named table-content style, never 1pt/20pt direct formatting (item F).

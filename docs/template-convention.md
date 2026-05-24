@@ -70,6 +70,20 @@ shallowest available `BULLET_n`/`ORDERED_n` (templates often start lists at outl
 level 1, not 0). `ORDERED_n` is detected from enumerator-named outline styles
 ("1.", "1)", "가."). With no matching list style, items fall back to `BODY`.
 
+### Font-size hierarchy principle
+
+Font size must be **monotonically non-increasing as the hierarchy deepens** — a
+deeper level's text is smaller than, or at most equal to, its parent's, never
+larger. Think LaTeX `section` ≥ `subsection` ≥ `subsubsection` ≥ `paragraph` ≥
+body. This holds across the whole ladder (Heading 1 ≥ Heading 2 ≥ … ≥ Body, and
+list/그 하위 levels likewise).
+
+For type-1 we *reuse* the template's styles, so the template already encodes the
+sizes and we don't set them — but this is the rule to (a) **verify** (a future
+`ops.verify` check: flag a template/style system where a deeper level is larger),
+and (b) **honor when we assign sizes ourselves** — type-2/3 inference and the M6
+"rebuild cleanly" path (`docs/poc-plan.md`).
+
 ## Example
 
 A minimal type-1 template needs no markup at all — just real heading styles. To add

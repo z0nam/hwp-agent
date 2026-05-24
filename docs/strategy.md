@@ -63,6 +63,11 @@ machine only adds/changes sections when *explicitly* required. So the toolkit sh
 explicit, opt-in operation to insert a section break / set page format — not infer it.
 *(Not yet implemented; captured here so it isn't lost.)*
 
+A first reverse-engineering pass at the concrete case — adding a section-split
+**appendix** with independent `A.1.1` numbering — is written up in
+`docs/section-split.md` (requirements found, but content-bearing new sections
+don't yet render in Hangul; root cause open). Tracked as M8 in `docs/poc-plan.md`.
+
 ## How it plugs into the PoC
 
 This sits inside Phase 2 (AI-driven editing) of `docs/poc-plan.md`: `analyze`/`fill`

@@ -114,6 +114,16 @@ Dates are proposals from 2026-05-23; adjust freely.
     privacy limits (institutional documents leaving the building), and keeping one
     ops core behind both the CLI and the (local + remote) MCP surfaces.
 
+- **M8 — section-split appendix (구역 분리 부록)** *(unscheduled; investigated)*
+  Add an appendix as a **new 구역** after the references, with independent outline
+  numbering (e.g. `A.1.1`), outline-restart / page-continue / dedicated master
+  page. `author` today only appends to the last section. A hand-edited
+  content-bearing new section met every reverse-engineered requirement but still
+  **failed to render in Hangul** (empty sections render; content ones don't) —
+  root cause TBD. Full requirements, the blocker, and the `--new-section` /
+  `--appendix` design ask are written up in `docs/section-split.md`. Interim:
+  appendix is appended and the user does the 구역 나누기 in Hangul.
+
 ## Open questions
 
 - Slot identity for ambiguous forms (duplicate labels, nested tables).

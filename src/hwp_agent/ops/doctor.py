@@ -47,8 +47,18 @@ def _size_lookup(doc: HwpxDocument):
     return size
 
 
-def _ladder(prefix: str, roles: dict, infos: dict, size) -> tuple[list[dict], list[str], list[str]]:
-    """Build a role ladder (HEADING_/BULLET_/ORDERED_) with gap + size-order checks."""
+def _ladder(
+    prefix: str, roles: dict, infos: dict, size, *, strict: bool = True
+) -> tuple[list[dict], list[str], list[str]]:
+    """Build a role ladder (HEADING_/BULLET_/ORDERED_) with gap + size-order checks.
+
+    ``strict=False`` (used for BULLET) builds the rungs but skips gap and
+    size-hierarchy checks: HWP encodes bullet nesting by the bullet *glyph*, not
+    the outline level (``■`` is the parent, ``-`` nests under it), so an
+    outline-level-derived BULLET_n order can't be judged for gaps or size
+    monotonicity — see backlog item G. The ladder order must instead come from an
+    explicit ``AI:BULLET_n`` declaration.
+    """
     levels = sorted(int(r.split("_")[1]) for r in roles if r.startswith(prefix))
     rungs, gaps, violations = [], [], []
     if not levels:
@@ -58,14 +68,15 @@ def _ladder(prefix: str, roles: dict, infos: dict, size) -> tuple[list[dict], li
         role = f"{prefix}{n}"
         sid = roles.get(role)
         if sid is None:
-            gaps.append(role)
+            if strict:
+                gaps.append(role)
             continue
         sz = size(sid)
         rungs.append(
             {"level": n, "role": role, "style": sid,
              "name": infos[sid].name if sid in infos else "", "size": sz}
         )
-        if prev_size is not None and sz is not None and sz > prev_size:
+        if strict and prev_size is not None and sz is not None and sz > prev_size:
             violations.append(f"{role} ({sz}pt) > shallower level ({prev_size}pt)")
         if sz is not None:
             prev_size = sz
@@ -82,7 +93,8 @@ def diagnose_template(path: str) -> dict:
 
     ladders, gaps, violations = {}, [], []
     for prefix in ("HEADING_", "BULLET_", "ORDERED_"):
-        rungs, g, v = _ladder(prefix, roles, infos, size)
+        # bullets: nesting is by glyph, not outline level — don't gap/size-check
+        rungs, g, v = _ladder(prefix, roles, infos, size, strict=prefix != "BULLET_")
         ladders[prefix.rstrip("_")] = rungs
         gaps += g
         violations += v
@@ -132,12 +144,22 @@ def _warnings(r: dict) -> list[str]:
         out.append("ladder gaps (missing levels): " + ", ".join(r["gaps"]))
     for v in r["hierarchy_violations"]:
         out.append("font hierarchy: " + v)
-    if r["unmapped_ladder_siblings"]:
-        top = r["unmapped_ladder_siblings"][0]
+    bullets = [s for s in r["unmapped_ladder_siblings"] if s["heading"] == "BULLET"]
+    outlines = [s for s in r["unmapped_ladder_siblings"] if s["heading"] == "OUTLINE"]
+    if bullets:
+        names = ", ".join(f"'{b['name']}' ({b['use']}×)" for b in bullets[:3])
         out.append(
-            f"{len(r['unmapped_ladder_siblings'])} used bullet/outline style(s) are outside "
-            f"the role map — authoring can't target them (e.g. '{top['name']}' "
-            f"used {top['use']}×); the role map keeps one style per outline level."
+            f"{len(bullets)} bullet style(s) outside the role map ({names}) — bullet nesting is "
+            "by glyph, not outline level, so the role map collapses siblings and drops these. "
+            "Declare AI:BULLET_1/AI:BULLET_2/… on the bullet styles to set the ladder and make "
+            "them targetable (docs/author-backlog.md item G)."
+        )
+    if outlines:
+        top = outlines[0]
+        out.append(
+            f"{len(outlines)} used outline style(s) are unmapped — a heading level the role map "
+            f"didn't pick (e.g. '{top['name']}' L{top['level']} used {top['use']}×); "
+            "name it AI:H<n> to claim the level explicitly."
         )
     if not r["ladders"].get("BULLET"):
         out.append("no BULLET_n roles — a bullet-heavy report needs a complete bullet ladder.")

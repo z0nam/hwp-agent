@@ -45,6 +45,14 @@ fallback.) Two consequences:
 - The **bullet ladder must be complete and well-ordered** in the template (every
   level a named `BULLET_n` style, sizes non-increasing per the font-hierarchy
   rule) — that's where the authoring quality is won or lost here.
+- **Bullet nesting is NOT carried by the HWP outline level** — it's encoded by the
+  bullet *style* (the glyph): `■` is the higher-level bullet, `-` the one nested
+  under it (so `■` 10.5pt > `-` 10.0pt is *correct*, parent-bigger, not a
+  violation). HWP often marks several bullet styles at the *same* outline level
+  (e.g. 0), so the role map's "outline level = nesting" assumption breaks for
+  bullets: it collapses `■` and `-` into one role and drops the rest. Bullet order
+  must come from an **explicit declaration** (e.g. `AI:BULLET_1`/`AI:BULLET_2`
+  naming on the styles), not the outline level. Tracked in `docs/author-backlog.md`.
 - When body text *does* appear, it goes to the `BODY` style; per
   **named-styles-over-direct-formatting** (`docs/template-convention.md`), we do
   **not** fake sub-headings by direct-formatting Normal — a missing structural

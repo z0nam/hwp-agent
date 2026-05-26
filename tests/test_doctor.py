@@ -41,3 +41,24 @@ def test_diagnose_flags_unmapped_bullet_sibling() -> None:
     assert r["unmapped_ladder_siblings"]
     assert all("use" in e and "name" in e for e in r["unmapped_ladder_siblings"])
     assert any("role map" in w for w in r["warnings"])
+
+
+@pytest.mark.skipif(not APPENDIX.is_file(), reason="appendix fixture not present")
+def test_diagnose_does_not_false_flag_bullet_hierarchy() -> None:
+    # bullet nesting is by glyph, not outline level — ■(10.5) over -(10) is correct,
+    # not a violation, and BULLET_n gaps from the outline level are meaningless (item G)
+    r = diagnose_template(str(APPENDIX))
+    assert not any("BULLET" in v for v in r["hierarchy_violations"])
+    assert not any(g.startswith("BULLET_") for g in r["gaps"])
+    # the un-targetable bullet is surfaced with actionable AI:BULLET_n guidance
+    assert any("AI:BULLET" in w for w in r["warnings"])
+
+
+@pytest.mark.skipif(not APPENDIX.is_file(), reason="appendix fixture not present")
+def test_doctor_cli_runs(capsys) -> None:
+    from hwp_agent.cli.main import build_parser
+
+    args = build_parser().parse_args(["doctor", str(APPENDIX)])
+    assert args.func(args) == 0
+    out = capsys.readouterr().out
+    assert "HEADING ladder" in out and "findings" in out

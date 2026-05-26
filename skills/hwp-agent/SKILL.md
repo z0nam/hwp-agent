@@ -44,7 +44,11 @@ output.
 3. **Read the style roles** the template exposes (role → style id):
    `hwp-agent styles work.hwpx` (add `--json` for machine use). Roles include
    `HEADING_1..n`, `BULLET_n`, `ORDERED_n`, `BODY`. You don't set styles
-   yourself — you write Markdown and the tool projects it onto these.
+   yourself — you write Markdown and the tool projects it onto these. To audit a
+   template's completeness (missing ladder levels, font-hierarchy violations,
+   bullet/structural styles the role map can't reach), run
+   `hwp-agent doctor work.hwpx` — the fix is usually to declare `AI:BULLET_n` /
+   `AI:H<n>` on the unreachable styles in Hangul.
    For a deeper read, `hwp-agent doctor work.hwpx` flags style-system problems
    (ladder gaps, font-hierarchy violations, bullet styles the role map can't
    target, un-mapped structural styles) — use it when authoring quality matters
@@ -116,6 +120,7 @@ The AI writes Markdown; the tool maps it onto the template's styles:
 | `hwp-agent classify FILE.hwpx` | structured / weak / flat |
 | `hwp-agent doctor FILE.hwpx [--json]` | diagnose the style system: ladder gaps, font-hierarchy violations, un-mapped bullet siblings / structural styles |
 | `hwp-agent styles FILE.hwpx [--json]` | machine style roles (role → style id) |
+| `hwp-agent doctor FILE.hwpx [--json]` | diagnose the style system: ladder gaps, font-hierarchy violations, un-mapped bullet/structural styles |
 | `hwp-agent instructions FILE.hwpx [--json]` | AI:INSTRUCTION directions + `{{slots}}` |
 | `hwp-agent form analyze FILE.hwpx [--json]` | list fillable slots |
 | `hwp-agent form fill FILE.hwpx --set K=V [-o OUT]` | fill slots by name |

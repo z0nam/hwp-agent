@@ -34,6 +34,27 @@ The direction for type-1: treat a Markdown/LaTeX-style document model as the AI'
 authoring frame, and *project it onto the template's styles*. Most of the work
 collapses to a structure→style mapping.
 
+### What real reports here actually look like
+
+In this institution's reports, **plain body paragraphs are essentially absent —
+almost everything lives in a multi-level bullet system** (개요/세부 levels). So the
+`bullet → BULLET_n` mapping carries most of the content, not `text → BODY`. (This
+is org-specific; other type-1 docs do use body text, and `BODY` stays the
+fallback.) Two consequences:
+
+- The **bullet ladder must be complete and well-ordered** in the template (every
+  level a named `BULLET_n` style, sizes non-increasing per the font-hierarchy
+  rule) — that's where the authoring quality is won or lost here.
+- When body text *does* appear, it goes to the `BODY` style; per
+  **named-styles-over-direct-formatting** (`docs/template-convention.md`), we do
+  **not** fake sub-headings by direct-formatting Normal — a missing structural
+  role means *define a style in the template*, authored once in Hangul.
+
+**Goal:** pin down the type-1 template's currently-ambiguous roles and grow it
+into a **complete research-institute report template** — every structural element
+(heading levels, bullet levels, note/caption/table styles) a named style, so an
+editor can restyle a whole class at once.
+
 ## Roadmap
 
 - **Type-1 (now):** detect the style system, expose a **role map** (role → style id),

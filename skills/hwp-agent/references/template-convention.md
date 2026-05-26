@@ -76,13 +76,36 @@ Font size must be **monotonically non-increasing as the hierarchy deepens** — 
 deeper level's text is smaller than, or at most equal to, its parent's, never
 larger. Think LaTeX `section` ≥ `subsection` ≥ `subsubsection` ≥ `paragraph` ≥
 body. This holds across the whole ladder (Heading 1 ≥ Heading 2 ≥ … ≥ Body, and
-list/그 하위 levels likewise).
+list/그 하위 levels likewise). A deep heading (a `####` / paragraph-level item)
+rendered **larger** than its parent looks badly broken — it's a hard rule, not a
+preference.
 
 For type-1 we *reuse* the template's styles, so the template already encodes the
 sizes and we don't set them — but this is the rule to (a) **verify** (a future
 `ops.verify` check: flag a template/style system where a deeper level is larger),
 and (b) **honor when we assign sizes ourselves** — type-2/3 inference and the M6
 "rebuild cleanly" path (`docs/poc-plan.md`).
+
+### Named styles over direct formatting
+
+**Anything structural gets a named style; only in-sentence emphasis uses a
+run-level override.** A sub-heading, a note, a body variant — give it a *style*
+(reuse one, or define a new one in the template, authored once in Hangul). The
+**only** thing that should ride on direct character formatting is *partial,
+in-sentence emphasis* (a few bold/italic words inside a sentence), as a run-level
+override of an otherwise styled paragraph.
+
+**Why:** a human editor can then restyle *every* sub-heading (or note, or body
+paragraph) at once by editing the style — impossible if each was ad-hoc
+direct-formatted. Direct formatting on 바탕글/Normal is the anti-pattern that
+produced the 1pt / 20pt cell bugs (`docs/author-backlog.md` items F, 6).
+
+Implication for authoring: when a structural element has **no** matching style in
+the template, the answer is to **define the style**, not to direct-format Normal.
+(Consistent with the template principle: structure lives in the template,
+authored once.) Plain `BODY` is itself a named style and is fine for ordinary
+paragraphs — the rule is *don't layer direct formatting on top of it to fake a
+sub-heading*.
 
 ## Example
 

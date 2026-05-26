@@ -16,6 +16,7 @@ from .author import (
     plain_text,
     read_instructions,
 )
+from .doctor import diagnose_template
 from .form import FillResult, FormSlot, FormSpec, analyze_form, fill_form
 from .metadata import Metadata, read_metadata, update_metadata
 from .styles import StyleInfo, classify_document, read_style_system, role_map
@@ -43,4 +44,5 @@ __all__ = [
     "plain_text",
     "fill_from_markdown",
     "read_instructions",
+    "diagnose_template",
 ]

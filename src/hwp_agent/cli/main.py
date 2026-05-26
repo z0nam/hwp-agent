@@ -126,6 +126,52 @@ def _cmd_styles(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    import json
+
+    from ..ops import diagnose_template
+
+    r = diagnose_template(str(args.file))
+    if args.json:
+        print(json.dumps(r, ensure_ascii=False, indent=2))
+        return 0
+
+    print(f"{r['file']}  [{r['classification']}]   "
+          f"styles={r['styles_total']} roled={r['roles_mapped']}")
+    for name in ("HEADING", "BULLET", "ORDERED"):
+        rungs = r["ladders"].get(name) or []
+        if not rungs and name == "ORDERED":
+            continue
+        print(f"{name} ladder:")
+        if not rungs:
+            print("  (none)")
+        for rung in rungs:
+            print(f"  {rung['role']:<11} -> style {rung['style']:<3} "
+                  f"{rung['name']:<16} {rung['size']}pt")
+    if r["body"]:
+        b = r["body"]
+        print(f"BODY        -> style {b['style']:<3} {b['name']:<16} {b['size']}pt")
+    print(f"INSTRUCTION -> {r['instruction'] or '(none)'}")
+
+    if r["unmapped_ladder_siblings"]:
+        print("un-mapped ladder siblings (author can't target these):")
+        for e in r["unmapped_ladder_siblings"][:10]:
+            print(f"  style {e['style']:<3} {e['name']:<16} {e['size']}pt  "
+                  f"{e['heading']} L{e['level']}  used {e['use']}×")
+    if r["unmapped_structural"]:
+        print(f"un-mapped structural styles ({len(r['unmapped_structural'])}):")
+        for e in r["unmapped_structural"][:12]:
+            print(f"  style {e['style']:<3} {e['name']:<16} {e['size']}pt  used {e['use']}×")
+
+    if r["warnings"]:
+        print("\nfindings:")
+        for w in r["warnings"]:
+            print(f"  ⚠ {w}")
+    else:
+        print("\n✓ no issues found")
+    return 0
+
+
 def _cmd_instructions(args: argparse.Namespace) -> int:
     import json
 
@@ -238,6 +284,13 @@ def build_parser() -> argparse.ArgumentParser:
     sty.add_argument("file", type=Path, help=".hwpx file")
     sty.add_argument("--json", action="store_true", help="emit roles + styles as JSON")
     sty.set_defaults(func=_cmd_styles)
+
+    doc = sub.add_parser(
+        "doctor", help="diagnose a template's style system (gaps, hierarchy, unmapped styles)"
+    )
+    doc.add_argument("file", type=Path, help=".hwpx template")
+    doc.add_argument("--json", action="store_true", help="emit the full report as JSON")
+    doc.set_defaults(func=_cmd_doctor)
 
     ins = sub.add_parser(
         "instructions", help="show a template's AI:INSTRUCTION directions and {{slots}}"

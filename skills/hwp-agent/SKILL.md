@@ -45,6 +45,10 @@ output.
    `hwp-agent styles work.hwpx` (add `--json` for machine use). Roles include
    `HEADING_1..n`, `BULLET_n`, `ORDERED_n`, `BODY`. You don't set styles
    yourself — you write Markdown and the tool projects it onto these.
+   For a deeper read, `hwp-agent doctor work.hwpx` flags style-system problems
+   (ladder gaps, font-hierarchy violations, bullet styles the role map can't
+   target, un-mapped structural styles) — use it when authoring quality matters
+   or the template's roles look incomplete.
 
 4. **Read embedded directions** the template carries:
    `hwp-agent instructions work.hwpx` (`--json`). This surfaces
@@ -110,6 +114,7 @@ The AI writes Markdown; the tool maps it onto the template's styles:
 |---|---|
 | `hwp-agent convert IN.hwp OUT.hwpx` | HWP → HWPX (needs the jar) |
 | `hwp-agent classify FILE.hwpx` | structured / weak / flat |
+| `hwp-agent doctor FILE.hwpx [--json]` | diagnose the style system: ladder gaps, font-hierarchy violations, un-mapped bullet siblings / structural styles |
 | `hwp-agent styles FILE.hwpx [--json]` | machine style roles (role → style id) |
 | `hwp-agent instructions FILE.hwpx [--json]` | AI:INSTRUCTION directions + `{{slots}}` |
 | `hwp-agent form analyze FILE.hwpx [--json]` | list fillable slots |

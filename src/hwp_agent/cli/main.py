@@ -3,12 +3,60 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from .. import __version__
 from ..convert import Hwp2HwpxBackend
+
+#: input file the current command is processing, for the manifest-fallback note
+_ACTIVE_HWPX: str | None = None
+
+
+class _ManifestFallbackFilter(logging.Filter):
+    """Collapse python-hwpx's benign manifest-fallback warnings into one clear note.
+
+    python-hwpx logs a warning whenever an .hwpx's OPC manifest doesn't declare its
+    history/version parts and it falls back to searching by filename — once per part,
+    on every open, so a single command emits the pair several times (``author`` opens
+    the document three times). It almost always means the file was saved directly by
+    Hangul (the desktop app), which omits those manifest entries; the fallback is
+    harmless. We rewrite the first such warning into a plain-language note (naming the
+    file) and drop the repeats.
+    """
+
+    _NOISE = ("찾지 못해", "fallback")
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._noted = False
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not any(hint in record.getMessage() for hint in self._NOISE):
+            return True  # a different hwpx warning — let it through unchanged
+        if self._noted:
+            return False  # benign repeat — drop
+        self._noted = True
+        where = f"'{_ACTIVE_HWPX}'" if _ACTIVE_HWPX else "입력 hwpx"
+        record.msg = (
+            f"참고: {where}의 manifest에 history/version 파트가 선언돼 있지 않아 "
+            "파일명 기반 탐색으로 대체합니다 — 한글에서 직접 저장한 hwpx에서 흔한 "
+            "정상 동작이며 결과에는 영향이 없습니다."
+        )
+        record.args = ()
+        return True
+
+
+def _quiet_hwpx_logging() -> None:
+    """Route python-hwpx's logging through the manifest-fallback filter (CLI only)."""
+    lg = logging.getLogger("hwpx")
+    handler = logging.StreamHandler()  # stderr, like logging's last-resort handler
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler.addFilter(_ManifestFallbackFilter())
+    lg.addHandler(handler)
+    lg.propagate = False  # don't also hit the root/last-resort handler (avoids dupes)
 
 
 def _cmd_convert(args: argparse.Namespace) -> int:
@@ -172,6 +220,49 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_image(args: argparse.Namespace) -> int:
+    import json
+
+    from ..ops import list_images, replace_image
+
+    if args.action == "list":
+        pics = list_images(args.file)
+        if args.json:
+            print(json.dumps([p.as_dict() for p in pics], ensure_ascii=False, indent=2))
+            return 0
+        if not pics:
+            print("(no figure images found)")
+            return 0
+        for p in pics:
+            ratio = f"{p.extent_ratio}" if p.extent_ratio is not None else "?"
+            px = f"{p.px_w}x{p.px_h}px" if p.px_w and p.px_h else "?px"
+            print(f"{p.ref:<8} .{p.slot_format:<4} {px:<12} ratio={ratio:<7} {p.caption}")
+        return 0
+
+    # replace
+    if bool(args.ref) == bool(args.caption):
+        print("error: pass exactly one of --ref or --caption", file=sys.stderr)
+        return 2
+
+    result = replace_image(
+        args.file,
+        ref=args.ref,
+        caption=args.caption,
+        image=args.image,
+        fit=args.fit,
+        output=args.output,
+    )
+    for o in result.outcomes:
+        detail = f"  ({o.detail})" if o.detail else ""
+        print(f"{o.status}: {o.selector} <- {o.image}{detail}")
+    for w in result.warnings:
+        print(f"  warning: {w}", file=sys.stderr)
+    if result.replaced:
+        print(f"replaced {result.replaced} -> {args.output or args.file}")
+        return 0
+    return 1
+
+
 def _cmd_instructions(args: argparse.Namespace) -> int:
     import json
 
@@ -197,7 +288,7 @@ def _cmd_instructions(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_author(args: argparse.Namespace) -> int:
+def _cmd_write(args: argparse.Namespace) -> int:
     from ..ops import fill_from_markdown
 
     markdown = Path(args.md).read_text(encoding="utf-8")
@@ -299,36 +390,84 @@ def build_parser() -> argparse.ArgumentParser:
     ins.add_argument("--json", action="store_true", help="emit directions + slots as JSON")
     ins.set_defaults(func=_cmd_instructions)
 
-    auth = sub.add_parser(
-        "author", help="fill a structured template from Markdown, using its styles"
+    img = sub.add_parser(
+        "image", help="list or replace embedded figure images in an HWPX"
     )
-    auth.add_argument("template", type=Path, help=".hwpx template")
-    auth.add_argument("--md", type=Path, required=True, help="Markdown content file")
-    auth.add_argument(
+    img_sub = img.add_subparsers(dest="action", metavar="<list|replace>")
+
+    il = img_sub.add_parser("list", help="list figure image slots (ref, format, size, caption)")
+    il.add_argument("file", type=Path, help=".hwpx file")
+    il.add_argument("--json", action="store_true", help="emit slots as JSON (for an AI)")
+    il.set_defaults(func=_cmd_image)
+
+    ir = img_sub.add_parser("replace", help="replace one figure image in place")
+    ir.add_argument("file", type=Path, help=".hwpx file")
+    ir.add_argument("image", type=Path, help="new image file")
+    ir.add_argument("--ref", default=None, help="target by binaryItemIDRef (e.g. image7)")
+    ir.add_argument(
+        "--caption", default=None, help="target by caption text (exact, then substring)"
+    )
+    ir.add_argument(
+        "--fit",
+        choices=("aspect", "none"),
+        default="aspect",
+        help="aspect: keep width, recompute height so the image isn't stretched "
+        "(default); none: leave the box as-is",
+    )
+    ir.add_argument("-o", "--output", type=Path, default=None, help="output file")
+    ir.set_defaults(func=_cmd_image)
+
+    img.set_defaults(func=lambda _args: (img.print_help(), 0)[1])
+
+    wr = sub.add_parser(
+        "write",
+        aliases=["author"],
+        help="write Markdown into a structured template, using its styles",
+    )
+    wr.add_argument("md", type=Path, help="Markdown content file to write")
+    wr.add_argument(
+        "--template", type=Path, required=True, help=".hwpx template to fill"
+    )
+    wr.add_argument(
         "--chapter",
         default=None,
         help="chapter label/number for table captions (e.g. 7, A); "
         "recommended — auto-detection is unreliable on real documents",
     )
-    auth.add_argument(
+    wr.add_argument(
         "--table-template",
         default=None,
         metavar="CAPTION",
         help="caption text of the table whose format generated tables copy "
         "(use when the {{table_template}} token was consumed by a prior run)",
     )
-    auth.add_argument("-o", "--output", type=Path, default=None, help="output file")
-    auth.set_defaults(func=_cmd_author)
+    wr.add_argument("-o", "--output", type=Path, default=None, help="output file")
+    wr.set_defaults(func=_cmd_write)
 
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    global _ACTIVE_HWPX
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):
         parser.print_help()
         return 0
+    # validate input files up front so a missing path is a clear message, not a
+    # Python traceback (output paths are never checked — they're created).
+    for attr in ("input", "file", "template", "md", "image"):
+        path = getattr(args, attr, None)
+        if path is not None and not Path(path).is_file():
+            print(f"error: 파일을 찾을 수 없습니다: {path}", file=sys.stderr)
+            return 2
+    _quiet_hwpx_logging()
+    src = (
+        getattr(args, "template", None)
+        or getattr(args, "file", None)
+        or getattr(args, "input", None)
+    )
+    _ACTIVE_HWPX = str(src) if src else None
     return args.func(args)
 
 

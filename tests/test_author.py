@@ -67,6 +67,77 @@ def test_parse_markdown_detects_pipe_table() -> None:
     assert any(b.__class__.__name__ == "Block" and "아님" in b.text for b in blocks)
 
 
+def test_parse_thematic_break() -> None:
+    """`---` / `***` / `___` on their own line are horizontal-rule blocks."""
+    blocks = parse_markdown("위\n\n---\n\n***\n\n___\n\n- - -\n\n아래\n")
+    assert [(b.kind, b.text) for b in blocks] == [
+        ("paragraph", "위"),
+        ("rule", ""),
+        ("rule", ""),
+        ("rule", ""),
+        ("rule", ""),
+        ("paragraph", "아래"),
+    ]
+    # `--` (only two) is not a rule; a pipe delimiter is still a table, not a rule
+    assert [b.kind for b in parse_markdown("--\n")] == ["paragraph"]
+
+
+def test_strip_manual_heading_numbering() -> None:
+    """Manual section numbers in headings are dropped (template auto-numbers)."""
+    md = (
+        "## 부록 A: 프로젝트\n\n### A-1 세부\n\n## 1.1 배경\n\n"
+        "## 제2장 총론\n\n# 부록\n\n## 2024 결산\n\n## A형 조사\n"
+    )
+    headings = [(b.level, b.text) for b in parse_markdown(md) if b.kind == "heading"]
+    assert headings == [
+        (2, "프로젝트"),  # "부록 A:" stripped
+        (3, "세부"),  # "A-1" stripped
+        (2, "배경"),  # "1.1" stripped
+        (2, "총론"),  # "제2장" stripped
+        (1, "부록"),  # bare "부록" would empty the heading -> kept
+        (2, "2024 결산"),  # a year (no delimiter) is not numbering -> kept
+        (2, "A형 조사"),  # a single letter without a sub-number -> kept
+    ]
+
+
+def test_cli_missing_input_file_is_friendly(capsys) -> None:
+    """A missing input path is a clear message + exit 2, not a Python traceback."""
+    from hwp_agent.cli.main import main
+
+    rc = main(["write", "/no/such/file.md", "--template", str(TYPE1)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "file.md" in err and "Traceback" not in err
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_thematic_break_becomes_horizontal_line(tmp_path: Path) -> None:
+    """A `---` renders as a real <hp:line> shape, not literal '---' text."""
+    from hwpx.document import HwpxDocument
+
+    HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+
+    def n_lines(doc) -> int:
+        return sum(1 for s in doc.sections for _ in s.element.iter(f"{HP}line"))
+
+    before = n_lines(HwpxDocument.open(str(TYPE1)))
+    out = tmp_path / "out.hwpx"
+    result = fill_from_markdown(TYPE1, "위 문단\n\n---\n\n아래 문단\n", output=out)
+    assert result.placed == 3
+
+    doc = HwpxDocument.open(str(out))  # round-trips
+    assert "---" not in "".join(p.text or "" for p in doc.paragraphs)  # not literal text
+    assert n_lines(doc) == before + 1  # exactly one horizontal line added
+    # the added line spans a real width and has a non-zero box height
+    added = [
+        ln
+        for s in doc.sections
+        for ln in s.element.iter(f"{HP}line")
+        if (sz := ln.find(f"{HP}sz")) is not None and int(sz.get("width", "0")) > 14400
+    ]
+    assert added and int(added[0].find(f"{HP}sz").get("height")) >= 1
+
+
 @pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
 def test_fill_table_copies_template_format(tmp_path: Path) -> None:
     import zipfile
@@ -481,6 +552,80 @@ def test_fill_inserts_at_body_marker(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_fill_inserts_at_appendix_marker(tmp_path: Path) -> None:
+    """{{appendix}} is an insertion marker too, and is consumed on fill."""
+    from hwpx.document import HwpxDocument
+
+    tmpl = tmp_path / "tmpl.hwpx"
+    doc = HwpxDocument.open(str(TYPE1))
+    sec = doc.sections[0]
+    marker = sec.add_paragraph("{{appendix}}", style_id_ref=0, para_pr_id_ref=0)
+    el = marker.element
+    el.getparent().remove(el)
+    sec.paragraphs[3].element.addprevious(el)
+    doc.save_to_path(str(tmpl))
+
+    out = tmp_path / "out.hwpx"
+    result = fill_from_markdown(tmpl, "# 부록 A\n\n부록 본문.\n", output=out)
+    assert result.inserted_at_marker is True
+
+    filled = HwpxDocument.open(str(out))
+    texts = [p.text for p in filled.sections[0].paragraphs]
+    assert "{{appendix}}" not in "".join(texts)  # marker consumed
+    assert "부록 A" in texts[3]  # authored content sits at the marker position
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_fill_preserves_section_opener_secpr(tmp_path: Path) -> None:
+    """A marker on a section-opening paragraph keeps the 구역 boundary intact.
+
+    A dedicated empty appendix section is a single paragraph that both opens the
+    section (carries ``<hp:secPr>``) and holds ``{{appendix}}``. Deleting the marker
+    outright would drop the secPr and collapse the section into the previous one;
+    the secPr-run must be transplanted onto the first authored paragraph.
+    """
+    from hwpx.document import HwpxDocument
+
+    HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+
+    def count_secpr(doc) -> int:
+        return sum(
+            1
+            for s in doc.sections
+            for p in s.paragraphs
+            if p.element.find(f"{HP}run/{HP}secPr") is not None
+        )
+
+    doc = HwpxDocument.open(str(TYPE1))
+    opener = next(
+        (
+            p
+            for s in doc.sections
+            for p in s.paragraphs
+            if p.element.find(f"{HP}run/{HP}secPr") is not None
+        ),
+        None,
+    )
+    if opener is None:
+        pytest.skip("fixture has no secPr-bearing section opener")
+    opener.add_run("{{appendix}}")  # turn the section opener into the marker
+    tmpl = tmp_path / "tmpl.hwpx"
+    doc.save_to_path(str(tmpl))
+    before = count_secpr(HwpxDocument.open(str(tmpl)))
+
+    out = tmp_path / "out.hwpx"
+    result = fill_from_markdown(tmpl, "# 부록 A\n\n부록 본문.\n", output=out)
+    assert result.inserted_at_marker is True
+
+    filled = HwpxDocument.open(str(out))
+    all_text = "".join(p.text or "" for p in filled.paragraphs)
+    assert "{{appendix}}" not in all_text  # marker consumed
+    assert "부록 A" in all_text
+    # secPr survived the marker deletion (old bug dropped it -> before - 1)
+    assert count_secpr(filled) == before
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
 def test_inline_bold_becomes_distinct_run(tmp_path: Path) -> None:
     from hwpx.document import HwpxDocument
 
@@ -496,3 +641,52 @@ def test_inline_bold_becomes_distinct_run(tmp_path: Path) -> None:
     # the bold span resolves to a different char style than the plain spans
     assert bold_run.char_pr_id_ref != plain_run.char_pr_id_ref
     assert plain_text("보통 **굵게** 보통") == "보통 굵게 보통"
+
+
+# --------------------------------------------------------------------------- #
+# table format zones — header vs body style banding
+# --------------------------------------------------------------------------- #
+def _mk_tbl(rows: list[tuple[str, int, int]]):
+    """Build a minimal 3-column <hp:tbl> from (header_flag, styleID, charID) rows."""
+    from xml.etree import ElementTree as ET
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    trs = []
+    for hdr, style, char in rows:
+        tcs = "".join(
+            f'<hp:tc borderFillIDRef="{c + 1}" header="{hdr}">'
+            f'<hp:subList vertAlign="TOP"><hp:p styleIDRef="{style}" paraPrIDRef="3">'
+            f'<hp:run charPrIDRef="{char}"/></hp:p></hp:subList>'
+            f'<hp:cellSz width="1000" height="500"/>'
+            f'<hp:cellMargin left="0" right="0" top="0" bottom="0"/></hp:tc>'
+            for c in range(3)
+        )
+        trs.append(f"<hp:tr>{tcs}</hp:tr>")
+    xml = f'<hp:tbl xmlns:hp="{hp}" borderFillIDRef="5">{"".join(trs)}</hp:tbl>'
+    return ET.fromstring(xml)
+
+
+def test_table_format_distinct_header_and_body_styles() -> None:
+    """Body rows keep the body style when header style differs (regression).
+
+    The real JRI template uses 표제목(14) for the header and 표내용(8) for the body.
+    The old note-row test compared each body row to the *header* style, so every
+    body row was misread as a note row, body_rows went empty, and the whole table
+    collapsed to the header look. Body zones must carry the body style, not 14.
+    """
+    from hwp_agent.ops.author import _table_format
+
+    fmt = _table_format(_mk_tbl([("1", 14, 34), ("0", 8, 41), ("0", 8, 41), ("0", 8, 41)]))
+    assert fmt.header.style == "14" and fmt.header.char == "34"
+    assert fmt.body.style == "8" and fmt.body.char == "41"
+    assert fmt.first_body.style == "8" and fmt.last.style == "8"
+    assert fmt.note is None  # every body row shares a style -> no note row
+
+
+def test_table_format_detects_trailing_note_row() -> None:
+    """A trailing row whose style differs from the body style is the note row."""
+    from hwp_agent.ops.author import _table_format
+
+    fmt = _table_format(_mk_tbl([("1", 14, 34), ("0", 8, 41), ("0", 8, 41), ("0", 15, 33)]))
+    assert fmt.body.style == "8"  # body rows unaffected by the note row
+    assert fmt.note is not None and fmt.note.style == "15"

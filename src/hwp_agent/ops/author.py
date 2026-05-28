@@ -6,8 +6,9 @@ ids — so outline numbering, fonts, and spacing come from the template (we neve
 synthesize numbering). Heading `#`→`HEADING_1`, `##`→`HEADING_2`, …; bullets →
 `BULLET_n`; plain text → `BODY`.
 
-Content is inserted at a ``{{body}}`` marker paragraph when present, else appended
-to the last section. ``AI:INSTRUCTION``-styled paragraphs are read by
+Content is inserted at a ``{{body}}`` / ``{{appendix}}`` marker paragraph when
+present (the marker is consumed on fill), else appended to the last section.
+``AI:INSTRUCTION``-styled paragraphs are read by
 :func:`read_instructions` and stripped on fill. Inline ``**bold**``/``*italic*`` is
 currently flattened to text (run-level styling is a later refinement).
 """
@@ -24,15 +25,38 @@ from hwpx.document import HwpxDocument
 from .form import extract_placeholders
 from .styles import INSTRUCTION, read_style_system, role_map
 
-#: token that marks where the authored body is inserted (a paragraph of its own)
+#: tokens marking where authored content is inserted (each on a paragraph of its
+#: own); the marker paragraph is consumed (removed) on fill. ``{{body}}`` = start of
+#: the main body, ``{{appendix}}`` = start of an appendix.
 BODY_MARKER = "{{body}}"
+APPENDIX_MARKER = "{{appendix}}"
+INSERTION_MARKERS = (BODY_MARKER, APPENDIX_MARKER)
 #: a table whose caption carries a ``{{table…}}`` token (e.g. ``{{table}}``,
 #: ``{{table_template}}``) is the format reference for generated tables.
 _TABLE_TOKEN_RE = re.compile(r"\{\{\s*table[\w:-]*\s*\}\}", re.IGNORECASE)
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 _HH = "http://www.hancom.co.kr/hwpml/2011/head"
+_HC = "http://www.hancom.co.kr/hwpml/2011/core"
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
+# a thematic break / horizontal rule: 3+ of -, *, or _ (optionally spaced), alone
+# on a line. No pipes, so it never clashes with a `|---|` table delimiter.
+_RULE_RE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
+# manual section numbering at the START of a heading — stripped so the template's
+# outline auto-numbering supplies it (we never synthesize numbers). Conservative:
+# a bare integer is only numbering with a delimiter ("1." yes, "2024 결산" no), and
+# a bare letter needs a sub-number ("A-1" yes, "A형" no), so real titles survive.
+_HEADING_NUM_RE = re.compile(
+    r"""^\s*(?:
+        부록\s*[0-9A-Za-z가-힣]+            # 부록 A / 부록 1 / 부록 가
+      | 제?\s*\d+\s*[편장절관항]              # 제1장 / 1장 / 2절
+      | [0-9]+(?:\s*[.\-]\s*[0-9]+)+         # 1.1 / 1-2 / 1.1.1  (multi-level)
+      | [0-9]+\s*[.)]                        # 1. / 1)            (delimited single)
+      | [A-Za-z](?:\s*[.\-]\s*[0-9]+)+       # A-1 / A.1 / B-2
+      | [IVXⅠ-Ⅻ]+\s*[.)]                     # Ⅱ. / III)          (roman, delimited)
+    )\s*[.)\]:：\-]*\s+(?=\S)""",
+    re.VERBOSE,
+)
 _INLINE_RE = re.compile(r"\*\*(.+?)\*\*|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 _ORDERED_RE = re.compile(r"^(\s*)\d+[.)]\s+(.*)$")
 # a table note/source line: 주) / 주: / <주> / 출처) / 자료: …
@@ -46,8 +70,8 @@ _CHAPTER_TOKEN_RE = re.compile(
 
 @dataclass
 class Block:
-    kind: str  # "heading" | "paragraph" | "bullet" | "ordered"
-    level: int  # heading level 1-6, list nesting 1+, 0 for paragraph
+    kind: str  # "heading" | "paragraph" | "bullet" | "ordered" | "rule"
+    level: int  # heading level 1-6, list nesting 1+, 0 for paragraph/rule
     text: str  # raw inline text (** / * markers kept; segmented at fill time)
 
 
@@ -142,6 +166,18 @@ def _delimiter_aligns(line: str) -> list[str] | None:
     return aligns or None
 
 
+def _strip_heading_number(text: str) -> str:
+    """Drop manual section numbering from the front of a heading title.
+
+    The template's heading styles auto-number (outline numbering), so a number
+    typed into the Markdown ("## 부록 A: …", "### A-1 …", "## 1.1 …") would double
+    up. We strip it, but never empty the heading — if nothing remains, keep the
+    original (e.g. a bare "부록" or "1 서론" with no delimiter is left untouched).
+    """
+    stripped = _HEADING_NUM_RE.sub("", text, count=1).strip()
+    return stripped or text
+
+
 def parse_markdown(markdown: str) -> list[Block | TableBlock]:
     """Parse Markdown into headings, paragraphs, bullets, ordered lists, and tables.
 
@@ -194,9 +230,14 @@ def parse_markdown(markdown: str) -> list[Block | TableBlock]:
             continue
         if not line.strip():
             flush()
+        elif _RULE_RE.match(line):
+            flush()
+            blocks.append(Block("rule", 0, ""))
         elif m := _HEADING_RE.match(line):
             flush()
-            blocks.append(Block("heading", len(m.group(1)), m.group(2).strip()))
+            blocks.append(
+                Block("heading", len(m.group(1)), _strip_heading_number(m.group(2).strip()))
+            )
         elif m := _ORDERED_RE.match(line):
             flush()
             level = len(m.group(1).expandtabs(2)) // 2 + 1
@@ -305,15 +346,17 @@ def _table_format(tbl) -> TableFormat:
         h += 1
     h = h or 1  # fall back to one header row if none are marked
     fmt.header = _zone(rows[h - 1])
-    header_style = fmt.header.style
-    rows = [rows[h - 1], *rows[h:]]  # keep the header zone row first for body scan
-    # body rows share the header's content style; a trailing row with a *different*
-    # style (e.g. JRI_각주 note row) is the note row, excluded so the thick bottom
-    # comes from the last real body row.
-    body_rows, note_rows = [], []
-    for tr in rows[1:]:
-        z = _zone(tr)
-        (note_rows if header_style and z.style not in (header_style, None) else body_rows).append(z)
+    # body rows = every non-header row. A trailing note/source row (e.g. a JRI_각주
+    # row) is the *trailing* row whose content style differs from the body style —
+    # compared against the body style, NOT the header, because a template's header
+    # and body cells frequently use different styles (e.g. 표제목 14 vs 표내용 8); the
+    # old header-relative test misread every body row as a note row and collapsed the
+    # whole table to the header look.
+    body_rows = [_zone(tr) for tr in rows[h:]]
+    note_rows = []
+    body_style = next((z.style for z in body_rows if z.style), None)
+    while len(body_rows) > 1 and body_style and body_rows[-1].style not in (body_style, None):
+        note_rows.insert(0, body_rows.pop())
     if body_rows:
         fmt.first_body = body_rows[0]  # top double rule pairs the header's bottom
         fmt.last = body_rows[-1]  # thick bottom
@@ -622,13 +665,34 @@ def _emphasis_char(doc: HwpxDocument, base_char: str | None, *, bold: bool, ital
         return base_char  # never inflate the font; worst case the run stays plain-styled
 
 
-def _find_body_marker(doc: HwpxDocument):
-    """Locate the top-level paragraph holding the ``{{body}}`` marker, if any."""
+def _find_insertion_marker(doc: HwpxDocument):
+    """Locate the paragraph holding an insertion marker ({{body}}/{{appendix}}), if any.
+
+    The first marker in document order wins; whichever is found is consumed (its
+    whole paragraph removed) once content is inserted before it.
+    """
     for section in doc.sections:
         for paragraph in section.paragraphs:
-            if BODY_MARKER in (paragraph.text or ""):
+            text = paragraph.text or ""
+            if any(m in text for m in INSERTION_MARKERS):
                 return section, paragraph
     return None, None
+
+
+def _section_opener_run(para_el):
+    """Return a paragraph's leading ``<hp:run>`` that carries an ``<hp:secPr>``, if any.
+
+    A 구역's first paragraph opens the section via a (usually textless) run holding
+    ``<hp:secPr>`` (+ a column ctrl). When an insertion marker sits *on* such a
+    paragraph — e.g. a dedicated empty appendix section whose only paragraph is
+    ``{{appendix}}`` — deleting the marker would drop the secPr and collapse the
+    section into the previous one. The caller transplants this run onto the first
+    authored paragraph instead, so the section boundary survives.
+    """
+    for run in para_el.findall(f"{{{_HP}}}run"):
+        if run.find(f"{{{_HP}}}secPr") is not None:
+            return run
+    return None
 
 
 def read_instructions(template: Path | str) -> dict:
@@ -702,8 +766,8 @@ def fill_from_markdown(
             p.remove()
             result.instructions_removed += 1
 
-    # insert at the {{body}} marker if present, else append to the last section
-    marker_section, marker = _find_body_marker(doc)
+    # insert at a {{body}}/{{appendix}} marker if present, else append to the last section
+    marker_section, marker = _find_insertion_marker(doc)
     target_section = marker_section or doc.sections[-1]
     result.inserted_at_marker = marker is not None
 
@@ -716,11 +780,16 @@ def fill_from_markdown(
     # demotes the 2nd+ authored heading to body (see docs/author-backlog.md item C)
     lineseg_by_style = _lineseg_index(doc)
 
+    first_placed = None
+
     def place(element) -> None:
-        """Move a freshly-built element before the {{body}} marker (else leave appended)."""
+        """Move a freshly-built element before the marker (else leave appended)."""
+        nonlocal first_placed
         if marker is not None:
             element.getparent().remove(element)
             marker.element.addprevious(element)
+            if first_placed is None:
+                first_placed = element
 
     def add_runs(para, text: str, base_char: str | None) -> None:
         for seg in inline_segments(text):
@@ -773,6 +842,35 @@ def fill_from_markdown(
             result.placed += 1
             continue
 
+        if block.kind == "rule":
+            # a Markdown thematic break (`---`) → a full-width horizontal line, as its
+            # own (BODY-styled) paragraph; spans the section's text column.
+            width = _text_width(target_section) or 14400
+            rule_para = target_section.add_paragraph(
+                "", style_id_ref=body_style, para_pr_id_ref=body_para, include_run=False
+            )
+            rule_para.add_line(0, 0, width, 0, treat_as_char=True)
+            line_el = rule_para.element.find(f".//{{{_HP}}}line")
+            if line_el is not None:
+                # python-hwpx writes the line's points in the paragraph namespace
+                # (<hp:startPt>/<hp:endPt>), but Hangul requires them in the core
+                # namespace (<hc:startPt>/<hc:endPt>) and refuses the file otherwise.
+                for tag in ("startPt", "endPt"):
+                    pt = line_el.find(f"{{{_HP}}}{tag}")
+                    if pt is not None:
+                        fixed = line_el.makeelement(f"{{{_HC}}}{tag}", dict(pt.attrib))
+                        pt.getparent().replace(pt, fixed)
+                # a flat line has zero-height boxes; give them height 1 (consistent
+                # with Hangul's own horizontal lines, whose curSz height is 1) so the
+                # line always renders
+                for tag in ("orgSz", "curSz", "sz"):
+                    box = line_el.find(f"{{{_HP}}}{tag}")
+                    if box is not None and (box.get("height") or "0") == "0":
+                        box.set("height", "1")
+            place(rule_para.element)
+            result.placed += 1
+            continue
+
         style_id, role = resolve(block)
         if role == "HEADING_1" and explicit_chapter is None:
             chapter_count += 1
@@ -807,7 +905,21 @@ def fill_from_markdown(
         ref_section.mark_dirty()  # so the edited section is re-serialized on save
 
     if marker is not None:
-        marker.element.getparent().remove(marker.element)
+        # if the marker paragraph opens its 구역 (carries <hp:secPr>), move that
+        # secPr-bearing run onto the first authored paragraph before deleting the
+        # marker — otherwise the section loses its boundary and collapses into the
+        # previous one (a dedicated empty appendix section is exactly this shape).
+        opener = _section_opener_run(marker.element)
+        if opener is not None and first_placed is not None:
+            first_placed.insert(0, opener)
+            marker.element.getparent().remove(marker.element)
+        elif opener is not None:
+            # nothing authored: keep the opener paragraph, just drop the marker text
+            for run in list(marker.element.findall(f"{{{_HP}}}run")):
+                if run is not opener:
+                    marker.element.remove(run)
+        else:
+            marker.element.getparent().remove(marker.element)
 
     doc.save_to_path(str(output or template))
     return result

@@ -21,9 +21,10 @@ never isolated). Instead, **reuse an empty section the user creates in Hangul**:
 2. **Re-inject the table-format token:** put `{{table_template}}` in the
    reference table's caption (see backlog item **A** — the token is consumed by a
    prior `author` run, so a once-authored file has lost it).
-3. `hwp-agent author BASE.hwpx --md appendix.md -o OUT.hwpx` — the appendix fills
-   into that last (appendix) section.
-4. Post-process (the C/D/E/F fixes below), then blank the `{{appendix}}` token.
+3. `hwp-agent write appendix.md --template BASE.hwpx -o OUT.hwpx` — the appendix
+   fills in at the `{{appendix}}` marker, which is **consumed** (removed) on fill.
+4. Post-process (the C/D/E/F fixes below). The `{{appendix}}` token no longer
+   needs blanking by hand — `author` removes the marker paragraph itself.
 
 So `author` already does the core fill; the remaining gap is **(a)** robustness
 fixes that the manual post-processing revealed (see `docs/author-backlog.md`) and

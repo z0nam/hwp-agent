@@ -56,7 +56,7 @@ table copies the reference's `pos` (treatAsChar=0, floating) and `repeatHeader`.
   table number stays an `autoNum` field. The **chapter number** can't use a cross-ref
   inside a caption, so a `{{chapter_number}}` placeholder in the reference caption is
   substituted with the **explicit `chapter=` / `--chapter`** value (the AI knows the
-  chapter): `hwp-agent author form.hwpx --md c.md --chapter 7` (or `--chapter 가`).
+  chapter): `hwp-agent write c.md --template form.hwpx --chapter 7` (or `--chapter 가`).
   Counting is **best-effort fallback only** — real documents use outline styles too
   inconsistently (chapters not reliably level-0; survey items etc. in outline styles),
   put chapter titles inside tables/boxes, and restart/relabel numbering per section
@@ -72,7 +72,7 @@ Column widths, per-cell border variety, multi-line note paragraphs, chapter-numb
 *format*, and inline bold inside cells remain approximations / refinements.
 
 > **Known issues from real authoring** (see `docs/author-backlog.md`): the
-> `{{table…}}` token is **consumed on each `author` run**, so re-authoring a file
+> `{{table…}}` token is **consumed on each `write` run**, so re-writing a file
 > loses it and falls back to the generic table style (item A); generated table
 > **widths aren't fit to the text column** and can overflow (item E); cells should
 > always use the named table-content style, never 1pt/20pt direct formatting (item F).

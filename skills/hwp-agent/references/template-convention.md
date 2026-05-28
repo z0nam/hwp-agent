@@ -39,11 +39,13 @@ Two channels, both visible and editable inside Hangul:
   returns their text; `fill_from_markdown` **removes** them from the output.
 - **Slots / fill positions** — `{{slot}}` tokens (e.g. `{{title}}`, `{{author}}`)
   mark where specific values go; discovered by `ops.form` and filled by name. A
-  `{{body}}` token (its own paragraph) marks **where the main body begins** — the
-  start of 본문 / chapter 1, after 표지·목차. `fill_from_markdown` inserts the
-  authored content starting at that point and removes the marker; it defines the
-  body's start boundary, not a generic "fill here" hole. Without a `{{body}}`
-  marker, content is appended to the last section.
+  `{{body}}` or `{{appendix}}` token (its own paragraph) is an **insertion
+  marker**: `{{body}}` marks **where the main body begins** (the start of 본문 /
+  chapter 1, after 표지·목차), `{{appendix}}` marks **where an appendix begins**.
+  `fill_from_markdown` inserts the authored content starting at that point and
+  **consumes** (removes) the marker; it defines a start boundary, not a generic
+  "fill here" hole. Without a marker, content is appended to the last section. If a
+  template has both, the first in document order is used.
   A `{{table…}}` token (e.g. `{{table_template}}`) in a table's **caption** marks
   that table as the **format reference** for generated tables; the token is stripped
   from the caption on fill (the table stays). Without it, the first table in the
@@ -119,4 +121,4 @@ guidance, the author inserts (in Hangul):
 ```
 
 Then: `hwp-agent classify form.hwpx` → `structured`; `hwp-agent styles form.hwpx`
-shows the role map; `hwp-agent author form.hwpx --md content.md -o out.hwpx` fills it.
+shows the role map; `hwp-agent write content.md --template form.hwpx -o out.hwpx` fills it.

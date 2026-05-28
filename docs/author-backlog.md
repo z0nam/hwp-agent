@@ -1,6 +1,7 @@
 # `ops.author` hardening backlog
 
-Concrete `hwp-agent author` defects and improvements found while authoring a real
+Concrete `hwp-agent write` (the command formerly named `author`) defects and
+improvements found while authoring a real
 appendix (서귀포 보고서, 2026-05-24) — see `docs/section-split.md` for the case.
 Each item has the observed symptom, the diagnosis, and the fix direction.
 

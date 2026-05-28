@@ -80,8 +80,8 @@ locates the bundled jar on its own).
 
 `skills/hwp-agent/` packages the authoring workflow as a [Claude Code
 Skill](https://docs.claude.com/en/docs/claude-code/skills) — it teaches Claude
-the inspect-first loop (`classify` → `styles` → `instructions` → `author`/`form
-fill` → verify), the template token conventions (`{{body}}`,
+the inspect-first loop (`classify` → `styles` → `instructions` → `write`/`form
+fill` → verify), the template token conventions (`{{body}}`, `{{appendix}}`,
 `{{table_template}}`, `{{chapter_number=N}}`), and the Markdown→HWPX rules.
 
 `./scripts/install.sh` registers it globally at `~/.claude/skills/hwp-agent`.

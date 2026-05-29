@@ -87,11 +87,11 @@ and B/D (section-split / custom outline numbering) are M8.
   **level 0**, and reconcile the **start number** (remove the ghost "A." empty
   outline paragraph so the body doesn't start at "B.").
 
-## G — bullet nesting isn't the HWP outline level *(role map + doctor)* — ◑ doctor done; role map honors AI:BULLET_n
+## G — bullet nesting isn't the HWP outline level *(role map + check)* — ◑ check done; role map honors AI:BULLET_n
 
 - **Symptom:** the role map collapses sibling bullets — `■` (10.5pt, used 265×)
   and `-` (10.0pt, used 394×) both sit at HWP outline level 0, so only one becomes
-  `BULLET_1` and the other is dropped; `doctor` then flags `■ > -` as a false
+  `BULLET_1` and the other is dropped; `check` then flags `■ > -` as a false
   font-hierarchy violation.
 - **Diagnosis:** in HWP, **bullet nesting is encoded by the bullet style (glyph),
   not the outline level** — `■` is the parent, `-` nests under it. The
@@ -99,10 +99,10 @@ and B/D (section-split / custom outline numbering) are M8.
 - **Fix:** order the bullet ladder by an **explicit declaration**, not the outline
   level. Honor the existing `AI:BULLET_n` naming override first; optionally fall
   back to a stable convention (e.g. font size descending, or a glyph order
-  `■ > ● > - > ·`). Then `doctor` must judge bullet hierarchy against that order
+  `■ > ● > - > ·`). Then `check` must judge bullet hierarchy against that order
   (so `■` 10.5 > `-` 10.0 reads as correct), and stop calling true sub-level
   bullets "un-mapped siblings".
-- **Done:** `doctor` no longer gap/size-checks the BULLET ladder (those derive
+- **Done:** `check` no longer gap/size-checks the BULLET ladder (those derive
   from the unreliable outline level); it surfaces the un-targetable bullet styles
   with explicit guidance to declare `AI:BULLET_n`. `role_map` already honors that
   `AI:BULLET_n` naming override outright, so a declared ladder works today.

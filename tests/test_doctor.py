@@ -55,10 +55,11 @@ def test_diagnose_does_not_false_flag_bullet_hierarchy() -> None:
 
 
 @pytest.mark.skipif(not APPENDIX.is_file(), reason="appendix fixture not present")
-def test_doctor_cli_runs(capsys) -> None:
+def test_check_cli_runs(capsys) -> None:
     from hwp_agent.cli.main import build_parser
 
-    args = build_parser().parse_args(["doctor", str(APPENDIX)])
-    assert args.func(args) == 0
+    for cmd in ("check", "doctor"):  # `doctor` is kept as a back-compat alias
+        args = build_parser().parse_args([cmd, str(APPENDIX)])
+        assert args.func(args) == 0
     out = capsys.readouterr().out
     assert "HEADING ladder" in out and "findings" in out

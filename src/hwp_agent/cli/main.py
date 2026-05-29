@@ -174,7 +174,7 @@ def _cmd_styles(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_doctor(args: argparse.Namespace) -> int:
+def _cmd_check(args: argparse.Namespace) -> int:
     import json
 
     from ..ops import diagnose_template
@@ -376,12 +376,14 @@ def build_parser() -> argparse.ArgumentParser:
     sty.add_argument("--json", action="store_true", help="emit roles + styles as JSON")
     sty.set_defaults(func=_cmd_styles)
 
-    doc = sub.add_parser(
-        "doctor", help="diagnose a template's style system (gaps, hierarchy, unmapped styles)"
+    chk = sub.add_parser(
+        "check",
+        aliases=["doctor"],
+        help="check a template's style system (gaps, hierarchy, unmapped styles)",
     )
-    doc.add_argument("file", type=Path, help=".hwpx template")
-    doc.add_argument("--json", action="store_true", help="emit the full report as JSON")
-    doc.set_defaults(func=_cmd_doctor)
+    chk.add_argument("file", type=Path, help=".hwpx template")
+    chk.add_argument("--json", action="store_true", help="emit the full report as JSON")
+    chk.set_defaults(func=_cmd_check)
 
     ins = sub.add_parser(
         "instructions", help="show a template's AI:INSTRUCTION directions and {{slots}}"

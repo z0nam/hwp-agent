@@ -134,3 +134,28 @@ Dates are proposals from 2026-05-23; adjust freely.
 - Slot identity for ambiguous forms (duplicate labels, nested tables).
 - How much the AI infers vs. an explicit slot contract (`{{}}` vs. label cells).
 - Packaging surface: Skill vs. MCP vs. both; how the form + brief are passed.
+
+## Next up (as of 2026-05-29)
+
+Recently shipped (pushed): `image list`/`replace`, **`write`** (renamed from
+`author`), `{{appendix}}` insertion marker + section-`secPr` preservation, `---`
+→ 가로선, heading manual-number stripping, friendly missing-file errors,
+manifest-fallback log note, contextual heading spacing, **`check`** (renamed from
+`doctor`). Old command names (`author`, `doctor`) are kept as aliases.
+
+**Top priority — make 제주연구원's official template machine-friendly.** Two tracks:
+
+1. **Golden template (one-time, in Hangul).** Run `hwp-agent check` on the
+   official .hwpx; close the gaps it reports — give every structural element a
+   **named style** + `AI:<ROLE>` (esp. bullets: `AI:BULLET_n`, item **G**), fix the
+   **font hierarchy** (deeper ≤ shallower), add `{{body}}`/`{{appendix}}` markers,
+   `{{table_template}}` on a reference table, and `AI:INSTRUCTION` guidance.
+   Iterate until `check` is clean → the canonical template every report starts from.
+2. **Tooling.** Grow `check` from *diagnosis* into a **fix-checklist / machine-
+   readiness score**. This track is where deferred items land: **F** (whole-line
+   bold → named sub-heading style) and **G** (bullet glyph/size order fallback when
+   no `AI:BULLET_n` is declared).
+
+**Queued after:** Hangul render-verify of items **C/F**; **M3** MCP server; **M5**
+Windows; **M6** HWPX→Markdown; **M7** other assistants. (See milestones above and
+`docs/author-backlog.md`.)

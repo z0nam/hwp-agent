@@ -505,14 +505,15 @@ def test_fill_from_markdown_applies_outline_styles(tmp_path: Path) -> None:
 
     roles = role_map(TYPE1)
     doc = HwpxDocument.open(str(out))
+    # look up by text (a contextual spacer paragraph now sits before "새 절", so the
+    # authored headings aren't simply the last N paragraphs)
+    by_text = {(p.text or "").strip(): p for p in doc.paragraphs if (p.text or "").strip()}
     # the appended heading paragraphs must carry the template's outline styles
-    appended = doc.paragraphs[-4:]
-    by_text = {p.text: str(p.style_id_ref) for p in appended}
-    assert by_text["새 장"] == roles["HEADING_1"]
-    assert by_text["새 절"] == roles["HEADING_2"]
+    assert str(by_text["새 장"].style_id_ref) == roles["HEADING_1"]
+    assert str(by_text["새 절"].style_id_ref) == roles["HEADING_2"]
 
     # heading paragraphs resolve to OUTLINE headings (auto-numbered by Hangul)
-    h1 = next(p for p in appended if p.text == "새 장")
+    h1 = by_text["새 장"]
     heading = doc.paragraph_property(h1.para_pr_id_ref).heading
     assert heading.type == "OUTLINE" and heading.level == 0
 
@@ -690,3 +691,103 @@ def test_table_format_detects_trailing_note_row() -> None:
     fmt = _table_format(_mk_tbl([("1", 14, 34), ("0", 8, 41), ("0", 8, 41), ("0", 15, 33)]))
     assert fmt.body.style == "8"  # body rows unaffected by the note row
     assert fmt.note is not None and fmt.note.style == "15"
+
+
+# --------------------------------------------------------------------------- #
+# contextual heading spacing — a blank paragraph above a heading unless it hugs
+# its parent (a heading directly under a shallower one, with no author blank line)
+# --------------------------------------------------------------------------- #
+_SPACING_MD = (
+    "# 장제목1\n## 절제목1\n### 소절제목1\n* 내용내용\n\n"
+    "### 소절제목2\n* 내용내용\n\n## 절제목2\n### 소절제목2-1\n* 내용내용\n"
+)
+
+
+def test_parse_markdown_tracks_blank_before() -> None:
+    """Blank lines preceding a block are counted (drives contextual heading spacing)."""
+    bb = {b.text: b.blank_before for b in parse_markdown(_SPACING_MD) if b.kind == "heading"}
+    assert bb["장제목1"] == 0
+    assert bb["절제목1"] == 0 and bb["소절제목1"] == 0  # hug their parent (no blank)
+    assert bb["소절제목2"] == 1 and bb["절제목2"] == 1  # an author blank precedes each
+    assert bb["소절제목2-1"] == 0  # hugs 절제목2
+
+
+def _para_before(paras, text):
+    idx = next(i for i, p in enumerate(paras) if (p.text or "").strip() == text)
+    return paras[idx - 1]
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_heading_spacing_inserts_contextual_gaps(tmp_path: Path) -> None:
+    """A sized blank paragraph is inserted above non-hugging headings only."""
+    from hwpx.document import HwpxDocument
+
+    before_n = len(list(HwpxDocument.open(str(TYPE1)).paragraphs))
+    out = tmp_path / "out.hwpx"
+    result = fill_from_markdown(TYPE1, _SPACING_MD, output=out)
+    assert result.placed == 9  # 6 headings + 3 bullets; spacer paragraphs not counted
+
+    doc = HwpxDocument.open(str(out))
+    paras = list(doc.paragraphs)
+    # exactly two spacers added: none before the first heading, none before the three
+    # hugging child headings (절제목1 / 소절제목1 / 소절제목2-1)
+    assert len(paras) - before_n == result.placed + 2
+
+    # a blank paragraph sits above the sibling / section-return headings…
+    assert (_para_before(paras, "소절제목2").text or "").strip() == ""
+    assert (_para_before(paras, "절제목2").text or "").strip() == ""
+    # …and the hugging headings follow their parent directly, no blank between
+    assert (_para_before(paras, "절제목1").text or "").strip() == "장제목1"
+    assert (_para_before(paras, "소절제목1").text or "").strip() == "절제목1"
+    assert (_para_before(paras, "소절제목2-1").text or "").strip() == "절제목2"
+
+    # the gap is sized to the following heading: its run carries that heading's char,
+    # so a ## gap is taller than a ### gap
+    cps = doc._root._headers[0]._char_properties_element(create=False)
+
+    def height(cid):
+        return int(cps.find(f"{_HH}charPr[@id='{cid}']").get("height"))
+
+    def run_char(p):
+        return p.element.find(f"{_HP}run").get("charPrIDRef")
+
+    gap2 = run_char(_para_before(paras, "절제목2"))  # before a ## heading
+    gap3 = run_char(_para_before(paras, "소절제목2"))  # before a ### heading
+    head2 = run_char(next(p for p in paras if (p.text or "").strip() == "절제목2"))
+    head3 = run_char(next(p for p in paras if (p.text or "").strip() == "소절제목2"))
+    assert gap2 == head2 and gap3 == head3  # gap height tracks the heading's font
+    assert height(gap2) > height(gap3)  # ## gap taller than ### gap
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_heading_spacing_packed_tight_matches_spaced(tmp_path: Path) -> None:
+    """Tightly-packed Markdown (no blank lines) yields the same gaps as the spaced form."""
+    from hwpx.document import HwpxDocument
+
+    tight = _SPACING_MD.replace("\n\n", "\n")  # drop the author blank lines
+    out = tmp_path / "out.hwpx"
+    result = fill_from_markdown(TYPE1, tight, output=out)
+    assert result.placed == 9
+
+    paras = list(HwpxDocument.open(str(out)).paragraphs)
+    # the structural rule still gaps the sibling / section headings…
+    assert (_para_before(paras, "소절제목2").text or "").strip() == ""
+    assert (_para_before(paras, "절제목2").text or "").strip() == ""
+    # …and still hugs the direct children
+    assert (_para_before(paras, "소절제목1").text or "").strip() == "절제목1"
+    assert (_para_before(paras, "소절제목2-1").text or "").strip() == "절제목2"
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_heading_spacing_author_blank_forces_gap(tmp_path: Path) -> None:
+    """An author blank line before a would-be-hugging child heading forces a gap."""
+    from hwpx.document import HwpxDocument
+
+    def hugs(md: str) -> bool:
+        out = tmp_path / "o.hwpx"
+        fill_from_markdown(TYPE1, md, output=out)
+        paras = list(HwpxDocument.open(str(out)).paragraphs)
+        return (_para_before(paras, "자식").text or "").strip() == "부모"
+
+    assert hugs("# 부모\n## 자식\n") is True  # direct child, tight → hugs (no gap)
+    assert hugs("# 부모\n\n## 자식\n") is False  # author blank line → gap honored

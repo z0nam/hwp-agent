@@ -72,6 +72,28 @@ shallowest available `BULLET_n`/`ORDERED_n` (templates often start lists at outl
 level 1, not 0). `ORDERED_n` is detected from enumerator-named outline styles
 ("1.", "1)", "가."). With no matching list style, items fall back to `BODY`.
 
+### Heading spacing (handled for you)
+
+A heading gets **one blank paragraph above it, sized to its own level** (a `##` gap
+is taller than a `###` gap) — *except* when it **hugs its parent**: a heading
+sitting directly under a shallower heading (`##` right under `#`, `###` right under
+`##`) with no blank line between them stays tight. A single fixed style margin
+can't express this (the same heading style appears both hugging and after content),
+so the gap is inserted as a real per-heading paragraph at fill time.
+
+You don't need to add spacer lines: **write tight Markdown and the structural rule
+fills the gaps**; if you *do* leave a blank line before a heading it's honored (it
+forces a gap even on a direct child). So both of these produce the same result:
+
+```
+# 장          ## 절1           # 장
+## 절1        ### 소절1   ≡    ## 절1
+### 소절1     * 내용            ### 소절1   (all hug — no gaps)
+* 내용                          * 내용
+              ## 절2                       ← gap (## size), 절2 follows content
+              ...               ## 절2
+```
+
 ### Font-size hierarchy principle
 
 Font size must be **monotonically non-increasing as the hierarchy deepens** — a

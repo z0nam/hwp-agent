@@ -2,9 +2,15 @@
 
 The AI writes Markdown; we map each block to the template's own styles via
 :func:`hwp_agent.ops.styles.role_map` and add paragraphs that reuse those style
-ids — so outline numbering, fonts, and spacing come from the template (we never
-synthesize numbering). Heading `#`→`HEADING_1`, `##`→`HEADING_2`, …; bullets →
+ids — so outline numbering and fonts come from the template (we never synthesize
+numbering). Heading `#`→`HEADING_1`, `##`→`HEADING_2`, …; bullets →
 `BULLET_n`; plain text → `BODY`.
+
+Headings get **contextual spacing**: one blank paragraph sized to the heading's
+own level is inserted above it, except when it hugs its parent (a heading directly
+under a shallower one, with no author blank line). A single fixed style margin
+can't express this, so the gap is a real per-heading paragraph; an author blank
+line forces a gap, and tightly-packed Markdown is filled by the structural rule.
 
 Content is inserted at a ``{{body}}`` / ``{{appendix}}`` marker paragraph when
 present (the marker is consumed on fill), else appended to the last section.
@@ -73,6 +79,7 @@ class Block:
     kind: str  # "heading" | "paragraph" | "bullet" | "ordered" | "rule"
     level: int  # heading level 1-6, list nesting 1+, 0 for paragraph/rule
     text: str  # raw inline text (** / * markers kept; segmented at fill time)
+    blank_before: int = 0  # blank lines that preceded this block in the Markdown
 
 
 @dataclass
@@ -91,6 +98,7 @@ class TableBlock:
     has_header: bool = True
     caption: str | None = None  # title line directly above the table
     note: str | None = None  # 주)/출처) line(s) directly below the table
+    blank_before: int = 0  # blank lines that preceded this block in the Markdown
 
     @property
     def n_rows(self) -> int:
@@ -187,10 +195,20 @@ def parse_markdown(markdown: str) -> list[Block | TableBlock]:
     """
     blocks: list[Block | TableBlock] = []
     para: list[str] = []
+    pending_blanks = 0  # blank lines seen since the last emitted block
+
+    def emit(block: Block | TableBlock) -> None:
+        # stamp the run of blank lines that preceded this block, then consume it —
+        # so a blank line before a heading attaches to that heading (see fill_from_
+        # markdown's contextual spacing rule).
+        nonlocal pending_blanks
+        block.blank_before = pending_blanks
+        pending_blanks = 0
+        blocks.append(block)
 
     def flush() -> None:
         if para:
-            blocks.append(Block("paragraph", 0, " ".join(para)))
+            emit(Block("paragraph", 0, " ".join(para)))
             para.clear()
 
     lines = markdown.splitlines()
@@ -219,7 +237,7 @@ def parse_markdown(markdown: str) -> list[Block | TableBlock]:
                 note_lines.append(lines[i].strip())
                 i += 1
             aligns += ["left"] * (len(header) - len(aligns))
-            blocks.append(
+            emit(
                 TableBlock(
                     rows=rows,
                     aligns=aligns[: len(header)],
@@ -230,22 +248,23 @@ def parse_markdown(markdown: str) -> list[Block | TableBlock]:
             continue
         if not line.strip():
             flush()
+            pending_blanks += 1
         elif _RULE_RE.match(line):
             flush()
-            blocks.append(Block("rule", 0, ""))
+            emit(Block("rule", 0, ""))
         elif m := _HEADING_RE.match(line):
             flush()
-            blocks.append(
+            emit(
                 Block("heading", len(m.group(1)), _strip_heading_number(m.group(2).strip()))
             )
         elif m := _ORDERED_RE.match(line):
             flush()
             level = len(m.group(1).expandtabs(2)) // 2 + 1
-            blocks.append(Block("ordered", level, m.group(2).strip()))
+            emit(Block("ordered", level, m.group(2).strip()))
         elif m := _BULLET_RE.match(line):
             flush()
             level = len(m.group(1).expandtabs(2)) // 2 + 1
-            blocks.append(Block("bullet", level, m.group(2).strip()))
+            emit(Block("bullet", level, m.group(2).strip()))
         else:
             para.append(line.strip())
         i += 1
@@ -832,7 +851,46 @@ def fill_from_markdown(
             "--table-template '<caption text>' to copy the house style."
         )
 
+    # contextual heading spacing: a heading gets one blank paragraph above it, sized
+    # to its own level (## gap taller than ### gap), UNLESS it hugs its parent — i.e.
+    # it sits directly under a shallower heading and the author left no blank line.
+    # A fixed style margin can't express this (same style is used both hugging and
+    # after content), so the gap is a real paragraph inserted per-heading. Honors an
+    # author's explicit blank line (forces a gap) and fills tightly-packed Markdown.
+    prev_block: Block | TableBlock | None = None
+
+    def _wants_gap(prev: Block | TableBlock | None, cur: Block) -> bool:
+        if prev is None:  # the first authored block never gets a leading gap
+            return False
+        hugging = (
+            isinstance(prev, Block)
+            and prev.kind == "heading"
+            and prev.level < cur.level
+            and cur.blank_before == 0
+        )
+        return not hugging
+
+    def _emit_heading_gap(cur: Block) -> None:
+        h_style = resolve(cur)[0] or body_style  # the heading's own style id
+        h_char = doc.style(h_style).char_pr_id_ref if h_style is not None else None
+        gap = target_section.add_paragraph(
+            "", style_id_ref=body_style, para_pr_id_ref=body_para, include_run=False
+        )
+        # an (empty) run carrying the heading's char so the blank line's height tracks
+        # the heading size; the BODY paraPr keeps it out of the outline (no ghost number)
+        gap.add_run("", char_pr_id_ref=h_char)
+        place(gap.element)
+
     for block in blocks:
+        gap_needed = (
+            isinstance(block, Block)
+            and block.kind == "heading"
+            and _wants_gap(prev_block, block)
+        )
+        prev_block = block  # remembered for the next block's hug check
+        if gap_needed:
+            _emit_heading_gap(block)
+
         if isinstance(block, TableBlock):
             table = _build_table(
                 doc, target_section, block, table_fmt, body_style, body_para,

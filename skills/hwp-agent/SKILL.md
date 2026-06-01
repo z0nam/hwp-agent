@@ -87,6 +87,24 @@ The AI writes Markdown; the tool maps it onto the template's styles:
 - `---` (or `***` / `___`) on its own line → a full-width **horizontal line**
   (가로선), as its own paragraph.
 
+### Cross-references (LaTeX-style, single-brace)
+
+When the same table is referenced from prose, don't hand-type its number — label
+it once and cross-refer:
+
+- **Declare** on a table's caption: `자료 신뢰도 등급 {label:csv_grade}` → the
+  `{label:csv_grade}` is stripped from the rendered caption and registered.
+- **Reference** anywhere (prose, cells, captions, notes): `… 등급은 {ref:csv_grade}
+  참고 …` → replaced at fill time with the table's autonum text, e.g.
+  `표 부록-3` (chapter from `--chapter` + the table's 1-based document order).
+
+Tables only (v1). The substitution is **static text** (matches Hangul's autonum
+under the standard "표 {chapter}-{N}" convention); if a human reorders tables in
+Hangul, the captions auto-renumber but inline refs stay frozen — re-run `write`
+after reorder. An unresolved `{ref:id}` is left in place and surfaced as a
+warning so it's easy to spot. Single-brace, so they never collide with the
+template's double-brace tokens (`{{chapter_number}}` etc.).
+
 ### Template tokens (placed in the template, in Hangul, by a human)
 
 - `{{body}}` / `{{appendix}}` — each on its own paragraph, an **insertion

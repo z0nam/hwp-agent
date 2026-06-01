@@ -110,6 +110,92 @@ def test_cli_missing_input_file_is_friendly(capsys) -> None:
     assert "file.md" in err and "Traceback" not in err
 
 
+# --------------------------------------------------------------------------- #
+# cross-references — {label:id} on a table, {ref:id} anywhere
+# --------------------------------------------------------------------------- #
+def test_cross_ref_resolves_to_table_autonum() -> None:
+    """`{label:id}` on a table caption + `{ref:id}` in prose resolves to 표 ch-N."""
+    from hwp_agent.ops.author import _resolve_cross_refs
+
+    blocks = parse_markdown(
+        "신뢰도 등급 {label:csv_grade}\n"
+        "| 등급 | 정의 |\n|------|------|\n| A | 실측 |\n\n"
+        "본문에서 {ref:csv_grade}를 참고.\n\n"
+        "사업 일람 {label:csv_list}\n"
+        "| 코드 | 명 |\n|------|----|\n| P09 | 새연교 |\n\n"
+        "또 {ref:csv_list} 참고.\n"
+    )
+    warnings: list[str] = []
+    _resolve_cross_refs(blocks, "부록", warnings)
+
+    tables = [b for b in blocks if isinstance(b, TableBlock)]
+    paras = [b.text for b in blocks if not isinstance(b, TableBlock)]
+    # label tokens stripped from rendered captions
+    assert tables[0].caption == "신뢰도 등급"
+    assert tables[1].caption == "사업 일람"
+    # refs in prose resolved to autonum text
+    assert "표 부록-1" in paras[0] and "{ref:" not in paras[0]
+    assert "표 부록-2" in paras[1] and "{ref:" not in paras[1]
+    assert warnings == []
+
+
+def test_cross_ref_unresolved_keeps_token_and_warns() -> None:
+    """An unknown `{ref:id}` stays as-is so the issue is visible, plus a warning."""
+    from hwp_agent.ops.author import _resolve_cross_refs
+
+    blocks = parse_markdown("본문에서 {ref:없는것}와 {ref:다른것}를 참조.\n")
+    warnings: list[str] = []
+    _resolve_cross_refs(blocks, "부록", warnings)
+
+    assert "{ref:없는것}" in blocks[0].text and "{ref:다른것}" in blocks[0].text
+    assert any("unresolved" in w for w in warnings)
+    assert "없는것" in warnings[0] and "다른것" in warnings[0]
+
+
+def test_cross_ref_in_table_cell_resolves() -> None:
+    """`{ref:id}` inside a table cell is resolved too (the matching table use case)."""
+    from hwp_agent.ops.author import _resolve_cross_refs
+
+    blocks = parse_markdown(
+        "등급표 {label:grade}\n| 등급 | 정의 |\n|---|---|\n| A | 실측 |\n\n"
+        "매칭표\n| 이름 | 참조 |\n|---|---|\n| 등급 | {ref:grade} |\n"
+    )
+    warnings: list[str] = []
+    _resolve_cross_refs(blocks, "부록", warnings)
+    tables = [b for b in blocks if isinstance(b, TableBlock)]
+    # the matching table's second row, second cell now reads "표 부록-1"
+    assert tables[1].rows[1][1] == "표 부록-1"
+
+
+def test_cross_ref_without_chapter_falls_back_to_bare_number() -> None:
+    """No chapter set → "표 N" (no chapter prefix), still works."""
+    from hwp_agent.ops.author import _resolve_cross_refs
+
+    blocks = parse_markdown(
+        "표제 {label:x}\n| a | b |\n|---|---|\n| 1 | 2 |\n\n{ref:x} 참조.\n"
+    )
+    warnings: list[str] = []
+    _resolve_cross_refs(blocks, None, warnings)
+    paras = [b.text for b in blocks if not isinstance(b, TableBlock)]
+    assert "표 1" in paras[0]
+
+
+def test_cross_ref_duplicate_label_warns_first_wins() -> None:
+    """Same id declared on two tables → warning; first declaration wins."""
+    from hwp_agent.ops.author import _resolve_cross_refs
+
+    blocks = parse_markdown(
+        "첫 표 {label:dup}\n| a | b |\n|---|---|\n| 1 | 2 |\n\n"
+        "둘째 표 {label:dup}\n| c | d |\n|---|---|\n| 3 | 4 |\n\n"
+        "{ref:dup} 본다.\n"
+    )
+    warnings: list[str] = []
+    _resolve_cross_refs(blocks, "부록", warnings)
+    paras = [b.text for b in blocks if not isinstance(b, TableBlock)]
+    assert "표 부록-1" in paras[0]  # first declaration wins (not -2)
+    assert any("duplicate" in w and "dup" in w for w in warnings)
+
+
 @pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
 def test_thematic_break_becomes_horizontal_line(tmp_path: Path) -> None:
     """A `---` renders as a real <hp:line> shape, not literal '---' text."""

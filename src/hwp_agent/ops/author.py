@@ -72,6 +72,14 @@ _NOTE_RE = re.compile(r"^\s*<?\s*(주|출처|자료)\s*[>)\].:]")
 _CHAPTER_TOKEN_RE = re.compile(
     r"\{\{\s*chapter\w*\s*(?:=\s*([^}]*?))?\s*\}\}", re.IGNORECASE
 )
+# LaTeX-style cross-references: {label:id} declares an id on the table whose
+# caption it sits in (the token is stripped from the rendered caption); {ref:id}
+# anywhere resolves to that table's autonum text (e.g. "표 부록-3"). Single-brace
+# so they never clash with the template's double-brace tokens. v1 is static
+# substitution at fill time — Hangul's own autonum still renders the caption, so
+# the substitution assumes the "표 {chapter}-{N}" convention. See SKILL.md.
+_LABEL_RE = re.compile(r"\{label:([^{}\s]+)\}")
+_REF_RE = re.compile(r"\{ref:([^{}\s]+)\}")
 
 
 @dataclass
@@ -172,6 +180,63 @@ def _delimiter_aligns(line: str) -> list[str] | None:
             else "left"
         )
     return aligns or None
+
+
+def _resolve_cross_refs(
+    blocks: list, chapter: str | None, warnings: list[str]
+) -> None:
+    """Resolve `{label:id}` / `{ref:id}` cross-references across the block list.
+
+    Every :class:`TableBlock` is numbered in document order (1-based). A
+    ``{label:id}`` in a table's caption registers that table's autonum text
+    (``"표 {chapter}-{N}"``, or ``"표 N"`` if no chapter is set) under *id* and
+    is stripped from the rendered caption; ``{ref:id}`` anywhere (prose, cells,
+    captions, notes) is substituted with the looked-up text. This is **static**
+    substitution at fill time — Hangul still autonumbers the caption itself, so
+    we assume the standard "표 {chapter}-{N}" format. Duplicate labels and
+    unresolved refs are surfaced as warnings; unresolved refs keep the token so
+    the issue is visible in the output.
+    """
+    labels: dict[str, str] = {}
+    table_seq = 0
+    fmt = (lambda n: f"표 {chapter}-{n}") if chapter else (lambda n: f"표 {n}")
+    for b in blocks:
+        if isinstance(b, TableBlock) and b.caption:
+            table_seq += 1
+            for lid in _LABEL_RE.findall(b.caption):
+                if lid in labels:
+                    warnings.append(f"duplicate {{label:{lid}}}; first wins")
+                else:
+                    labels[lid] = fmt(table_seq)
+            b.caption = _LABEL_RE.sub("", b.caption).strip()
+        elif isinstance(b, TableBlock):
+            table_seq += 1  # still numbered even without caption
+
+    unresolved: list[str] = []
+
+    def resolve(text: str | None) -> str | None:
+        if not text or "{ref:" not in text:
+            return text
+
+        def sub(m: re.Match) -> str:
+            lid = m.group(1)
+            if lid in labels:
+                return labels[lid]
+            if lid not in unresolved:
+                unresolved.append(lid)
+            return m.group(0)
+
+        return _REF_RE.sub(sub, text)
+
+    for b in blocks:
+        if isinstance(b, TableBlock):
+            b.caption = resolve(b.caption)
+            b.note = resolve(b.note)
+            b.rows = [[resolve(c) or "" for c in r] for r in b.rows]
+        else:
+            b.text = resolve(b.text) or b.text
+    if unresolved:
+        warnings.append(f"unresolved {{ref:…}}: {', '.join(unresolved)}")
 
 
 def _strip_heading_number(text: str) -> str:
@@ -843,6 +908,7 @@ def fill_from_markdown(
         return str(chapter_count) if chapter_count else None
 
     blocks = parse_markdown(markdown)
+    _resolve_cross_refs(blocks, chapter_label(), result.warnings)
     if any(isinstance(b, TableBlock) for b in blocks) and not designated:
         result.warnings.append(
             "no {{table…}} token found — generated tables use "

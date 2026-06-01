@@ -180,6 +180,26 @@ def test_cross_ref_without_chapter_falls_back_to_bare_number() -> None:
     assert "표 1" in paras[0]
 
 
+def test_caption_framing_stripped_from_author_typed_title() -> None:
+    """Author may type `<표 N>` / `[그림 N]` framing — strip it to avoid doubling.
+
+    The template's autonum supplies `<표 {chapter}-{seq}>`, so a manually-typed
+    framing produces a doubled `<표 N><표 N>` prefix. The strip is defensive — it
+    keeps a real title that simply contains `>` later in the line untouched.
+    """
+    from hwp_agent.ops.author import _CAPTION_FRAMING_RE
+
+    def strip(s: str) -> str:
+        return _CAPTION_FRAMING_RE.sub("", s, count=1).lstrip()
+    assert strip("<표 부록-1> 참여자 효과 자료 신뢰도 등급") == "참여자 효과 자료 신뢰도 등급"
+    assert strip("〈표 Ⅰ-3〉 사업별 매출") == "사업별 매출"
+    assert strip("[그림 Ⅱ-2] 추세") == "추세"
+    assert strip("<표 부록-1>제목") == "제목"  # no space between framing and title
+    # un-framed titles are untouched (no false positives)
+    assert strip("참여자 효과") == "참여자 효과"
+    assert strip("a > b 비교 결과") == "a > b 비교 결과"  # `>` is mid-line, not framing
+
+
 def test_table_caption_allows_blank_line_above_table() -> None:
     """A caption separated from its table by one blank line is still its caption.
 

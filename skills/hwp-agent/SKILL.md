@@ -145,7 +145,12 @@ convention.
 - Markdown (GFM) tables are **rectangular only** — no merged cells. For merged
   tables, the human edits them in Hangul, or hands over a Sheet/HWPX draft to
   fill via the form path.
-- The **caption title** = the line directly above the table.
+- The **caption title** = the line directly above the table (one blank line
+  between is also fine).
+- **Do not type the `<표 …>` / `[그림 …]` framing** in the caption — the template's
+  autonum supplies it. Typing it produces a doubled `<표 부록-1> <표 부록-1>` prefix.
+  Just write the title text (e.g. `참여자 효과 자료 신뢰도 등급`); the tool also
+  strips a leading framing defensively if it slips in.
 - A **note/source row** = lines directly below starting with `주)` / `출처)` /
   `자료:`. With no such line the note row stays empty.
 - Pass the chapter label explicitly: `--chapter 7` (or `--chapter 가`,

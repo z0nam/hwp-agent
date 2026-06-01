@@ -72,6 +72,13 @@ _NOTE_RE = re.compile(r"^\s*<?\s*(주|출처|자료)\s*[>)\].:]")
 _CHAPTER_TOKEN_RE = re.compile(
     r"\{\{\s*chapter\w*\s*(?:=\s*([^}]*?))?\s*\}\}", re.IGNORECASE
 )
+# a leading caption framing the author may have typed into the Markdown
+# (`<표 부록-1> 신뢰도 등급` / `[그림 Ⅰ-3] 추세`). The template's autonum supplies
+# the framing on its own — typing it produces a doubled "<표 N> <표 N>" prefix,
+# so we strip it. Both ASCII (< >) and fullwidth (〈 〉) angle brackets covered.
+_CAPTION_FRAMING_RE = re.compile(
+    r"^\s*(?:[<〈]\s*표\s*[^>〉]*[>〉]|\[\s*그림\s*[^\]]*\])\s*"
+)
 # LaTeX-style cross-references: {label:id} declares an id on the table whose
 # caption it sits in (the token is stripped from the rendered caption); {ref:id}
 # anywhere resolves to that table's autonum text (e.g. "표 부록-3"). Single-brace
@@ -516,7 +523,13 @@ def _clone_caption(ref_el, title: str, chapter: str | None):
     substitute the chapter placeholder with *chapter* (the table auto-number stays an
     autoNum field), keep the framing, and set the title. Returns a detached caption
     element, or None when the reference has no caption.
+
+    If the author typed the framing into the Markdown title (`<표 부록-1> 신뢰도
+    등급`), the cloned framing would double it — so a leading `<표 …>` / `[그림 …]`
+    on the title is stripped before substitution.
     """
+    if title:
+        title = _CAPTION_FRAMING_RE.sub("", title, count=1).lstrip()
     cap = ref_el.find(f"{{{_HP}}}caption")
     if cap is None:
         return None

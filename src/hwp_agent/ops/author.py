@@ -67,6 +67,10 @@ _INLINE_RE = re.compile(r"\*\*(.+?)\*\*|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 _ORDERED_RE = re.compile(r"^(\s*)\d+[.)]\s+(.*)$")
 # a table note/source line: 주) / 주: / <주> / 출처) / 자료: …
 _NOTE_RE = re.compile(r"^\s*<?\s*(주|출처|자료)\s*[>)\].:]")
+# HTML comments are stripped from the source before parsing. Authors use
+# `<!-- … -->` to comment-out drafts / TODOs / earlier sections; they shouldn't
+# leak into the rendered output. Supports inline and block (multi-line) forms.
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 # caption placeholder for the chapter number (cross-refs don't work in captions).
 # Optional inline value forces it: {{chapter_number=3}} / {{chapter = 가}} → group 1.
 _CHAPTER_TOKEN_RE = re.compile(
@@ -265,6 +269,7 @@ def parse_markdown(markdown: str) -> list[Block | TableBlock]:
     resolved into runs at fill time via :func:`inline_segments`. Pipe tables
     (header row + ``|---|`` delimiter + body rows) become :class:`TableBlock`.
     """
+    markdown = _HTML_COMMENT_RE.sub("", markdown)
     blocks: list[Block | TableBlock] = []
     para: list[str] = []
     pending_blanks = 0  # blank lines seen since the last emitted block

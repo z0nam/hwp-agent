@@ -180,6 +180,28 @@ def test_cross_ref_without_chapter_falls_back_to_bare_number() -> None:
     assert "표 1" in paras[0]
 
 
+def test_html_comments_are_stripped() -> None:
+    """`<!-- … -->` is dropped before parsing — inline, end-of-line, and multi-line."""
+    md = (
+        "위 문단\n\n"
+        "<!-- 한 줄 주석 -->\n"
+        "남는 본문 <!-- 줄 안의 주석 --> 계속\n\n"
+        "<!-- ## 가려진 헤딩\n* 가려진 bullet\n* 더 가려짐 -->\n\n"
+        "아래 문단\n"
+    )
+    blocks = parse_markdown(md)
+    kinds_text = [(b.kind, b.text) for b in blocks if not isinstance(b, TableBlock)]
+    # only the visible paragraphs remain
+    assert kinds_text == [
+        ("paragraph", "위 문단"),
+        ("paragraph", "남는 본문  계속"),  # inline comment removed from the line
+        ("paragraph", "아래 문단"),
+    ]
+    # nothing from the multi-line comment leaked
+    all_text = " ".join(b.text for b in blocks if not isinstance(b, TableBlock))
+    assert "가려진" not in all_text
+
+
 def test_caption_framing_stripped_from_author_typed_title() -> None:
     """Author may type `<표 N>` / `[그림 N]` framing — strip it to avoid doubling.
 

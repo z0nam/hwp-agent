@@ -87,14 +87,19 @@ The AI writes Markdown; the tool maps it onto the template's styles:
 - `---` (or `***` / `___`) on its own line → a full-width **horizontal line**
   (가로선), as its own paragraph.
 
-### Cross-references (LaTeX-style, single-brace)
+### Cross-references — **optional**, ask the writer first
 
-When the same table is referenced from prose, don't hand-type its number — label
-it once and cross-refer:
+When the same table is referenced from prose, the writer *can* label it once and
+cross-refer instead of hand-typing the number. This is **opt-in**: many writers
+don't know the convention, and forcing it confuses more than it helps. So:
 
-- **Declare** on a table's caption: `자료 신뢰도 등급 {label:csv_grade}` → the
-  `{label:csv_grade}` is stripped from the rendered caption and registered.
-- **Reference** anywhere (prose, cells, captions, notes): `… 등급은 {ref:csv_grade}
+- **Before generating Markdown**, ask the writer once: "표 상호참조 토큰
+  (`{ref:id}`)을 사용할까요? 모르시면 '사용 안 함'으로 답해 주세요." Use it only
+  on a clear yes; on no/unsure, refer to tables by natural Korean context
+  ("아래 표와 같이 〜", "위 등급표에 의하면 〜").
+- **Declare** on a table's caption: `자료 신뢰도 등급 {label:tbl_grade}` → the
+  `{label:tbl_grade}` is stripped from the rendered caption and registered.
+- **Reference** anywhere (prose, cells, captions, notes): `… 등급은 {ref:tbl_grade}
   참고 …` → replaced at fill time with the table's autonum text, e.g.
   `표 부록-3` (chapter from `--chapter` + the table's 1-based document order).
 
@@ -103,7 +108,9 @@ under the standard "표 {chapter}-{N}" convention); if a human reorders tables i
 Hangul, the captions auto-renumber but inline refs stay frozen — re-run `write`
 after reorder. An unresolved `{ref:id}` is left in place and surfaced as a
 warning so it's easy to spot. Single-brace, so they never collide with the
-template's double-brace tokens (`{{chapter_number}}` etc.).
+template's double-brace tokens (`{{chapter_number}}` etc.). See JRI's standards
+(`ji-report-standards/format/latest.md` 「표 상호참조 (선택)」) for the institute
+convention.
 
 ### Template tokens (placed in the template, in Hangul, by a human)
 

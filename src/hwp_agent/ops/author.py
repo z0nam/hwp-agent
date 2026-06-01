@@ -286,9 +286,21 @@ def parse_markdown(markdown: str) -> list[Block | TableBlock]:
             and i + 1 < len(lines)
             and (aligns := _delimiter_aligns(lines[i + 1]))
         ):
-            # caption = the line directly above the table (last buffered paragraph
-            # line, with no blank line between); the rest of the buffer is flushed.
-            caption = para.pop().strip() if para else None
+            # caption = the line directly above the table; allow at most one blank
+            # line between caption and table (common academic-Markdown style).
+            # Path 1: caption is the last line of the in-progress paragraph buffer.
+            # Path 2: caption was already emitted as its own paragraph (one blank
+            # line separated it from the table) — retract that paragraph.
+            caption = None
+            if para:
+                caption = para.pop().strip()
+            elif (
+                blocks
+                and isinstance(blocks[-1], Block)
+                and blocks[-1].kind == "paragraph"
+                and pending_blanks <= 1
+            ):
+                caption = blocks.pop().text.strip()
             flush()
             header = _split_table_row(line)
             rows = [header]

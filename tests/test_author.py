@@ -180,6 +180,35 @@ def test_cross_ref_without_chapter_falls_back_to_bare_number() -> None:
     assert "표 1" in paras[0]
 
 
+def test_table_caption_allows_blank_line_above_table() -> None:
+    """A caption separated from its table by one blank line is still its caption.
+
+    Common academic-Markdown style puts a blank line between caption and table —
+    `parse_markdown` should still attach the caption (and any `{label:id}` on it)
+    to the table, not lose it as a standalone paragraph.
+    """
+    from hwp_agent.ops.author import _resolve_cross_refs
+
+    blocks = parse_markdown(
+        "* 도입 블록 한 줄\n\n"
+        "신뢰도 등급 {label:g}\n\n"
+        "| 등급 | 정의 |\n|---|---|\n| A | 실측 |\n\n"
+        "본문에서 {ref:g} 참고.\n"
+    )
+    tables = [b for b in blocks if isinstance(b, TableBlock)]
+    assert len(tables) == 1
+    assert tables[0].caption is not None and "신뢰도 등급" in tables[0].caption
+    # the caption is not also present as a standalone paragraph
+    paras = [b for b in blocks if not isinstance(b, TableBlock) and b.kind == "paragraph"]
+    assert not any("신뢰도 등급" in p.text for p in paras)
+    # cross-ref still resolves
+    warnings: list[str] = []
+    _resolve_cross_refs(blocks, "부록", warnings)
+    assert warnings == []
+    text_paras = [b.text for b in blocks if not isinstance(b, TableBlock) and b.kind == "paragraph"]
+    assert any("표 부록-1" in t for t in text_paras)
+
+
 def test_cross_ref_duplicate_label_warns_first_wins() -> None:
     """Same id declared on two tables → warning; first declaration wins."""
     from hwp_agent.ops.author import _resolve_cross_refs

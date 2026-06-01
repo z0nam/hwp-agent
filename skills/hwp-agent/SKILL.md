@@ -194,6 +194,7 @@ reference **explicitly**:
 | `hwp-agent styles FILE.hwpx [--json]` | machine style roles (role → style id) |
 | `hwp-agent check FILE.hwpx [--json]` | check the style system: ladder gaps, font-hierarchy violations, un-mapped bullet/structural styles (`doctor` = alias) |
 | `hwp-agent instructions FILE.hwpx [--json]` | AI:INSTRUCTION directions + `{{slots}}` |
+| `hwp-agent extract FILE.hwpx [--body-only] [-o OUT.md]` | extract HWPX as body-focused Markdown; merged cells flattened (Excel-style) |
 | `hwp-agent form analyze FILE.hwpx [--json]` | list fillable slots |
 | `hwp-agent form fill FILE.hwpx --set K=V [-o OUT]` | fill slots by name |
 | `hwp-agent write C.md --template FILE.hwpx [--chapter N] [--table-template CAPTION] [-o OUT]` | write Markdown into a template (`author` = alias) |
@@ -203,6 +204,26 @@ reference **explicitly**:
 
 `-o/--output` writes to a new file; omit it to edit in place. Point at a jar
 elsewhere with `--jar` or `$HWP2HWPX_JAR`.
+
+## Extracting HWPX → Markdown
+
+`hwp-agent extract FILE.hwpx -o draft.md` reads the document back as
+body-focused Markdown — the inverse of `write`. Headings, bullets, ordered
+lists, and body paragraphs roundtrip to their Markdown equivalents.
+
+**Tables are flattened (Excel-style unmerge).** A `<hp:cellSpan>`-merged cell
+has its value duplicated into every position it covered, so the table fits
+Markdown's strictly rectangular `| … |` shape. Data is preserved exactly;
+merge intent is lost — the doubled-value pattern signals where merges existed.
+Multi-paragraph cells use `<br>` to keep paragraph breaks readable. v1 scope:
+no inline emphasis detection (runs come out as plain text), no image bytes
+(figures are emitted as their caption text only).
+
+Primary use: the **"messy HWP → MD → re-write into a clean template"** loop.
+Read a non-conforming HWPX (or one drafted off-template), edit the Markdown to
+fit the JRI tone / format / cross-ref conventions, then `write` it back onto a
+proper template. `--body-only` skips everything before the first level-1 heading
+(cover, TOC) — handy for AI digestion of just the substantive body.
 
 ## Pitfalls
 

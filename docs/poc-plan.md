@@ -77,20 +77,22 @@ Dates are proposals from 2026-05-23; adjust freely.
   4. **Verify on Windows**: convert (Java present), the editing ops, and a Hangul
      round-trip; fix any path/encoding (cp949 vs utf-8) surprises.
 
-- **M6 — HWPX → Markdown extraction** *(low priority; unscheduled)*
-  The inverse of `author`: read an HWPX and emit **body-focused Markdown**. Low
-  priority because a DOCX export already gives a rough read — its value is as the
-  *input stage of the conform-to-template workflow* (see below), not as a reader.
-  Proposed rules (reuse the table channel strategy from `docs/tables.md`, in
-  reverse):
-  1. **Front matter (표지·목차) → core info only.** Don't transcribe cover layout
-     or a TOC verbatim; keep just the title/metadata and drop to the body.
-  2. **Body → Markdown.** Map outline styles back to `#`/`##`, lists to `-`/`1.`,
-     emphasis to `**`/`*` — the inverse of the role-map projection.
-  3. **Tables: simple → Markdown pipe; complex/merged → HTML `<table>`.** Mirrors
-     the authoring channels (Markdown can't express merges; HTML can).
+- **M6 — HWPX → Markdown extraction** ◑ *(v1 shipped 2026-06-01; HTML-table & inline-emphasis variants deferred)*
+  The inverse of `write`: read an HWPX and emit **body-focused Markdown**.
+  Shipped as `hwp-agent extract FILE.hwpx [--body-only] [-o OUT.md]` + `ops.extract`
+  module. Scope of v1:
+  1. **Headings / bullets / ordered / body** roundtrip from the role map (and the
+     paragraph-property `<hh:heading>` as a fallback when no role is set).
+  2. **Tables: every table is rendered as Markdown pipe**, with **merged cells
+     flattened Excel-style** (value duplicated into every covered position). Data
+     preserved, merge intent lost — the doubled-value pattern signals merges.
+     Multi-paragraph cells use `<br>` to keep paragraph breaks readable.
+  3. **`--body-only`** skips everything before the first level-1 heading (cover,
+     TOC).
+  Deferred: inline emphasis (run-level **bold**/*italic* detection), image bytes
+  (figures emitted as caption text only), complex-table HTML variant.
   - **North-star use case:** a draft or **non-conforming HWP** (written without
-    following the house form) → extract to Markdown → re-`author` it onto a proper
+    following the house form) → extract to Markdown → re-`write` it onto a proper
     template's styles, i.e. *make a messy draft conform to the form*. This closes
     the loop: messy HWP → MD (intent) → styled HWPX. Until then, type-2/3 docs
     (weak/flat) are handled in place; M6 is the "rebuild it cleanly" path.
@@ -135,13 +137,16 @@ Dates are proposals from 2026-05-23; adjust freely.
 - How much the AI infers vs. an explicit slot contract (`{{}}` vs. label cells).
 - Packaging surface: Skill vs. MCP vs. both; how the form + brief are passed.
 
-## Next up (as of 2026-05-29)
+## Next up (as of 2026-06-01)
 
 Recently shipped (pushed): `image list`/`replace`, **`write`** (renamed from
 `author`), `{{appendix}}` insertion marker + section-`secPr` preservation, `---`
 → 가로선, heading manual-number stripping, friendly missing-file errors,
 manifest-fallback log note, contextual heading spacing, **`check`** (renamed from
-`doctor`). Old command names (`author`, `doctor`) are kept as aliases.
+`doctor`), **LaTeX-style cross-references** (`{label:id}`/`{ref:id}`), caption
+framing auto-strip, HTML comment stripping, **`extract`** (HWPX → body-focused
+Markdown with merged-cell flattening — **M6 v1**). Old command names (`author`,
+`doctor`) are kept as aliases.
 
 **Top priority — make 제주연구원's official template machine-friendly.** Two tracks:
 
@@ -157,5 +162,5 @@ manifest-fallback log note, contextual heading spacing, **`check`** (renamed fro
    no `AI:BULLET_n` is declared).
 
 **Queued after:** Hangul render-verify of items **C/F**; **M3** MCP server; **M5**
-Windows; **M6** HWPX→Markdown; **M7** other assistants. (See milestones above and
-`docs/author-backlog.md`.)
+Windows; **M6 v2** (inline emphasis + HTML-table variant + figure bytes); **M7**
+other assistants. (See milestones above and `docs/author-backlog.md`.)

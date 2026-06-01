@@ -17,6 +17,7 @@ from .author import (
     read_instructions,
 )
 from .doctor import diagnose_template
+from .extract import extract_markdown
 from .form import FillResult, FormSlot, FormSpec, analyze_form, fill_form
 from .images import (
     ImageReplaceResult,
@@ -54,6 +55,7 @@ __all__ = [
     "fill_from_markdown",
     "read_instructions",
     "diagnose_template",
+    "extract_markdown",
     "PicInfo",
     "ReplaceOutcome",
     "ImageReplaceResult",

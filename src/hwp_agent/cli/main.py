@@ -174,6 +174,18 @@ def _cmd_styles(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_extract(args: argparse.Namespace) -> int:
+    from ..ops import extract_markdown
+
+    md = extract_markdown(args.file, body_only=args.body_only)
+    if args.output:
+        Path(args.output).write_text(md, encoding="utf-8")
+        print(f"wrote {args.output}  ({len(md):,} chars, {md.count(chr(10)):,} lines)")
+    else:
+        sys.stdout.write(md)
+    return 0
+
+
 def _cmd_check(args: argparse.Namespace) -> int:
     import json
 
@@ -391,6 +403,19 @@ def build_parser() -> argparse.ArgumentParser:
     ins.add_argument("file", type=Path, help=".hwpx template")
     ins.add_argument("--json", action="store_true", help="emit directions + slots as JSON")
     ins.set_defaults(func=_cmd_instructions)
+
+    ext = sub.add_parser(
+        "extract",
+        help="extract an HWPX as body-focused Markdown (complex tables unmerged)",
+    )
+    ext.add_argument("file", type=Path, help=".hwpx file")
+    ext.add_argument(
+        "--body-only",
+        action="store_true",
+        help="skip front matter (cover, TOC, ...): emit from the first level-1 heading on",
+    )
+    ext.add_argument("-o", "--output", type=Path, default=None, help="output .md file")
+    ext.set_defaults(func=_cmd_extract)
 
     img = sub.add_parser(
         "image", help="list or replace embedded figure images in an HWPX"

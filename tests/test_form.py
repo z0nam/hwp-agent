@@ -5,13 +5,31 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from lxml import etree
 
 from hwp_agent.ops import analyze_form, fill_form
-from hwp_agent.ops.form import extract_placeholders, table_label_slots
+from hwp_agent.ops.form import (
+    _heal_split_placeholders,
+    _is_label_shaped,
+    _resolve_tab_anchor,
+    _set_cell_text_overwrite,
+    _set_tab_tail,
+    _toggle_checkbox,
+    extract_placeholders,
+    q,
+    table_label_slots,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REF_HWPX = REPO_ROOT / "tests" / "fixtures" / "sample_big_ref.hwpx"
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+
+def _root(inner: str):
+    """Parse a section-ish XML fragment into an lxml root (like a live tree)."""
+    return etree.fromstring(
+        f'<hs:sec xmlns:hs="x" xmlns:hp="{_HP}">{inner}</hs:sec>'.encode()
+    )
 
 
 def test_extract_placeholders_unique_in_order() -> None:
@@ -51,6 +69,66 @@ def test_table_label_slots_skips_filled_neighbours() -> None:
         f"</hp:tbl></hs:sec>"
     ).encode()
     assert table_label_slots(section) == []
+
+
+# --- hardening: overwrite / checkbox / tab-tail / split-placeholder ---------
+
+
+def test_is_label_shaped() -> None:
+    assert _is_label_shaped("성명")
+    assert not _is_label_shaped("이것은 라벨이 아니라 완성된 문장입니다.")
+    assert not _is_label_shaped("2026. 6. 4.")
+
+
+def test_overwrite_replaces_nonempty_cell() -> None:
+    tc = _root(
+        '<hp:tc><hp:subList><hp:p><hp:run><hp:t>이전값</hp:t></hp:run>'
+        "<hp:run><hp:t>잔여</hp:t></hp:run></hp:p></hp:subList></hp:tc>"
+    ).find(q("tc"))
+    assert _set_cell_text_overwrite(tc, "새값")
+    # SET, not append: the cell now holds exactly "새값".
+    assert "".join(t.text or "" for t in tc.iter(q("t"))) == "새값"
+
+
+def test_overwrite_fills_empty_run() -> None:
+    tc = _root(
+        '<hp:tc><hp:subList><hp:p><hp:run charPrIDRef="3"/></hp:p>'
+        "</hp:subList></hp:tc>"
+    ).find(q("tc"))
+    assert _set_cell_text_overwrite(tc, "값")
+    assert "".join(t.text or "" for t in tc.iter(q("t"))) == "값"
+
+
+def test_toggle_checkbox_glyph_then_label() -> None:
+    root = _root("<hp:p><hp:run><hp:t>□ 동의함</hp:t></hp:run></hp:p>")
+    assert _toggle_checkbox([root], "동의함", on=True)
+    assert "■ 동의함" in next(root.iter(q("t"))).text
+    # idempotent
+    assert not _toggle_checkbox([root], "동의함", on=True)
+
+
+def test_toggle_checkbox_label_then_glyph() -> None:
+    root = _root("<hp:p><hp:run><hp:t>수집·이용에 동의합니다 □</hp:t></hp:run></hp:p>")
+    assert _toggle_checkbox([root], "동의합니다", on=True)
+    assert "동의합니다 ■" in next(root.iter(q("t"))).text
+
+
+def test_tab_tail_field() -> None:
+    root = _root("<hp:p><hp:run><hp:t>소속<hp:tab/>이전</hp:t></hp:run></hp:p>")
+    t = _resolve_tab_anchor([root], "소속")
+    assert t is not None
+    assert _set_tab_tail(t, "제주연구원")
+    assert t.find(q("tab")).tail == "제주연구원"
+
+
+def test_heal_split_placeholder() -> None:
+    root = _root(
+        "<hp:p><hp:run><hp:t>{{na</hp:t></hp:run>"
+        "<hp:run><hp:t>me}}</hp:t></hp:run></hp:p>"
+    )
+    assert _heal_split_placeholders([root]) == 1
+    joined = "".join(t.text or "" for t in root.iter(q("t")))
+    assert "{{name}}" in joined
 
 
 # --- end-to-end on the real reference document ---------------------------

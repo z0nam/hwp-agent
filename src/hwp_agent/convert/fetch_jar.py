@@ -24,9 +24,9 @@ JAR_URL = os.environ.get(
     "HWP2HWPX_JAR_URL",
     f"https://github.com/z0nam/hwp-agent/releases/download/{_RELEASE_TAG}/{_ASSET}",
 )
-# Filled in once the asset is published (sha256 of the released jar). Empty =
-# skip verification (with a warning).
-JAR_SHA256 = ""
+# sha256 of the released jar (z0nam/hwp-agent release "converter-jar"). Empty =
+# skip verification.
+JAR_SHA256 = "578a7f8397342dca1d52845330462d5038a4706967a9c43c0e04faf5f6f3d0ce"
 
 
 def data_dir() -> Path:

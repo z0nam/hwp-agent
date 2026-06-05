@@ -62,20 +62,22 @@ Dates are proposals from 2026-05-23; adjust freely.
   End-to-end: give the AI a real blank form + content brief; it produces a filled
   HWPX, verified visually in Hangul. Capture fidelity gaps in `findings.md`.
 
-- **M5 — Windows / cross-platform support** *(unscheduled; needed for in-institution use)*
+- **M5 — Windows / cross-platform support** ◑ *(code shipped 2026-06-05; Windows real-machine verify pending)*
   The institution runs Windows, so the toolkit must work there. The **core CLI is
   already portable** — pure Python on pathlib, `subprocess.run([...])` (no shell),
   `shutil.which("java")` (resolves `java.exe`); lxml & python-hwpx ship Windows
-  wheels. The gaps are the POSIX-only periphery:
-  1. **Installer/build scripts are bash** (`install.sh`, `bootstrap.sh`) — add a
-     PowerShell installer (`install.ps1`) or document running under Git Bash / WSL;
-     `bootstrap.sh`'s Maven build needs a Windows path too (or ship a prebuilt jar).
-  2. **Skill registration uses a symlink** (`ln`) — on Windows, *copy* the skill
-     folder into `%USERPROFILE%\.claude\skills\` instead (symlinks need dev mode).
-  3. **Distribute the converter jar** so Windows users needn't build it (JDK/Maven
-     on Windows is a high bar) — e.g. attach it to a GitHub release.
-  4. **Verify on Windows**: convert (Java present), the editing ops, and a Hangul
-     round-trip; fix any path/encoding (cp949 vs utf-8) surprises.
+  wheels. Shipped:
+  1. ✅ **PowerShell installer** `scripts/install.ps1` (uv/pipx install + skill
+     copy + `hwp-agent setup`). Primary distribution is `pipx install git+…`.
+  2. ✅ **Skill registration copies** (not symlinks) on Windows (install.ps1).
+  3. ✅ **Converter jar distribution**: `hwp-agent setup` + `convert/fetch_jar.py`
+     download a prebuilt jar from a GitHub release into the per-user data dir
+     (`%LOCALAPPDATA%\hwp-agent`); `_resolve_jar` falls back to it. *(The release
+     asset itself — `gh release create` of the bootstrap.sh-built jar — is the one
+     remaining manual publish step.)*
+  4. ⬜ **Verify on Windows**: convert (JRE present), editing ops, Hangul
+     round-trip; watch for path/encoding (cp949 vs utf-8) surprises. Source audit
+     found no `open()`-without-encoding or hardcoded POSIX paths.
 
 - **M6 — HWPX → Markdown extraction** ◑ *(v1 shipped 2026-06-01; HTML-table & inline-emphasis variants deferred)*
   The inverse of `write`: read an HWPX and emit **body-focused Markdown**.

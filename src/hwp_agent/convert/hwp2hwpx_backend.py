@@ -121,7 +121,15 @@ def _resolve_jar(explicit: Path | str | None) -> Path:
     if explicit is not None:
         return Path(explicit)
     env = os.environ.get("HWP2HWPX_JAR")
-    return Path(env) if env else _DEFAULT_JAR
+    if env:
+        return Path(env)
+    if _DEFAULT_JAR.is_file():  # editable checkout with a built vendor jar
+        return _DEFAULT_JAR
+    # pipx/git install: the jar lives in the per-user data dir (hwp-agent setup).
+    from .fetch_jar import jar_dest
+
+    downloaded = jar_dest()
+    return downloaded if downloaded.is_file() else _DEFAULT_JAR
 
 
 class Hwp2HwpxBackend(ConverterBackend):
@@ -149,7 +157,8 @@ class Hwp2HwpxBackend(ConverterBackend):
             raise FileNotFoundError(f"input HWP not found: {hwp_path}")
         if not self.jar_path.is_file():
             raise FileNotFoundError(
-                f"hwp2hwpx jar not found at {self.jar_path}; run scripts/bootstrap.sh"
+                f"hwp2hwpx jar not found at {self.jar_path}; "
+                "run `hwp-agent setup` to download it (or scripts/bootstrap.sh to build)."
             )
 
         hwpx_path.parent.mkdir(parents=True, exist_ok=True)

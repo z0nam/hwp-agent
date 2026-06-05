@@ -1,0 +1,31 @@
+{
+  "name": "홍길동",
+  "birthdate": "1980. 1. 1.",
+  "gender": "남",
+  "field": "정책학",
+  "mobile": "010-0000-0000",
+  "home": {
+    "address": "(우편번호 00000) 서울특별시 ○○구 ○○로 1",
+    "zipcode": "00000",
+    "phone": "02-000-0000"
+  },
+  "work": {
+    "name": "○○연구원",
+    "title": "선임연구위원",
+    "address": "(우편번호 00000) 서울특별시 ○○구 ○○로 2",
+    "phone": "02-000-0001",
+    "fax": "02-000-0002",
+    "email": "you@example.org"
+  },
+  "education": [
+    {"year": "2005", "school": "○○대학교", "degree": "박사", "major": "정책학"},
+    {"year": "2000", "school": "○○대학교", "degree": "석사", "major": "경제학"}
+  ],
+  "career": [
+    {"period": "2010-현재", "org": "○○연구원", "title": "연구위원", "duties": "정책연구"}
+  ],
+  "publications": ["저서/논문을 자유 형식으로 적으세요."],
+  "account": {"bank": "○○은행", "number": "000-000000-00000"},
+  "extra": {"기타항목라벨": "기타항목값"},
+  "aliases": {}
+}

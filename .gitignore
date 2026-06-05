@@ -4,6 +4,10 @@ tests/fixtures/*
 !tests/fixtures/.gitkeep
 # Conversion scratch/output — regenerable cache, never committed.
 tests/tmp/
+# Personal-data profiles are user data — never committed (the example is tracked).
+profile.json
+*.profile.json
+!examples/profile.example.json
 # Vendored converter jar is a reproducible build artifact (see scripts/bootstrap.sh).
 vendor/*.jar
 # but keep the directory tracked

@@ -29,6 +29,15 @@ from .images import (
     replace_image,
 )
 from .metadata import Metadata, read_metadata, update_metadata
+from .profile import (
+    Profile,
+    ProfileFillResult,
+    ProfileMatch,
+    fill_from_profile,
+    load_profile,
+    match_slot,
+    normalize_label,
+)
 from .styles import StyleInfo, classify_document, read_style_system, role_map
 
 __all__ = [
@@ -40,6 +49,13 @@ __all__ = [
     "FillResult",
     "analyze_form",
     "fill_form",
+    "Profile",
+    "ProfileMatch",
+    "ProfileFillResult",
+    "load_profile",
+    "fill_from_profile",
+    "match_slot",
+    "normalize_label",
     "StyleInfo",
     "read_style_system",
     "role_map",

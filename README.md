@@ -29,12 +29,12 @@ documents directly — packaged as a Claude Code Skill / MCP integration.
 
 ## Requirements
 
-- macOS / Linux (developed on Apple Silicon). The Python CLI itself is
-  cross-platform; only the bash install/build scripts are POSIX — full Windows
-  support is tracked as M5 in `docs/poc-plan.md`.
+- macOS / Linux / **Windows**. The Python CLI is cross-platform; macOS/Linux use
+  the bash scripts, Windows uses `scripts\install.ps1` + a prebuilt jar.
 - Python ≥ 3.11
-- JDK 17+ and Maven — used only to *build* the converter jar
-  - `brew install openjdk@17 maven`
+- To **build** the converter jar from source: JDK 17+ and Maven
+  (`brew install openjdk@17 maven`). To only **run** a prebuilt jar (the Windows
+  path): a JRE 17+ suffices.
 
 ## Setup
 
@@ -65,12 +65,45 @@ ln -s "$PWD/skills/hwp-agent" ~/.claude/skills/hwp-agent   # 3. register the ski
 fuses them into a single runnable `vendor/hwp2hwpx.jar`. The jar is **not**
 committed — it's a reproducible build artifact (see `.gitignore`).
 
+### Windows
+
+No JDK/Maven needed — install from GitHub and fetch the prebuilt converter jar:
+
+```powershell
+# one-liner (needs uv or pipx + a JRE 17+ for the converter)
+pipx install "git+https://github.com/z0nam/hwp-agent"
+hwp-agent setup        # downloads the converter jar to %LOCALAPPDATA%\hwp-agent
+```
+
+Or, from a cloned checkout, run the installer (CLI + skill copy + `setup`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+
+`hwp-agent setup` downloads the jar from the GitHub release and checks for a Java
+runtime; install a JRE 17+ (e.g. [Temurin](https://adoptium.net/)) to run
+`convert`. HWPX-only use (editing, `form fill`) needs no Java at all.
+
 ## Usage
 
 ```bash
 hwp-agent convert report.hwp report.hwpx
 hwp-agent --version
+
+# fill a Korean form: inspect slots, then fill
+hwp-agent form analyze 등록신청서.hwpx --json
+hwp-agent form fill 등록신청서.hwpx --set "성명=조남운" -o out.hwpx
+
+# auto-fill standing personal data (성명/주소/학력/경력/계좌…) from a saved profile
+cp examples/profile.example.json ~/.config/hwp-agent/profile.json   # edit it once
+hwp-agent form fill 등록신청서.hwpx --profile --date today -o out.hwpx
 ```
+
+`form fill` slot keys can be a label (`성명`), a label path (`성명 > right`),
+a stable address (`cell:<table>:<row>:<col>`), a `checkbox:<label>` (`on`/`off`,
+□↔■), a `tab:<anchor>` inline field, or a `{{placeholder}}`. Fills overwrite, so
+re-running is safe.
 
 Point at a jar elsewhere with `--jar /path/to/hwp2hwpx.jar` or the
 `HWP2HWPX_JAR` environment variable (rarely needed — the editable install

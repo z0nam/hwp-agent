@@ -83,6 +83,42 @@ def _cmd_convert(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_setup(args: argparse.Namespace) -> int:
+    """Fetch the converter jar and report runtime readiness (Windows-friendly)."""
+    import shutil
+
+    from ..convert.fetch_jar import JAR_URL, download_jar, jar_dest
+
+    dest = jar_dest()
+    if dest.is_file() and not args.force:
+        print(f"converter jar already present: {dest}")
+    else:
+        print(f"downloading converter jar\n  from {JAR_URL}\n  to   {dest}")
+        try:
+            dest = download_jar(force=args.force)
+        except Exception as exc:  # noqa: BLE001 — surface any network/IO error plainly
+            print(f"error: could not download jar: {exc}", file=sys.stderr)
+            print(
+                "  set HWP2HWPX_JAR_URL to a reachable mirror, or build with "
+                "scripts/bootstrap.sh.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"ok: jar ready at {dest}")
+
+    java = shutil.which("java")
+    if java:
+        print(f"ok: java runtime found ({java})")
+    else:
+        print(
+            "warn: no `java` on PATH — install a JRE 17+ to run conversions "
+            "(e.g. Temurin: https://adoptium.net/).",
+            file=sys.stderr,
+        )
+    print("\nyou can now run:  hwp-agent convert input.hwp output.hwpx")
+    return 0
+
+
 def _cmd_meta(args: argparse.Namespace) -> int:
     from ..ops import read_metadata, update_metadata
 
@@ -127,6 +163,29 @@ def _cmd_form(args: argparse.Namespace) -> int:
                 print(f"{s.kind:11} {s.name}  ->  {s.locator}{cur}")
         return 0
 
+    # fill from a personal-data profile (auto-map standing data to slots)
+    if args.profile is not None:
+        from ..ops import fill_from_profile
+
+        prof_path = args.profile or None  # "" (bare --profile) -> default location
+        try:
+            result = fill_from_profile(
+                args.file, prof_path, output=args.output, date=args.date,
+                precise=args.precise,
+            )
+        except FileNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
+            return 0
+        print(f"filled {len(result.filled)} from profile -> {args.output or args.file}")
+        for m in result.filled:
+            print(f"  ok: {m.slot}  <-  {m.field} = {m.value}")
+        if result.blank:
+            print(f"  left blank ({len(result.blank)}): {', '.join(result.blank)}")
+        return 0
+
     # fill
     mapping: dict[str, str] = {}
     if args.map:
@@ -141,7 +200,7 @@ def _cmd_form(args: argparse.Namespace) -> int:
         print("error: nothing to fill (use --map FILE or --set KEY=VALUE)", file=sys.stderr)
         return 2
 
-    result = fill_form(args.file, mapping, output=args.output)
+    result = fill_form(args.file, mapping, output=args.output, precise=args.precise)
     print(f"filled {len(result.filled)} -> {args.output or args.file}")
     if result.filled:
         print(f"  ok: {', '.join(result.filled)}")
@@ -342,6 +401,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     conv.set_defaults(func=_cmd_convert)
 
+    setup = sub.add_parser(
+        "setup", help="download the converter jar + check the Java runtime"
+    )
+    setup.add_argument(
+        "--force", action="store_true", help="re-download even if the jar exists"
+    )
+    setup.set_defaults(func=_cmd_setup)
+
     meta = sub.add_parser("meta", help="show or set HWPX document metadata")
     meta.add_argument("file", type=Path, help=".hwpx file")
     meta.add_argument(
@@ -368,12 +435,38 @@ def build_parser() -> argparse.ArgumentParser:
     fa.add_argument("--json", action="store_true", help="emit slots as JSON (for an AI)")
     fa.set_defaults(func=_cmd_form)
 
-    ff = form_sub.add_parser("fill", help="fill slots by name/path")
+    ff = form_sub.add_parser("fill", help="fill slots by name/path/profile")
     ff.add_argument("file", type=Path, help=".hwpx form")
     ff.add_argument("--map", type=Path, default=None, help="JSON file of {slot: value}")
     ff.add_argument(
         "--set", action="append", metavar="KEY=VALUE", help="fill one slot (repeatable)"
     )
+    ff.add_argument(
+        "--profile",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="PATH",
+        help="auto-fill from a personal-data profile "
+        "(default: ~/.config/hwp-agent/profile.json)",
+    )
+    ff.add_argument(
+        "--date", choices=["today"], default=None, help="resolve date slots to today"
+    )
+    ff.add_argument(
+        "--precise",
+        dest="precise",
+        action="store_true",
+        default=True,
+        help="precise label-cell detection (default)",
+    )
+    ff.add_argument(
+        "--no-precise",
+        dest="precise",
+        action="store_false",
+        help="emit every empty-neighbour cell as a slot (blank templates)",
+    )
+    ff.add_argument("--json", action="store_true", help="emit fill report as JSON")
     ff.add_argument("-o", "--output", type=Path, default=None, help="output file")
     ff.set_defaults(func=_cmd_form)
 

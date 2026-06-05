@@ -63,7 +63,16 @@ output.
    - **Form/slot fill** (fixed fields: dates, names, table cells with labels) —
      `hwp-agent form analyze work.hwpx --json` to list slots, then
      `hwp-agent form fill work.hwpx --set "신청일=2026-05-24" -o out.hwpx`
-     (or `--map values.json`).
+     (or `--map values.json`). Slot keys may be a label (`성명`), a label path
+     (`성명 > right` / `> below`), a stable address (`cell:<table>:<row>:<col>`,
+     also emitted as `cell_path` by `analyze`), a `checkbox:<label>` set `on`/`off`
+     (□↔■), a `tab:<anchor>` inline field, or a `{{placeholder}}`. Fills overwrite
+     (true SET), so re-running is safe.
+   - **Profile auto-fill** (the same person's standing data across many forms) —
+     `hwp-agent form fill work.hwpx --profile ~/.config/hwp-agent/profile.json
+     --date today -o out.hwpx`. Maps 성명/생년월일/주소/연락처/학력/경력/계좌 from a
+     saved JSON (copy `examples/profile.example.json`) onto matching slots; reports
+     what was filled vs left blank. Repeated 학력/경력 rows map under their header.
    - **Free authoring** (writing report body content) — write Markdown, then
      `hwp-agent write content.md --template work.hwpx -o out.hwpx`
      (positional = the Markdown you're writing; `--template` = the .hwpx to fill).

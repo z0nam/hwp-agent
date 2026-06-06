@@ -119,6 +119,35 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """Run the self-hosted HTTP server (web UI + REST API + OpenAPI)."""
+    try:
+        import uvicorn
+
+        from ..server import create_app
+    except ModuleNotFoundError:
+        print(
+            "error: the server needs extra packages. Install them with:\n"
+            '  pip install "hwp-agent[serve]"\n'
+            '  (or: uv pip install fastapi "uvicorn[standard]" python-multipart)',
+            file=sys.stderr,
+        )
+        return 2
+    print(
+        f"hwp-agent serve → http://{args.host}:{args.port}  "
+        "(web UI at /, OpenAPI at /openapi.json)"
+    )
+    uvicorn.run(create_app(), host=args.host, port=args.port, log_level="info")
+    return 0
+
+
+def _cmd_mcp(args: argparse.Namespace) -> int:
+    """Run the local stdio MCP server (for Claude Desktop / Claude Code / Codex)."""
+    from ..mcp_server import main as mcp_main
+
+    return mcp_main()
+
+
 def _cmd_meta(args: argparse.Namespace) -> int:
     from ..ops import read_metadata, update_metadata
 
@@ -408,6 +437,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="re-download even if the jar exists"
     )
     setup.set_defaults(func=_cmd_setup)
+
+    srv = sub.add_parser("serve", help="run the self-hosted web UI + REST API server")
+    srv.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
+    srv.add_argument("--port", type=int, default=8765, help="port (default 8765)")
+    srv.set_defaults(func=_cmd_serve)
+
+    mcpp = sub.add_parser("mcp", help="run the local stdio MCP server (for AI clients)")
+    mcpp.set_defaults(func=_cmd_mcp)
 
     meta = sub.add_parser("meta", help="show or set HWPX document metadata")
     meta.add_argument("file", type=Path, help=".hwpx file")

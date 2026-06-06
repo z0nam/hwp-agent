@@ -117,6 +117,22 @@ Point at a jar elsewhere with `--jar /path/to/hwp2hwpx.jar` or the
 `HWP2HWPX_JAR` environment variable (rarely needed — the editable install
 locates the bundled jar on its own).
 
+## Use it from an AI chat / a web link (no terminal)
+
+For non-technical users, two zero-terminal surfaces — see **[docs/serving.md](docs/serving.md)**:
+
+- **Web link / ChatGPT** — run `hwp-agent serve` on a machine you control (a Mac
+  mini, like a Slack bot); it exposes a drag-and-drop **web upload page** + a REST
+  API + `/openapi.json` for a **ChatGPT custom-GPT Action**. Files stay on your
+  server (Java conversion runs there). `pip install "hwp-agent[serve]"`.
+- **Claude Desktop / Claude Code / Codex** — `hwp-agent mcp` is a local stdio MCP
+  server; register it once and just chat ("이 폼을 내 프로필로 채워줘"). It reads
+  local files directly, no upload. `pip install "hwp-agent[mcp]"`.
+
+> Web chat can't forward a chat-uploaded file to an external server, so ChatGPT
+> users use the web link; the upload-free chat flow is the local-MCP path. Details
+> and the exact per-client config are in [docs/serving.md](docs/serving.md).
+
 ## Claude Code Skill
 
 `skills/hwp-agent/` packages the authoring workflow as a [Claude Code

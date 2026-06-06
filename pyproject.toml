@@ -31,6 +31,16 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
 ]
+# Self-hosted HTTP server (`hwp-agent serve`): web UI + REST API + OpenAPI.
+serve = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
+]
+# Local stdio MCP server (`hwp-agent mcp`) for Claude Desktop / Claude Code / Codex.
+mcp = [
+    "mcp>=1.2",
+]
 
 [project.scripts]
 hwp-agent = "hwp_agent.cli.main:main"
@@ -48,6 +58,10 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI idiom: File()/Form()/Header() in defaults (B008); inline HTML/CSS lines (E501).
+"src/hwp_agent/server/app.py" = ["B008", "E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

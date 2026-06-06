@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd unit to keep `hwp-agent serve` running on the mini across reboots.
+
+  Install:
+    1. edit the two __PLACEHOLDER__ paths below (and secrets in run-mini.sh),
+    2. cp deploy/com.z0nam.hwp-agent.plist ~/Library/LaunchAgents/
+    3. launchctl load -w ~/Library/LaunchAgents/com.z0nam.hwp-agent.plist
+    4. logs: tail -f /tmp/hwp-agent.serve.log
+    Stop/remove: launchctl unload -w ~/Library/LaunchAgents/com.z0nam.hwp-agent.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.z0nam.hwp-agent</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO_PATH__/deploy/run-mini.sh</string>
+  </array>
+
+  <!-- so `hwp-agent` (pipx) and `java` are found -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/hwp-agent.serve.log</string>
+  <key>StandardErrorPath</key><string>/tmp/hwp-agent.serve.log</string>
+</dict>
+</plist>

@@ -67,7 +67,15 @@ committed — it's a reproducible build artifact (see `.gitignore`).
 
 ### Windows
 
-No JDK/Maven needed — install from GitHub and fetch the prebuilt converter jar:
+**Easiest (no Python, no install):** download the standalone **`hwp-agent.exe`**
+from the [windows-exe release](https://github.com/z0nam/hwp-agent/releases/tag/windows-exe)
+and run it from a terminal — e.g. `hwp-agent.exe form fill 등록신청서.hwpx --profile`.
+The converter jar is bundled inside; install a JRE 17+
+([Temurin](https://adoptium.net/), a normal double-click installer) only if you
+also need `hwp-agent convert` (.hwp → .hwpx). Form-fill/editing need no Java.
+
+**Developer install (Python):** no JDK/Maven needed — install from GitHub and
+fetch the prebuilt converter jar:
 
 ```powershell
 # one-liner (needs uv or pipx + a JRE 17+ for the converter)

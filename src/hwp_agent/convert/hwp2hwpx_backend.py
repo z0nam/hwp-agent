@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -18,6 +19,9 @@ from .base import ConverterBackend, ConvertResult
 
 # <repo>/src/hwp_agent/convert/hwp2hwpx_backend.py -> parents[3] == <repo>
 _DEFAULT_JAR = Path(__file__).resolve().parents[3] / "vendor" / "hwp2hwpx.jar"
+# When frozen by PyInstaller (the Windows single-exe), the jar is bundled next to
+# the unpacked code at sys._MEIPASS.
+_BUNDLED_JAR = Path(getattr(sys, "_MEIPASS", "")) / "hwp2hwpx.jar"
 
 _OCF_NS = "urn:oasis:names:tc:opendocument:xmlns:container"
 _SECTION_RE = re.compile(r"Contents/section\d+\.xml$")
@@ -123,6 +127,8 @@ def _resolve_jar(explicit: Path | str | None) -> Path:
     env = os.environ.get("HWP2HWPX_JAR")
     if env:
         return Path(env)
+    if getattr(sys, "frozen", False) and _BUNDLED_JAR.is_file():
+        return _BUNDLED_JAR  # the Windows single-exe ships the jar inside
     if _DEFAULT_JAR.is_file():  # editable checkout with a built vendor jar
         return _DEFAULT_JAR
     # pipx/git install: the jar lives in the per-user data dir (hwp-agent setup).

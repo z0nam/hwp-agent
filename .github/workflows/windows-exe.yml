@@ -1,0 +1,67 @@
+name: Build Windows exe
+
+# Builds a standalone hwp-agent.exe (no Python needed by the user) with the
+# converter jar bundled inside, and publishes it to the "windows-exe" release.
+# Run manually from the Actions tab, or it fires when you push a tag like v0.1.0.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch the converter jar (bundled into the exe)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path vendor | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://github.com/z0nam/hwp-agent/releases/download/converter-jar/hwp2hwpx.jar" `
+            -OutFile "vendor/hwp2hwpx.jar"
+
+      - name: Install package + PyInstaller
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install . pyinstaller
+
+      - name: Build single-file exe
+        shell: pwsh
+        run: |
+          pyinstaller --onefile --name hwp-agent `
+            --add-data "vendor/hwp2hwpx.jar;." `
+            --collect-all hwpx `
+            --collect-all lxml `
+            scripts/pyinstaller_entry.py
+
+      - name: Smoke-test the exe
+        shell: pwsh
+        run: |
+          .\dist\hwp-agent.exe --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hwp-agent-windows
+          path: dist/hwp-agent.exe
+
+      - name: Publish to the windows-exe release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete windows-exe --yes --cleanup-tag 2>$null
+          gh release create windows-exe ".\dist\hwp-agent.exe" `
+            --title "hwp-agent.exe (Windows, standalone)" `
+            --notes "Standalone Windows build — no Python needed. The converter jar is bundled inside; install a JRE 17+ (https://adoptium.net) only for `hwp-agent convert`. Download hwp-agent.exe below. Built by .github/workflows/windows-exe.yml."

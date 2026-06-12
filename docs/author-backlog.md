@@ -108,3 +108,27 @@ and B/D (section-split / custom outline numbering) are M8.
   `AI:BULLET_n` naming override outright, so a declared ladder works today.
 - **Deferred:** the convention fallback (glyph/size order when *no* `AI:BULLET_n`
   is declared) — until then, an undeclared multi-bullet template needs the naming.
+
+## H — flat-template normalizer (실서식 → hwp-agent 친화 변환 모듈) — ☐ proposed
+
+- **Trigger (2026-06-12 survey):** JI 웍스드라이브 `Collaborative Drive/0.서식(과제 관련)`
+  — 원내 과제 서식의 공식 SSOT, 인덱스는 `ji-regulations/forms/works-drive-index.yaml` —
+  의 hwp/hwpx 16종을 전수 분류한 결과 **15 flat / 1 weak / 0 structured**.
+  (9개 .hwp 전부 jar 변환은 무손실 성공 — 문제는 변환이 아니라 서식 자체의 스타일 체계.)
+  - **신청서류** (연조위 5종 + 수행계획서 등): flat이지만 `form analyze`가 슬롯
+    6~90개를 잡음 → **form-fill 경로는 현재도 사용 가능**. 변환 불요.
+  - **보고서 서식(유형별) 4종** (기반/센터/전략/정책과제_서식.hwpx): 4종 모두 동일 패턴 —
+    styles=19 중 roled=3 (BODY, BULLET_1 ￭, BULLET_3 -), **HEADING ladder (none)**.
+    번호 체계가 일반 스타일로만 존재(로마자 20pt, '1.' 13pt, '1)' 11pt — outline 미선언),
+    un-mapped bullet ⦁(4×) + 구조 스타일 7종(표제목·자료·단위 등).
+    작성자마다 bullet 수동 입력·스페이스 들여쓰기 제각각이라 실문서는 더 심함.
+- **Implication:** 원내 공식 보고서 서식에서 `write`(author) 경로가 그대로는 불가.
+- **Fix idea — `hwp-agent normalize IN.hwpx -o OUT.hwpx`:**
+  1. ladder 후보 스타일 탐지 (번호 글리프·폰트 크기 내림차순 휴리스틱 — G의 fallback과 공유),
+  2. `AI:H<n>` / `AI:BULLET_n` 선언을 자동 부여 (지금은 한글에서 수동으로만 가능한 작업의 자동화
+     — `check`가 처방하는 fix 그대로),
+  3. (선택) 본문의 수동 bullet("- ", "•", 스페이스 들여쓰기)을 선언된 스타일로 승격,
+  4. 변경 내역 리포트 출력 → 사람이 한글에서 검수.
+  컨테이너 보존 규칙(원본 ZipInfo 유지, linesegarray 제거)은 기존 hand-edit 노하우 재사용.
+- **Interim workaround:** 보고서 서식 4종 사본에 한글에서 `AI:H<n>`/`AI:BULLET_n`을
+  수동 선언한 "authoring 판"을 만들어 쓰고, 정본 폴더와 별도 관리 (ji-regulations 쪽 메모 참조).

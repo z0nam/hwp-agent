@@ -51,10 +51,36 @@ jobs:
         run: |
           .\dist\hwp-agent.exe --version
 
+      # --- Build the bundled-JRE installer (so .hwp convert needs no separate Java) ---
+      - name: Download Temurin JRE 17 (private, bundled into the installer)
+        shell: pwsh
+        run: |
+          $url = "https://api.adoptium.net/v3/binary/latest/17/ga/windows/x64/jre/hotspot/normal/eclipse"
+          Invoke-WebRequest -Uri $url -OutFile jre.zip
+          Expand-Archive jre.zip -DestinationPath jre-extract -Force
+          $top = Get-ChildItem jre-extract -Directory | Select-Object -First 1
+          New-Item -ItemType Directory -Force installer\payload | Out-Null
+          Move-Item $top.FullName installer\payload\jre
+          Copy-Item dist\hwp-agent.exe installer\payload\hwp-agent.exe
+          # sanity: the bundled jre runs
+          & installer\payload\jre\bin\java.exe -version
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\hwp-agent.iss
+          Get-ChildItem installer\Output
+
       - uses: actions/upload-artifact@v4
         with:
           name: hwp-agent-windows
-          path: dist/hwp-agent.exe
+          path: |
+            dist/hwp-agent.exe
+            installer/Output/hwp-agent-setup.exe
 
       - name: Publish to the windows-exe release
         shell: pwsh
@@ -62,6 +88,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete windows-exe --yes --cleanup-tag 2>$null
-          gh release create windows-exe ".\dist\hwp-agent.exe" `
-            --title "hwp-agent.exe (Windows, standalone)" `
-            --notes "Standalone Windows build — no Python needed. The converter jar is bundled inside; install a JRE 17+ (https://adoptium.net) only for `hwp-agent convert`. Download hwp-agent.exe below. Built by .github/workflows/windows-exe.yml."
+          gh release create windows-exe ".\dist\hwp-agent.exe" ".\installer\Output\hwp-agent-setup.exe" `
+            --title "hwp-agent (Windows)" `
+            --notes "Two downloads:`n- **hwp-agent-setup.exe** — recommended. Installer that bundles a private JRE, so .hwp -> .hwpx conversion works with no separate Java install. Per-user, no admin.`n- **hwp-agent.exe** — bare standalone exe (no Python). The converter jar is inside; needs a JRE 17+ only for `hwp-agent convert`.`nBuilt by .github/workflows/windows-exe.yml."

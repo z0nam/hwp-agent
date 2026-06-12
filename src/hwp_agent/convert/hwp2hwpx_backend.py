@@ -121,6 +121,16 @@ def _normalize_hwpx(hwpx_path: Path) -> tuple[str, ...]:
     return tuple(changes)
 
 
+def _bundled_java() -> str | None:
+    """Path to a JRE shipped next to the installed exe (Windows setup bundles one)."""
+    if not getattr(sys, "frozen", False):
+        return None
+    exe_dir = Path(sys.executable).resolve().parent
+    name = "java.exe" if sys.platform.startswith("win") else "java"
+    cand = exe_dir / "jre" / "bin" / name
+    return str(cand) if cand.is_file() else None
+
+
 def _resolve_jar(explicit: Path | str | None) -> Path:
     if explicit is not None:
         return Path(explicit)
@@ -148,12 +158,18 @@ class Hwp2HwpxBackend(ConverterBackend):
         normalize: bool = True,
     ) -> None:
         self.jar_path = _resolve_jar(jar_path)
-        self.java_bin = java_bin or os.environ.get("JAVA_BIN") or "java"
+        self.java_bin = java_bin or os.environ.get("JAVA_BIN") or _bundled_java() or "java"
         # Patch up hwp2hwpx's incomplete package (see _normalize_hwpx).
         self.normalize = normalize
 
+    def has_jar(self) -> bool:
+        return self.jar_path.is_file()
+
+    def has_java(self) -> bool:
+        return shutil.which(self.java_bin) is not None
+
     def is_available(self) -> bool:
-        return self.jar_path.is_file() and shutil.which(self.java_bin) is not None
+        return self.has_jar() and self.has_java()
 
     def convert(self, hwp_path: Path | str, hwpx_path: Path | str) -> ConvertResult:
         hwp_path = Path(hwp_path)

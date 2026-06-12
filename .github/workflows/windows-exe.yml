@@ -55,7 +55,8 @@ jobs:
       - name: Download Temurin JRE 17 (private, bundled into the installer)
         shell: pwsh
         run: |
-          $url = "https://api.adoptium.net/v3/binary/latest/17/ga/windows/x64/jre/hotspot/normal/eclipse"
+          # JRE 21 — the converter jar is compiled with JDK 21 (class file v65)
+          $url = "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jre/hotspot/normal/eclipse"
           Invoke-WebRequest -Uri $url -OutFile jre.zip
           Expand-Archive jre.zip -DestinationPath jre-extract -Force
           $top = Get-ChildItem jre-extract -Directory | Select-Object -First 1

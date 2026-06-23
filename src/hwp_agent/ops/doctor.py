@@ -152,7 +152,8 @@ def _warnings(r: dict) -> list[str]:
             f"{len(bullets)} bullet style(s) outside the role map ({names}) — bullet nesting is "
             "by glyph, not outline level, so the role map collapses siblings and drops these. "
             "Declare AI:BULLET_1/AI:BULLET_2/… on the bullet styles to set the ladder and make "
-            "them targetable (docs/author-backlog.md item G)."
+            "them targetable (docs/author-backlog.md item G), or run `hwp-agent normalize` "
+            "to declare it automatically."
         )
     if outlines:
         top = outlines[0]

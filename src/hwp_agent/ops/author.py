@@ -29,7 +29,7 @@ from pathlib import Path
 from hwpx.document import HwpxDocument
 
 from .form import extract_placeholders
-from .styles import INSTRUCTION, read_style_system, role_map
+from .styles import INSTRUCTION, bullet_glyph_name, read_style_system, role_map
 
 #: tokens marking where authored content is inserted (each on a paragraph of its
 #: own); the marker paragraph is consumed (removed) on fill. ``{{body}}`` = start of
@@ -99,6 +99,7 @@ class Block:
     level: int  # heading level 1-6, list nesting 1+, 0 for paragraph/rule
     text: str  # raw inline text (** / * markers kept; segmented at fill time)
     blank_before: int = 0  # blank lines that preceded this block in the Markdown
+    raw_text: str = ""  # headings: title before number stripping (see Q: literal ladders)
 
 
 @dataclass
@@ -246,6 +247,8 @@ def _resolve_cross_refs(
             b.rows = [[resolve(c) or "" for c in r] for r in b.rows]
         else:
             b.text = resolve(b.text) or b.text
+            if b.raw_text:
+                b.raw_text = resolve(b.raw_text) or b.raw_text
     if unresolved:
         warnings.append(f"unresolved {{ref:…}}: {', '.join(unresolved)}")
 
@@ -260,6 +263,36 @@ def _strip_heading_number(text: str) -> str:
     """
     stripped = _HEADING_NUM_RE.sub("", text, count=1).strip()
     return stripped or text
+
+
+def _heading_render_text(block: Block, info) -> str:
+    """Heading text to render when *block* lands on the style described by *info*.
+
+    Outline styles auto-number, so the number-stripped title is used. A plain
+    (non-OUTLINE) heading style — a normalized flat template's literal ladder,
+    where Ⅰ./1./1) are typed text — has nothing to re-supply a stripped number,
+    so the author's literal title is kept.
+    """
+    if block.kind != "heading" or not block.raw_text:
+        return block.text
+    if info is not None and info.heading_type == "OUTLINE":
+        return block.text
+    return block.raw_text
+
+
+def _bullet_render_text(block: Block, role: str, info) -> str:
+    """Bullet text to render when *block* lands on the style described by *info*.
+
+    A BULLET-defined style renders its glyph itself. A plain style laddered as
+    ``AI:BULLET_n`` (glyph-named manual bullet head — JI 관행) carries its marker
+    as literal text, so the glyph from the style name is re-supplied here.
+    """
+    if block.kind != "bullet" or not role.startswith("BULLET_"):
+        return block.text
+    if info is None or info.heading_type != "NONE":
+        return block.text
+    glyph = bullet_glyph_name(info.name)
+    return f"{glyph} {block.text}" if glyph else block.text
 
 
 def parse_markdown(markdown: str) -> list[Block | TableBlock]:
@@ -343,8 +376,14 @@ def parse_markdown(markdown: str) -> list[Block | TableBlock]:
             emit(Block("rule", 0, ""))
         elif m := _HEADING_RE.match(line):
             flush()
+            title = m.group(2).strip()
             emit(
-                Block("heading", len(m.group(1)), _strip_heading_number(m.group(2).strip()))
+                Block(
+                    "heading",
+                    len(m.group(1)),
+                    _strip_heading_number(title),
+                    raw_text=title,
+                )
             )
         elif m := _ORDERED_RE.match(line):
             flush()
@@ -1041,7 +1080,14 @@ def fill_from_markdown(
         para = target_section.add_paragraph(
             "", style_id_ref=style_id, para_pr_id_ref=para_pr, include_run=False
         )
-        add_runs(para, block.text, base_char)
+        info = infos.get(style_id)
+        if block.kind == "heading":
+            text = _heading_render_text(block, info)
+        elif block.kind == "bullet":
+            text = _bullet_render_text(block, role, info)
+        else:
+            text = block.text
+        add_runs(para, text, base_char)
         # headings: clone a linesegarray from a real same-style heading so Hangul
         # keeps them as outline headings (item C) — only when one isn't already there
         if (

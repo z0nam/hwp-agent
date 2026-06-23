@@ -100,6 +100,52 @@ def test_strip_manual_heading_numbering() -> None:
     ]
 
 
+def test_heading_raw_text_keeps_literal_number() -> None:
+    """raw_text keeps the typed title so non-outline (normalized flat) ladders
+    can render their literal numbers (see _heading_render_text)."""
+    from hwp_agent.ops.author import _heading_render_text
+    from hwp_agent.ops.styles import StyleInfo
+
+    (block,) = parse_markdown("## 1.1 배경\n")
+    assert block.text == "배경" and block.raw_text == "1.1 배경"
+
+    def style(heading_type: str) -> StyleInfo:
+        return StyleInfo(
+            style_id="1", name="x", eng_name="", para_pr_id=None,
+            heading_type=heading_type, outline_level=0,
+        )
+
+    # OUTLINE style auto-numbers → stripped title (today's behavior)
+    assert _heading_render_text(block, style("OUTLINE")) == "배경"
+    # plain heading style: the number is literal text → keep the typed title
+    assert _heading_render_text(block, style("NONE")) == "1.1 배경"
+    # unknown style (unmapped → BODY fallback) keeps the typed title too
+    assert _heading_render_text(block, None) == "1.1 배경"
+
+
+def test_bullet_marker_resupplied_on_glyph_named_plain_style() -> None:
+    """A bullet mapped onto a glyph-named plain style (JI manual bullet head)
+    gets its literal marker back; BULLET-defined styles render their own."""
+    from hwp_agent.ops.author import _bullet_render_text
+    from hwp_agent.ops.styles import StyleInfo
+
+    (block,) = parse_markdown("- 항목\n")
+    assert block.text == "항목"
+
+    def style(name: str, heading_type: str) -> StyleInfo:
+        return StyleInfo(
+            style_id="13", name=name, eng_name="", para_pr_id=None,
+            heading_type=heading_type, outline_level=None,
+        )
+
+    # plain glyph-named style → marker re-supplied as literal text
+    assert _bullet_render_text(block, "BULLET_4", style("-", "NONE")) == "- 항목"
+    # BULLET-defined style renders the glyph itself → text unchanged
+    assert _bullet_render_text(block, "BULLET_1", style("￭ ", "BULLET")) == "항목"
+    # unmapped bullet that fell back to BODY → untouched
+    assert _bullet_render_text(block, "BODY", style("-", "NONE")) == "항목"
+
+
 def test_cli_missing_input_file_is_friendly(capsys) -> None:
     """A missing input path is a clear message + exit 2, not a Python traceback."""
     from hwp_agent.cli.main import main

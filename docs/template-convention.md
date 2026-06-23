@@ -28,7 +28,25 @@ a level, the canonical `engName="Outline N"` wins, then most-used, then lowest i
 A style whose **name or engName** matches `AI:<ROLE>` claims that role outright,
 e.g. `AI:H1`, `AI:BODY`, `AI:CAPTION_TABLE`, `AI:INSTRUCTION`. Use this to label
 intent unambiguously, or to mark roles that have no structural signal (instructions,
-captions, title slots).
+captions, title slots). `AI:H<n>` is an alias for `AI:HEADING_<n>` (the role the
+authoring layer consumes) — both forms work.
+
+### Normalizing a flat template (`hwp-agent normalize`)
+
+Real-world report 서식 are usually **flat**: the numbering ladder exists only as
+plain styles (로마자 / "1." / "1)" with no `OUTLINE` declaration) and bullet
+siblings collide on outline level. `hwp-agent normalize IN.hwpx -o OUT.hwpx`
+detects the ladder (heading candidates: enumerator-named plain styles ordered by
+font size; bullets: glyph class `■ > ● > - > ·`, then size — including plain
+styles whose *name* is a single bullet glyph, the JI convention for manual
+bullet heads whose marker is typed text; author re-supplies that glyph on
+write) and writes
+`AI:HEADING_n` / `AI:BULLET_n` into each style's **engName** (the Korean name a
+human sees stays intact), preserving the zip container so Hangul accepts the
+copy. Ambiguous ladders (size ties, duplicate enumerator classes, mixed outline
+systems) are reported, not guessed. A declared 2-level heading ladder classifies
+as `structured`. Note the Ⅰ./1./1) numbers on such a ladder are **literal text**
+— authors must type them in the Markdown; nothing auto-numbers.
 
 ## Passing instructions to the AI
 

@@ -30,6 +30,12 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
+    "pymupdf>=1.24",
+]
+# PDF render-quality verification (`hwp-agent verify`): rasterize + vision judge.
+verify = [
+    "pymupdf>=1.24",
+    "anthropic>=0.40",
 ]
 # Self-hosted HTTP server (`hwp-agent serve`): web UI + REST API + OpenAPI.
 serve = [

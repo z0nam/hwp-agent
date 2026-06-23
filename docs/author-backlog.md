@@ -109,7 +109,7 @@ and B/D (section-split / custom outline numbering) are M8.
 - **Deferred:** the convention fallback (glyph/size order when *no* `AI:BULLET_n`
   is declared) — until then, an undeclared multi-bullet template needs the naming.
 
-## H — flat-template normalizer (실서식 → hwp-agent 친화 변환 모듈) — ☐ proposed
+## H — flat-template normalizer (실서식 → hwp-agent 친화 변환 모듈) — ◑ implemented (한글 검수 대기)
 
 - **Trigger (2026-06-12 survey):** JI 웍스드라이브 `Collaborative Drive/0.서식(과제 관련)`
   — 원내 과제 서식의 공식 SSOT, 인덱스는 `ji-regulations/forms/works-drive-index.yaml` —
@@ -132,3 +132,17 @@ and B/D (section-split / custom outline numbering) are M8.
   컨테이너 보존 규칙(원본 ZipInfo 유지, linesegarray 제거)은 기존 hand-edit 노하우 재사용.
 - **Interim workaround:** 보고서 서식 4종 사본에 한글에서 `AI:H<n>`/`AI:BULLET_n`을
   수동 선언한 "authoring 판"을 만들어 쓰고, 정본 폴더와 별도 관리 (ji-regulations 쪽 메모 참조).
+- **Done (2026-06-12):** `hwp-agent normalize` 구현 — `ops/normalize.py`(plan/apply,
+  휴리스틱은 `styles.py`의 `enumerator_class`/`bullet_glyph_rank`로 분리해 G fallback과 공유),
+  선언은 **engName**에 기록(한글 이름 보존), header.xml만 바이트 치환 + `ops/container.py`
+  `_rewrite_zip_preserving`. 동반 수정: `AI:H<n>`→`HEADING_<n>` 별칭(문서-코드 불일치 해소),
+  classify가 선언 사다리(≥2단)를 structured로 인정, author는 비-OUTLINE 헤딩 스타일에서
+  리터럴 번호를 strip하지 않음(`Block.raw_text` + `_heading_render_text`).
+  PoC: 정책과제_서식 사본 → flat→structured, write 9블록 정상 매핑(번호 보존),
+  zip-diff는 header.xml만 상이(flag_bits 압축레벨 표시 비트만 0으로 — images 경로와 동일).
+  4종 dry-run 모두 동일 계획(렉시콘 확장 불요). 잔여: 한글 '높음'에서 열림 검수(사람),
+  본문 수동 bullet 승격(3번)은 v1 범위 외.
+- **원내 관행 반영 (사용자 확인):** 글리프 한 글자를 이름으로 쓴 일반(NONE) 스타일
+  (예: '-' 20×)은 **수동 불릿 대가리** — normalize가 사다리에 포함(정책과제 기준
+  BULLET_4), author는 BULLET 정의가 없는 불릿 스타일에 글리프를 리터럴 텍스트로
+  재공급(`_bullet_render_text`). 헤딩의 리터럴 번호와 같은 원리.

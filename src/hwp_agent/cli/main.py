@@ -59,15 +59,44 @@ def _quiet_hwpx_logging() -> None:
     lg.propagate = False  # don't also hit the root/last-resort handler (avoids dupes)
 
 
+def _guard_output(intended: Path):
+    """Pick a safe output path that won't clobber an externally-edited file."""
+    from ..ops import plan_output
+
+    return plan_output(intended)
+
+
+def _guard_finalize(gr, *, quiet: bool = False) -> None:
+    """Stamp the provenance fingerprint; warn if we versioned to avoid a clobber."""
+    from ..ops import stamp_fingerprint
+
+    stamp_fingerprint(gr.target)
+    if gr.versioned and not quiet:
+        why = (
+            "기존 출력이 외부에서 수정됨"
+            if gr.reason == "versioned-drift"
+            else "기존 파일에 hwp-agent 지문 없음"
+        )
+        print(f"  ⚠ 덮어쓰기 가드: {why} → 새 버전으로 저장 ({gr.target.name})")
+
+
 def _cmd_convert(args: argparse.Namespace) -> int:
     backend = Hwp2HwpxBackend(jar_path=args.jar)
     if not backend.is_available():
-        print(
-            f"error: backend '{backend.name}' is not available "
-            f"(jar={backend.jar_path}, java={backend.java_bin}).\n"
-            f"       Build it first:  ./scripts/bootstrap.sh",
-            file=sys.stderr,
-        )
+        if not backend.has_java():
+            print(
+                "error: .hwp 변환에는 Java(JRE)가 필요합니다.\n"
+                "  - 설치 프로그램(hwp-agent-setup.exe)으로 설치하면 Java가 함께 깔립니다, 또는\n"
+                "  - Temurin JRE 17을 직접 설치: https://adoptium.net/temurin/releases/?version=17\n"
+                "  (폼 채우기·편집은 Java 없이 됩니다 — .hwp→.hwpx 변환에만 필요)",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"error: 변환기 jar를 찾을 수 없습니다 (jar={backend.jar_path}).\n"
+                "  `hwp-agent setup` 으로 내려받으세요 (또는 scripts/bootstrap.sh 로 빌드).",
+                file=sys.stderr,
+            )
         return 2
 
     result = backend.convert(args.input, args.output)
@@ -197,18 +226,24 @@ def _cmd_form(args: argparse.Namespace) -> int:
         from ..ops import fill_from_profile
 
         prof_path = args.profile or None  # "" (bare --profile) -> default location
+        gr = _guard_output(args.output or args.file)
         try:
             result = fill_from_profile(
-                args.file, prof_path, output=args.output, date=args.date,
+                args.file, prof_path, output=gr.target, date=args.date,
                 precise=args.precise,
             )
         except FileNotFoundError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
         if args.json:
-            print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
+            _guard_finalize(gr, quiet=True)
+            d = result.as_dict()
+            d["output"] = str(gr.target)
+            d["versioned"] = gr.versioned
+            print(json.dumps(d, ensure_ascii=False, indent=2))
             return 0
-        print(f"filled {len(result.filled)} from profile -> {args.output or args.file}")
+        _guard_finalize(gr)
+        print(f"filled {len(result.filled)} from profile -> {gr.target}")
         for m in result.filled:
             print(f"  ok: {m.slot}  <-  {m.field} = {m.value}")
         if result.blank:
@@ -229,13 +264,71 @@ def _cmd_form(args: argparse.Namespace) -> int:
         print("error: nothing to fill (use --map FILE or --set KEY=VALUE)", file=sys.stderr)
         return 2
 
-    result = fill_form(args.file, mapping, output=args.output, precise=args.precise)
-    print(f"filled {len(result.filled)} -> {args.output or args.file}")
+    gr = _guard_output(args.output or args.file)
+    result = fill_form(args.file, mapping, output=gr.target, precise=args.precise)
+    _guard_finalize(gr)
+    print(f"filled {len(result.filled)} -> {gr.target}")
     if result.filled:
         print(f"  ok: {', '.join(result.filled)}")
     if result.missing:
         print(f"  missing: {', '.join(result.missing)}")
     return 1 if result.missing and not result.filled else 0
+
+
+def _cmd_verify(args: argparse.Namespace) -> int:
+    import json
+    import os
+
+    from ..ops import verify_document
+
+    # vision verification goes through the Anthropic API; fail fast (before
+    # rendering/rasterizing) if the key is missing.
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print(
+            "error: 비전 검증에는 ANTHROPIC_API_KEY 환경변수가 필요합니다.\n"
+            "  export ANTHROPIC_API_KEY=sk-ant-...  후 다시 실행하세요.",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        result = verify_document(
+            args.file, dpi=args.dpi, model=args.model, max_pages=args.max_pages,
+            rhwp_bin=args.rhwp,
+        )
+    except FileNotFoundError as exc:  # rhwp binary missing (.hwp/.hwpx input)
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except ModuleNotFoundError:
+        print(
+            "error: 검증에는 추가 패키지가 필요합니다:\n"
+            '  pip install "hwp-agent[verify]"\n'
+            "  (또는: uv pip install pymupdf anthropic)",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.json:
+        print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
+        return 0 if result.passed else 1
+
+    if result.error:
+        print(f"error: {result.error}", file=sys.stderr)
+        return 1
+    status = "PASS" if result.passed else "FAIL"
+    print(
+        f"{status}  {result.pdf}  "
+        f"({len(result.pages)}/{result.page_count} pages @ {result.dpi}dpi, {result.model})"
+    )
+    for p in result.pages:
+        mark = "✓" if p.ok else "✗"
+        print(f"  {mark} p.{p.page}")
+        for i in p.issues:
+            print(f"      - {i.type}: {i.detail}")
+        if p.note and not p.ok:
+            print(f"      note: {p.note}")
+    if result.problem_pages:
+        print(f"problem pages: {', '.join(map(str, result.problem_pages))}")
+    return 0 if result.passed else 1
 
 
 def _cmd_classify(args: argparse.Namespace) -> int:
@@ -320,6 +413,59 @@ def _cmd_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_normalize(args: argparse.Namespace) -> int:
+    import json
+
+    from ..ops import apply_normalization, plan_normalization
+
+    plan = plan_normalization(args.file)
+    output = args.output or args.file.with_suffix(".normalized.hwpx")
+
+    if args.json:
+        report = plan.as_dict()
+        report["output"] = None if args.dry_run else str(output)
+        report["applied"] = bool(plan.actions) and not args.dry_run
+        if report["applied"]:
+            apply_normalization(args.file, plan, output)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    print(f"{plan.file}  [{plan.classification_before}]")
+    if plan.actions:
+        print("선언 계획:")
+        for a in plan.actions:
+            size = f"{a.size}pt" if a.size is not None else "?pt"
+            print(f"  style {a.style_id:<3} '{a.name}' {size:<7} → {a.declaration}"
+                  f"  (근거: {a.rationale})")
+    else:
+        print("선언할 항목 없음.")
+    if plan.already_declared:
+        print(f"기존 선언 {len(plan.already_declared)}건:")
+        for d in plan.already_declared:
+            print(f"  style {d['style_id']:<3} '{d['name']}' → {d['role']}")
+    if plan.skipped:
+        print("건너뜀 (사람 판단 필요):")
+        for s in plan.skipped:
+            print(f"  style {s.style_id:<3} '{s.name}' (사용 {s.use_count}×) — {s.reason}")
+    for w in plan.warnings:
+        print(f"  ⚠ {w}")
+
+    if args.dry_run or not plan.actions:
+        print("\n(변경 없음 — dry-run이거나 적용할 선언이 없습니다)")
+        return 0
+
+    apply_normalization(args.file, plan, output)
+    print(f"\nwrote {output}  [{plan.classification_before} → {plan.classification_expected}]")
+    print("다음 단계:")
+    print("  1. 한글에서 결과 파일을 열어 보안 경고가 없는지, 스타일(F6) 영문 이름에")
+    print("     AI:HEADING_n/AI:BULLET_n이 들어갔는지 확인")
+    print(f"  2. hwp-agent classify '{output}' / hwp-agent check '{output}'")
+    print(f"  3. hwp-agent write content.md --template '{output}' -o result.hwpx 로 시험")
+    print("  ※ 이 서식의 헤딩 번호는 리터럴 텍스트입니다 — 마크다운에 번호를 직접")
+    print("     쓰세요 (예: '# Ⅰ. 서론', '## 1. 추진 배경').")
+    return 0
+
+
 def _cmd_image(args: argparse.Namespace) -> int:
     import json
 
@@ -344,13 +490,14 @@ def _cmd_image(args: argparse.Namespace) -> int:
         print("error: pass exactly one of --ref or --caption", file=sys.stderr)
         return 2
 
+    gr = _guard_output(args.output or args.file)
     result = replace_image(
         args.file,
         ref=args.ref,
         caption=args.caption,
         image=args.image,
         fit=args.fit,
-        output=args.output,
+        output=gr.target,
     )
     for o in result.outcomes:
         detail = f"  ({o.detail})" if o.detail else ""
@@ -358,7 +505,8 @@ def _cmd_image(args: argparse.Namespace) -> int:
     for w in result.warnings:
         print(f"  warning: {w}", file=sys.stderr)
     if result.replaced:
-        print(f"replaced {result.replaced} -> {args.output or args.file}")
+        _guard_finalize(gr)
+        print(f"replaced {result.replaced} -> {gr.target}")
         return 0
     return 1
 
@@ -392,14 +540,16 @@ def _cmd_write(args: argparse.Namespace) -> int:
     from ..ops import fill_from_markdown
 
     markdown = Path(args.md).read_text(encoding="utf-8")
+    gr = _guard_output(args.output or args.template)
     result = fill_from_markdown(
         args.template,
         markdown,
-        output=args.output,
+        output=gr.target,
         chapter=args.chapter,
         table_template=args.table_template,
     )
-    print(f"placed {result.placed} block(s) -> {args.output or args.template}")
+    _guard_finalize(gr)
+    print(f"placed {result.placed} block(s) -> {gr.target}")
     if result.instructions_removed:
         print(f"  removed {result.instructions_removed} instruction paragraph(s)")
     if result.unmapped_roles:
@@ -509,6 +659,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     form.set_defaults(func=lambda _args: (form.print_help(), 0)[1])
 
+    vfy = sub.add_parser(
+        "verify",
+        help="check a rendered PDF's quality with a vision model "
+        "(missing figures, broken layout, blank pages)",
+    )
+    vfy.add_argument(
+        "file",
+        type=Path,
+        help="PDF (Hancom-rendered, authoritative), or .hwp/.hwpx (rendered locally via rhwp)",
+    )
+    vfy.add_argument(
+        "--rhwp", default=None,
+        help="path to the rhwp CLI for .hwp/.hwpx input (default: $RHWP_BIN or PATH)",
+    )
+    vfy.add_argument("--dpi", type=int, default=150, help="rasterization DPI (default 150)")
+    vfy.add_argument(
+        "--model", default="claude-opus-4-8", help="vision model (default claude-opus-4-8)"
+    )
+    vfy.add_argument(
+        "--max-pages", type=int, default=None, dest="max_pages",
+        help="only check the first N pages",
+    )
+    vfy.add_argument("--json", action="store_true", help="emit the report as JSON")
+    vfy.set_defaults(func=_cmd_verify)
+
     cls = sub.add_parser("classify", help="classify a doc: structured | weak | flat")
     cls.add_argument("file", type=Path, help=".hwpx file")
     cls.set_defaults(func=_cmd_classify)
@@ -526,6 +701,19 @@ def build_parser() -> argparse.ArgumentParser:
     chk.add_argument("file", type=Path, help=".hwpx template")
     chk.add_argument("--json", action="store_true", help="emit the full report as JSON")
     chk.set_defaults(func=_cmd_check)
+
+    norm = sub.add_parser(
+        "normalize",
+        help="declare AI:HEADING_n/AI:BULLET_n on a flat template so classify/write work",
+    )
+    norm.add_argument("file", type=Path, help=".hwpx flat template (never modified)")
+    norm.add_argument(
+        "-o", "--output", type=Path, default=None,
+        help="output path (default: <input>.normalized.hwpx)",
+    )
+    norm.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
+    norm.add_argument("--json", action="store_true", help="emit the report as JSON")
+    norm.set_defaults(func=_cmd_normalize)
 
     ins = sub.add_parser(
         "instructions", help="show a template's AI:INSTRUCTION directions and {{slots}}"

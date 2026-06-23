@@ -30,6 +30,8 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .container import _read_text, _rewrite_zip_preserving
+
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 _HC = "http://www.hancom.co.kr/hwpml/2011/core"
 
@@ -338,33 +340,6 @@ def set_wh_dim(block: str, dim_w: int, dim_h: int) -> str:
     return re.sub(
         r'(<hp:imgDim\b[^>]*\bdimheight=")\d+(")', rf"\g<1>{dim_h}\g<2>", block, count=1
     )
-
-
-# --------------------------------------------------------------------------- #
-# container-preserving zip rewrite
-# --------------------------------------------------------------------------- #
-def _read_text(zf: zipfile.ZipFile, name: str) -> str:
-    return zf.read(name).decode("utf-8")
-
-
-def _rewrite_zip_preserving(
-    src: str | Path, dst: str | Path, overrides: dict[str, bytes]
-) -> None:
-    """Copy *src* to *dst* replacing only the named parts, keeping the container intact.
-
-    Each entry is re-emitted with its original :class:`zipfile.ZipInfo` (order and
-    compression preserved); ``mimetype`` stays first and ``STORED``. This is what keeps
-    Hangul from treating the edited file as tampered (보안경고).
-    """
-    with zipfile.ZipFile(src) as zin:
-        infos = zin.infolist()
-        with zipfile.ZipFile(dst, "w") as zout:
-            for info in infos:
-                data = overrides.get(info.filename)
-                if data is None:
-                    data = zin.read(info.filename)
-                # reuse the source ZipInfo so order/compression/flags are preserved
-                zout.writestr(info, data)
 
 
 # --------------------------------------------------------------------------- #

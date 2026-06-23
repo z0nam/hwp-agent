@@ -39,7 +39,14 @@ output.
 2. **Classify** the document so you pick the right strategy:
    `hwp-agent classify work.hwpx` → `structured` | `weak` | `flat`.
    This skill's `write` flow targets **structured** templates (a real outline
-   style system). For `weak`/`flat`, fall back to form-fill or ask the human.
+   style system). For a `weak`/`flat` *report template* whose numbering exists
+   only as plain styles (로마자/'1.'/'1)'), run
+   `hwp-agent normalize work.hwpx -o work.normalized.hwpx` — it declares
+   `AI:HEADING_n`/`AI:BULLET_n` automatically and the copy classifies as
+   structured (have a human verify it opens cleanly in Hangul). On a normalized
+   template the heading numbers are **literal text**, so type them in the
+   Markdown yourself (`# Ⅰ. 서론`, `## 1. 추진 배경`) — nothing auto-numbers.
+   For a `flat` *form*, fall back to form-fill or ask the human.
 
 3. **Read the style roles** the template exposes (role → style id):
    `hwp-agent styles work.hwpx` (add `--json` for machine use). Roles include
@@ -202,6 +209,7 @@ reference **explicitly**:
 | `hwp-agent classify FILE.hwpx` | structured / weak / flat |
 | `hwp-agent styles FILE.hwpx [--json]` | machine style roles (role → style id) |
 | `hwp-agent check FILE.hwpx [--json]` | check the style system: ladder gaps, font-hierarchy violations, un-mapped bullet/structural styles (`doctor` = alias) |
+| `hwp-agent normalize FILE.hwpx [-o OUT] [--dry-run] [--json]` | declare `AI:HEADING_n`/`AI:BULLET_n` on a flat template's number/bullet styles (never in-place; default `<input>.normalized.hwpx`) |
 | `hwp-agent instructions FILE.hwpx [--json]` | AI:INSTRUCTION directions + `{{slots}}` |
 | `hwp-agent extract FILE.hwpx [--body-only] [-o OUT.md]` | extract HWPX as body-focused Markdown; merged cells flattened (Excel-style) |
 | `hwp-agent form analyze FILE.hwpx [--json]` | list fillable slots |
@@ -281,12 +289,29 @@ silently break a file that otherwise round-trips fine through `meta`:
    the **original `ZipInfo` per entry, in original order** (`writestr(info,
    data)`), not `ZipFile('w', ZIP_DEFLATED)` + fresh `writestr(name, …)`.
 
-2. **Strip stale `<hp:linesegarray>` from every paragraph you edit.** Each
-   paragraph caches its line layout there. Inject longer text into a cell that
-   was empty (a 1-line cache) and Hangul renders it on a single line with no
-   wrapping — `lineWrap="BREAK"` alone is not enough. Remove
-   `<hp:linesegarray>…</hp:linesegarray>` from edited paragraphs so Hangul
-   recomputes wrapping on open.
+2. **Strip stale `<hp:linesegarray>` from every paragraph you touch — and from
+   every paragraph you generate.** Each paragraph caches its per-line layout
+   (one `<hp:lineseg>` per visual line) there, and Hangul *trusts the cache* on
+   open instead of always recomputing. Two failure modes, both seen in real
+   files:
+   - **No wrapping.** Inject longer text into a cell that was empty (a 1-line
+     cache) and it renders on a single overflowing line — `lineWrap="BREAK"`
+     alone is not enough.
+   - **Overlapping stacked lines.** Generate *new* paragraphs (or duplicate a
+     template paragraph) with a single-line `linesegarray`, give them text that
+     wraps to 2+ lines, and every wrapped line is drawn at the **same vertical
+     position** — the text renders as an unreadable mush. Short single-line
+     paragraphs look fine, so the bug hides until a long bullet wraps.
+
+   You can't pre-compute the correct lineseg (you don't know the wrap points),
+   and a plain text-only `.replace()` on an existing paragraph leaves its old
+   cache in place too. So don't try to patch it per-paragraph — the robust fix
+   is to **strip `linesegarray` document-wide** before repackaging
+   (`re.sub(r"<hp:linesegarray>.*?</hp:linesegarray>", "", xml, flags=re.S)`
+   plus removing any self-closed `<hp:linesegarray/>`). Hangul then recomputes
+   the entire layout on open. Verify by rendering the result to PDF with
+   LibreOffice (it ignores the cache and lays out fresh) — clean wrapping there
+   means the markup is sound; final proof is opening in Hangul.
 
 Match cells by **label-relative position** (the score/opinion cells follow their
 label cell), not absolute index — non-budget items insert an extra 참고사항

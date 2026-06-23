@@ -98,6 +98,30 @@ def _build():
         return f"ok: wrote {dst}"
 
     @mcp.tool()
+    def normalize_template(path: str, output: str, dry_run: bool = False) -> str:
+        """Declare AI:HEADING_n/AI:BULLET_n styles on a flat HWPX template.
+
+        Detects the numbering ladder of a flat (non-outline) template and writes
+        the AI: role declarations into a container-preserving copy, so classify
+        reports structured and authoring (write) can target its styles.
+
+        Args:
+          path — local flat .hwpx template (never modified).
+          output — local path for the normalized copy.
+          dry_run — plan only; write nothing.
+        Returns: JSON report (actions with rationale, skipped styles, warnings).
+        """
+        from .ops import apply_normalization, plan_normalization
+
+        plan = plan_normalization(path)
+        report = plan.as_dict()
+        report["applied"] = bool(plan.actions) and not dry_run
+        report["output"] = output if report["applied"] else None
+        if report["applied"]:
+            apply_normalization(path, plan, output)
+        return json.dumps(report, ensure_ascii=False)
+
+    @mcp.tool()
     def extract_to_markdown(path: str, body_only: bool = False) -> str:
         """Extract an HWPX document's text as Markdown (headings, tables, bullets).
 

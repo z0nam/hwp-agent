@@ -162,3 +162,7 @@ guidance, the author inserts (in Hangul):
 
 Then: `hwp-agent classify form.hwpx` → `structured`; `hwp-agent styles form.hwpx`
 shows the role map; `hwp-agent write content.md --template form.hwpx -o out.hwpx` fills it.
+
+When no `--template` is given, `write` falls back to a bundled content template
+(`$HWP_AGENT_TEMPLATE` → `~/.config/hwp-agent/template.hwpx` → bundled). See
+[default-template.md](default-template.md).

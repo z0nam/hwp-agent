@@ -52,6 +52,11 @@ from .profile import (
     normalize_label,
 )
 from .styles import StyleInfo, classify_document, read_style_system, role_map
+from .template import (
+    bundled_template_path,
+    describe_template_source,
+    resolve_template_path,
+)
 from .verify import (
     PageIssue,
     PageVerdict,
@@ -91,6 +96,9 @@ __all__ = [
     "plain_text",
     "fill_from_markdown",
     "read_instructions",
+    "resolve_template_path",
+    "bundled_template_path",
+    "describe_template_source",
     "diagnose_template",
     "GuardResult",
     "plan_output",

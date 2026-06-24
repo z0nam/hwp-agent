@@ -538,11 +538,21 @@ def _cmd_instructions(args: argparse.Namespace) -> int:
 
 def _cmd_write(args: argparse.Namespace) -> int:
     from ..ops import fill_from_markdown
+    from ..ops.template import describe_template_source, resolve_template_path
 
+    template = resolve_template_path(args.template)
+    if not template.is_file():
+        print(f"template not found: {template}", file=sys.stderr)
+        return 2
+    if args.template is None:
+        print(f"using {describe_template_source(None)} template: {template}")
     markdown = Path(args.md).read_text(encoding="utf-8")
-    gr = _guard_output(args.output or args.template)
+    # in-place default targets the markdown's stem, never the (possibly shared)
+    # template — writing back onto the bundled default would corrupt it.
+    default_out = args.output or Path(args.md).with_suffix(".hwpx")
+    gr = _guard_output(default_out)
     result = fill_from_markdown(
-        args.template,
+        template,
         markdown,
         output=gr.target,
         chapter=args.chapter,
@@ -771,7 +781,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     wr.add_argument("md", type=Path, help="Markdown content file to write")
     wr.add_argument(
-        "--template", type=Path, required=True, help=".hwpx template to fill"
+        "--template",
+        type=Path,
+        default=None,
+        help=".hwpx template to fill (default: $HWP_AGENT_TEMPLATE, "
+        "~/.config/hwp-agent/template.hwpx, or the bundled content template)",
     )
     wr.add_argument(
         "--chapter",

@@ -23,7 +23,9 @@ classifiers = [
 ]
 dependencies = [
     # Pure-Python HWPX read/write/validate.
-    "python-hwpx>=2.9",
+    # <2.12: 2.23의 open-safety 검증·linesegarray 변경으로 test_metadata 2건,
+    # test_author 1건이 깨짐 — 픽스처 보수 전까지 실사용 검증된 2.11대로 고정.
+    "python-hwpx>=2.11,<2.12",
 ]
 
 [project.optional-dependencies]

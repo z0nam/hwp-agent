@@ -378,7 +378,7 @@ requires-dist = [
     { name = "pymupdf", marker = "extra == 'dev'", specifier = ">=1.24" },
     { name = "pymupdf", marker = "extra == 'verify'", specifier = ">=1.24" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "python-hwpx", specifier = ">=2.9" },
+    { name = "python-hwpx", specifier = ">=2.11,<2.12" },
     { name = "python-multipart", marker = "extra == 'serve'", specifier = ">=0.0.9" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'serve'", specifier = ">=0.27" },
@@ -828,14 +828,14 @@ wheels = [
 
 [[package]]
 name = "python-hwpx"
-version = "2.9.1"
+version = "2.11.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "lxml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/25/5f/0ff513b9f861040e72748f25740e8ff19749b99a42879a1e6e71e0d06eab/python_hwpx-2.9.1.tar.gz", hash = "sha256:937817b7f4fa84d6a9ee310c1f1430bba07f81f28d6d60d36cd69f04cb2e7976", size = 151605, upload-time = "2026-04-27T13:56:04.317Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/28/cd/70d5ffb711c500ff1a3e28dbb72eeb659ee48a2c6d2b612b6504c5257619/python_hwpx-2.11.1.tar.gz", hash = "sha256:4fe7dd0a07e9626c465177298f9b28758d89e2da71b538735b42b5dad36ff6cc", size = 350521, upload-time = "2026-06-12T03:27:18.634Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7e/66/c7c6c1b0a2d101b0f73f246761c1d136f67f46c9031c5e72a2f7043fbfc4/python_hwpx-2.9.1-py3-none-any.whl", hash = "sha256:2ba20e7eb87becddf6769c801775a8f51defb5350decde797646e11c84e3b29b", size = 122139, upload-time = "2026-04-27T13:56:02.499Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/88/dc8c71e505b0229b89de997e0c2d042786ae483cb60e209db21d7260c022/python_hwpx-2.11.1-py3-none-any.whl", hash = "sha256:6690837015e11e4617b2ae09df0992c1a494c890f022551bef5e8d302e6f1f67", size = 272644, upload-time = "2026-06-12T03:27:17.118Z" },
 ]
 
 [[package]]

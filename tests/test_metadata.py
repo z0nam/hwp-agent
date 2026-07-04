@@ -23,8 +23,11 @@ _CONTENT_HPF = (
     '<opf:meta name="CreatedDate" content="text">2023-09-10T06:19:08Z</opf:meta>'
     "</opf:metadata>"
     '<opf:manifest><opf:item id="header" href="Contents/header.xml" '
+    'media-type="application/xml"/>'
+    '<opf:item id="section0" href="Contents/section0.xml" '
     'media-type="application/xml"/></opf:manifest>'
-    '<opf:spine><opf:itemref idref="header"/></opf:spine>'
+    '<opf:spine><opf:itemref idref="header"/>'
+    '<opf:itemref idref="section0"/></opf:spine>'
     "</opf:package>"
 )
 _CONTAINER = (
@@ -51,6 +54,13 @@ def _make_hwpx(path: Path) -> None:
             "Contents/header.xml",
             '<?xml version="1.0"?>'
             '<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"/>',
+        )
+        # python-hwpx >= 2.11 validates open-safety at save: the package must
+        # declare at least one section part, so the fixture carries a stub one.
+        zf.writestr(
+            "Contents/section0.xml",
+            '<?xml version="1.0"?>'
+            '<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"/>',
         )
 
 

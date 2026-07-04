@@ -1095,7 +1095,18 @@ def fill_from_markdown(
             and str(style_id) in lineseg_by_style
             and para.element.find(f"{{{_HP}}}linesegarray") is None
         ):
-            para.element.append(copy.deepcopy(lineseg_by_style[str(style_id)]))
+            lsa = copy.deepcopy(lineseg_by_style[str(style_id)])
+            # python-hwpx >= 2.11 drops a "stale" cache at save time when any
+            # lineseg's textpos exceeds the paragraph's text length — the clone
+            # came from a (usually longer) template heading, so collapse it to a
+            # single lineseg at textpos 0, which is valid for any heading text
+            # while keeping the outline flags Hangul looks for.
+            segs = lsa.findall(f"{{{_HP}}}lineseg")
+            for extra in segs[1:]:
+                lsa.remove(extra)
+            if segs:
+                segs[0].set("textpos", "0")
+            para.element.append(lsa)
         place(para.element)
         result.placed += 1
 

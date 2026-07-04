@@ -20,6 +20,7 @@ dirty so ``HwpxDocument.save_to_path`` re-serializes them.
 
 from __future__ import annotations
 
+import copy
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
@@ -111,6 +112,22 @@ def _cell_text(tc) -> str:
     return "".join(t.text or "" for t in tc.iter(q("t"))).strip()
 
 
+def _set_para_text(p, text: str) -> None:
+    """Set *p*'s visible text to *text*: first ``<hp:t>`` gets it, the rest blank."""
+    ts = [t for r in p.findall(q("run")) for t in r.findall(q("t"))]
+    if ts:
+        for child in list(ts[0]):
+            ts[0].remove(child)
+        ts[0].text = text
+        for t in ts[1:]:
+            for child in list(t):
+                t.remove(child)
+            t.text = ""
+    else:
+        runs = p.findall(q("run")) or [_sub(p, q("run"))]
+        _sub(runs[0], q("t")).text = text
+
+
 def _set_cell_text_overwrite(tc, value: str) -> bool:
     """True SET: write ``value`` into the cell, clearing prior text.
 
@@ -118,6 +135,10 @@ def _set_cell_text_overwrite(tc, value: str) -> bool:
     run is empty — the blank-template ``<hp:run charPrIDRef=.../>`` case), blanks
     every other ``<hp:t>`` in that paragraph, and drops trailing paragraphs.
     This replaces python-hwpx ``set_cell_text``'s append behaviour.
+
+    Newlines in ``value`` become real paragraph breaks: each extra line is a
+    clone of the first paragraph (same paraPr/charPr), not a soft line break
+    (SHIFT+ENTER) inside one paragraph.
     """
     sub = tc.find(q("subList"))
     if sub is None:
@@ -128,18 +149,12 @@ def _set_cell_text_overwrite(tc, value: str) -> bool:
     for extra in ps[1:]:
         sub.remove(extra)
     p = ps[0]
-    ts = [t for r in p.findall(q("run")) for t in r.findall(q("t"))]
-    if ts:
-        for child in list(ts[0]):
-            ts[0].remove(child)
-        ts[0].text = value
-        for t in ts[1:]:
-            for child in list(t):
-                t.remove(child)
-            t.text = ""
-    else:
-        runs = p.findall(q("run")) or [_sub(p, q("run"))]
-        _sub(runs[0], q("t")).text = value
+    lines = value.split("\n")
+    _set_para_text(p, lines[0])
+    for line in lines[1:]:
+        clone = copy.deepcopy(p)
+        _set_para_text(clone, line)
+        sub.append(clone)
     return True
 
 

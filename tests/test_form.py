@@ -99,6 +99,34 @@ def test_overwrite_fills_empty_run() -> None:
     assert "".join(t.text or "" for t in tc.iter(q("t"))) == "값"
 
 
+def test_overwrite_multiline_makes_real_paragraphs() -> None:
+    tc = _root(
+        '<hp:tc><hp:subList><hp:p paraPrIDRef="7"><hp:run charPrIDRef="3">'
+        "<hp:t>이전값</hp:t></hp:run></hp:p></hp:subList></hp:tc>"
+    ).find(q("tc"))
+    assert _set_cell_text_overwrite(tc, "첫째 줄\n둘째 줄\n셋째 줄")
+    ps = tc.find(q("subList")).findall(q("p"))
+    # one <hp:p> per line — ENTER paragraphs, not SHIFT+ENTER soft breaks
+    assert len(ps) == 3
+    texts = ["".join(t.text or "" for t in p.iter(q("t"))) for p in ps]
+    assert texts == ["첫째 줄", "둘째 줄", "셋째 줄"]
+    # no literal newline survives inside any text node
+    assert not any("\n" in (t.text or "") for t in tc.iter(q("t")))
+    # clones keep the first paragraph's para/char style refs
+    assert {p.get("paraPrIDRef") for p in ps} == {"7"}
+    assert all(r.get("charPrIDRef") == "3" for p in ps for r in p.findall(q("run")))
+
+
+def test_overwrite_multiline_from_empty_run() -> None:
+    tc = _root(
+        '<hp:tc><hp:subList><hp:p><hp:run charPrIDRef="3"/></hp:p>'
+        "</hp:subList></hp:tc>"
+    ).find(q("tc"))
+    assert _set_cell_text_overwrite(tc, "가\n나")
+    ps = tc.find(q("subList")).findall(q("p"))
+    assert ["".join(t.text or "" for t in p.iter(q("t"))) for p in ps] == ["가", "나"]
+
+
 def test_toggle_checkbox_glyph_then_label() -> None:
     root = _root("<hp:p><hp:run><hp:t>□ 동의함</hp:t></hp:run></hp:p>")
     assert _toggle_checkbox([root], "동의함", on=True)

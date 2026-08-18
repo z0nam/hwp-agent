@@ -446,7 +446,8 @@ def test_missing_table_token_warns(tmp_path: Path) -> None:
     assert any("{{table" in w for w in res.warnings)
     if _TABLE_TEMPLATE.is_file():  # a token-marked template should not warn
         res2 = fill_from_markdown(_TABLE_TEMPLATE, md, output=tmp_path / "o2.hwpx")
-        assert not res2.warnings
+        # scoped to the table token: an unrelated {{body}} notice may also be present
+        assert not any("{{table" in w for w in res2.warnings), res2.warnings
 
 
 def _hwpx_strips_layout_caches() -> bool:
@@ -768,6 +769,45 @@ def test_fill_inserts_at_body_marker(tmp_path: Path) -> None:
     assert "{{body}}" not in "".join(texts)  # marker consumed
     # authored heading sits at the marker position (index 3), not appended at the end
     assert "삽입장" in texts[3]
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_fill_without_marker_reports_where_it_landed(tmp_path: Path) -> None:
+    """A multi-section template without {{body}} gets a warning naming the target.
+
+    House templates reserve a section per part (front matter, body, references),
+    each with its own running heads. Appending to the last section then puts the
+    whole document under the wrong furniture, so the fallback must not be silent.
+    """
+    out = tmp_path / "out.hwpx"
+    result = fill_from_markdown(TYPE1, "# 장 제목\n\n본문.\n", output=out)
+
+    assert result.inserted_at_marker is False
+    assert result.target_section == 5  # the sample template has 6 sections
+    assert any("{{body}}" in w for w in result.warnings), result.warnings
+    assert result.as_dict()["target_section"] == 5
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_fill_at_marker_is_not_warned(tmp_path: Path) -> None:
+    """Placing the marker resolves the ambiguity, so no warning is raised."""
+    from hwpx.document import HwpxDocument
+
+    tmpl = tmp_path / "tmpl.hwpx"
+    doc = HwpxDocument.open(str(TYPE1))
+    sec = doc.sections[0]
+    marker = sec.add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    el = marker.element
+    el.getparent().remove(el)
+    sec.paragraphs[3].element.addprevious(el)
+    doc.save_to_path(str(tmpl))
+
+    out = tmp_path / "out.hwpx"
+    result = fill_from_markdown(tmpl, "# 장 제목\n\n본문.\n", output=out)
+
+    assert result.inserted_at_marker is True
+    assert result.target_section == 0
+    assert not any("{{body}}" in w for w in result.warnings), result.warnings
 
 
 @pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")

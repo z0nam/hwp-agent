@@ -13,7 +13,10 @@ can't express this, so the gap is a real per-heading paragraph; an author blank
 line forces a gap, and tightly-packed Markdown is filled by the structural rule.
 
 Content is inserted at a ``{{body}}`` / ``{{appendix}}`` marker paragraph when
-present (the marker is consumed on fill), else appended to the last section.
+present (the marker is consumed on fill), else appended to the last section —
+and in that case a warning names the section it landed in, because house
+templates often reserve one section per part (front matter, body, references)
+with its own running heads.
 ``AI:INSTRUCTION``-styled paragraphs are read by
 :func:`read_instructions` and stripped on fill. Inline ``**bold**``/``*italic*`` is
 currently flattened to text (run-level styling is a later refinement).
@@ -135,6 +138,7 @@ class AuthorResult:
     unmapped_roles: list[str] = field(default_factory=list)
     instructions_removed: int = 0
     inserted_at_marker: bool = False  # False = appended (no {{body}} marker found)
+    target_section: int = -1  # index of the section the content went into
     warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -143,6 +147,7 @@ class AuthorResult:
             "unmapped_roles": self.unmapped_roles,
             "instructions_removed": self.instructions_removed,
             "inserted_at_marker": self.inserted_at_marker,
+            "target_section": self.target_section,
             "warnings": self.warnings,
         }
 
@@ -923,6 +928,21 @@ def fill_from_markdown(
     marker_section, marker = _find_insertion_marker(doc)
     target_section = marker_section or doc.sections[-1]
     result.inserted_at_marker = marker is not None
+    try:
+        result.target_section = doc.sections.index(target_section)
+    except ValueError:  # pragma: no cover — sections list should contain the target
+        result.target_section = -1
+    if marker is None and len(doc.sections) > 1:
+        # Appending to the last section is only right when that section is the body.
+        # House templates often reserve sections per part (front matter, body,
+        # references) with their own headers and page furniture, so silently landing
+        # in the last one puts the whole document under the wrong running heads.
+        result.warnings.append(
+            f"no {BODY_MARKER} marker in the template; content was appended to the "
+            f"last of {len(doc.sections)} sections (index {result.target_section}). "
+            f"If that section is not the body, put a {BODY_MARKER} paragraph where "
+            f"the content belongs."
+        )
 
     # tables generated below copy a template table's format (house style)
     caption_pattern = re.compile(re.escape(table_template), re.I) if table_template else None

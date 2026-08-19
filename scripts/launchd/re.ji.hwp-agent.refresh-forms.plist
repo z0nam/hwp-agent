@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  전략기획실 보고서 서식 초벌구이 — 매일 05:30 실행.
+  설치:  scripts/install-refresh-forms.sh  (또는 아래 수동)
+    cp scripts/launchd/re.ji.hwp-agent.refresh-forms.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/re.ji.hwp-agent.refresh-forms.plist
+  제거:  launchctl bootout gui/$(id -u)/re.ji.hwp-agent.refresh-forms
+  즉시 1회 실행(테스트):  launchctl kickstart -k gui/$(id -u)/re.ji.hwp-agent.refresh-forms
+
+  전제: 로그인 세션(LaunchAgent)에서 실행 — SSH 키(git push)·gh 토큰 접근 필요.
+  NAVER WORKS 마운트가 있어야 소스 접근 가능(로그인 후 마운트됨).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>re.ji.hwp-agent.refresh-forms</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/namun/.local/bin/uv</string>
+        <string>run</string>
+        <string>--no-sync</string>
+        <string>python</string>
+        <string>scripts/refresh-house-forms.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/namun/dev/hwp-agent</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/namun/.local/bin</string>
+        <key>PYTHONUTF8</key>
+        <string>1</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>5</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/namun/.local/share/hwp-agent/refresh-forms.launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/namun/.local/share/hwp-agent/refresh-forms.launchd.log</string>
+</dict>
+</plist>

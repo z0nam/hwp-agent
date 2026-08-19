@@ -40,6 +40,7 @@ from .normalize import (
     NormalizePlan,
     NormalizeSkip,
     apply_normalization,
+    apply_style_roles,
     plan_normalization,
 )
 from .profile import (
@@ -109,6 +110,7 @@ __all__ = [
     "NormalizeSkip",
     "plan_normalization",
     "apply_normalization",
+    "apply_style_roles",
     "extract_markdown",
     "PageIssue",
     "PageVerdict",

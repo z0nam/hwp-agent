@@ -437,3 +437,43 @@ def apply_normalization(
             raise ValueError(f"선언 검증 실패: {action.declaration}")
 
     _rewrite_zip_preserving(path, output, {header_name: new_bytes})
+
+
+def apply_style_roles(
+    path: str | Path, mapping: dict[str, str], output: str | Path
+) -> list[NormalizeAction]:
+    """Declare ``AI:<ROLE>`` on styles named in *mapping* (styleName → ROLE).
+
+    Explicit override for templates whose style *names* don't encode an
+    enumerator, so :func:`plan_normalization` can't infer a ladder — e.g. a
+    brief whose only heading style is just called ``제목``. The caller supplies
+    the mapping (styleName → ``HEADING_n`` / ``BULLET_n``); this writes it
+    deterministically, reusing the container-preserving header rewrite. Also the
+    recovery path when a form's style naming changes and auto-inference regresses.
+    Returns the actions applied.
+    """
+    by_name: dict[str, StyleInfo] = {}
+    for s in read_style_system(path):
+        by_name.setdefault(s.name, s)  # first occurrence wins
+    actions: list[NormalizeAction] = []
+    for style_name, role in mapping.items():
+        info = by_name.get(style_name)
+        if info is None:
+            raise ValueError(
+                f"스타일 '{style_name}' 없음 — 명명이 바뀌었을 수 있음 "
+                f"(있는 이름: {', '.join(sorted(by_name)[:12])})"
+            )
+        actions.append(
+            NormalizeAction(
+                style_id=info.style_id,
+                name=info.name,
+                old_eng_name=info.eng_name,
+                role=role,
+                declaration=f"AI:{role}",
+                size=None,
+                rationale="명시적 매핑(override)",
+            )
+        )
+    plan = NormalizePlan(file=str(path), actions=actions)
+    apply_normalization(path, plan, output)
+    return actions

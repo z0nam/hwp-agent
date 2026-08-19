@@ -366,3 +366,47 @@ def test_apply_with_empty_plan_raises(tmp_path: Path) -> None:
     plan.actions = []
     with pytest.raises(ValueError):
         apply_normalization(src, plan, tmp_path / "out.hwpx")
+
+
+def test_apply_style_roles_explicit(tmp_path: Path) -> None:
+    """Explicit styleName→ROLE mapping declares engName deterministically.
+
+    For WYSIWYG-styled forms whose names don't encode an enumerator, the caller
+    supplies the mapping and it is written verbatim — no inference. Here we even
+    map the '￭'/'-' bullet styles to BULLET_1/2 by name, ignoring glyph rank.
+    """
+    from hwp_agent.ops.normalize import apply_style_roles
+
+    src = tmp_path / "flat.hwpx"
+    out = tmp_path / "mapped.hwpx"
+    make_flat_hwpx(src)
+
+    actions = apply_style_roles(
+        src, {"로마자": "HEADING_1", "￭ ": "BULLET_1", "- ": "BULLET_2"}, out
+    )
+    assert {(a.name, a.declaration) for a in actions} == {
+        ("로마자", "AI:HEADING_1"),
+        ("￭ ", "AI:BULLET_1"),
+        ("- ", "AI:BULLET_2"),
+    }
+    roles = role_map(out)
+    assert roles["HEADING_1"] == "1"
+    assert roles["BULLET_1"] == "3" and roles["BULLET_2"] == "4"
+
+    # container preserved: only header.xml changed
+    with zipfile.ZipFile(src) as a, zipfile.ZipFile(out) as b:
+        diff = [
+            i.filename
+            for i, j in zip(a.infolist(), b.infolist(), strict=True)
+            if a.read(i.filename) != b.read(j.filename)
+        ]
+        assert diff == ["Contents/header.xml"]
+
+
+def test_apply_style_roles_missing_name_raises(tmp_path: Path) -> None:
+    from hwp_agent.ops.normalize import apply_style_roles
+
+    src = tmp_path / "flat.hwpx"
+    make_flat_hwpx(src)
+    with pytest.raises(ValueError, match="없음"):
+        apply_style_roles(src, {"없는스타일": "HEADING_1"}, tmp_path / "o.hwpx")

@@ -55,6 +55,10 @@ TARGETS = [
     "정책이슈브리프.hwp",
 ]
 OUTPUT_SUBDIR = "examples/house-forms"  # 레포 내 산출물 위치
+# per-form 명시 매핑(styleName→ROLE). 전략실은 스타일을 의미가 아니라 겉모양으로 매겨
+# 이름 기반 자동추론이 불안정 — 렌더를 눈으로 보고 만든 매핑을 여기 두면 확정 적용된다.
+# 파일명: overrides/<원본파일명>.json  (예: overrides/정책이슈브리프.hwp.json)
+OVERRIDE_DIR = REPO / "overrides"
 STATE_PATH = Path.home() / ".local/share/hwp-agent/house-forms.state.json"
 LOG_PATH = Path.home() / ".local/share/hwp-agent/refresh-forms.log"
 AUTO_BRANCH = "auto/house-forms-refresh"
@@ -102,6 +106,15 @@ def download_source(file_id: str, dest: Path) -> None:
     _works(["download", "--sd", WORKS_SD, "-o", str(dest), file_id])
 
 
+def load_override(name: str) -> dict | None:
+    """overrides/<name>.json 의 styleName→ROLE 매핑 (있으면). {"styles":{...}} 또는 평면."""
+    f = OVERRIDE_DIR / f"{name}.json"
+    if not f.is_file():
+        return None
+    data = json.loads(f.read_text(encoding="utf-8"))
+    return data.get("styles", data)
+
+
 def load_state() -> dict:
     if STATE_PATH.is_file():
         try:
@@ -119,9 +132,19 @@ def save_state(state: dict) -> None:
 
 
 # ── 초벌구이 (convert + normalize) ──────────────────────────────────────────
-def bake_one(src: Path, out: Path, workdir: Path) -> dict:
-    """src 를 기계친화 사본 out 으로. 요약 dict 반환."""
-    from hwp_agent.ops import apply_normalization, plan_normalization
+def bake_one(src: Path, out: Path, workdir: Path, override: dict | None = None) -> dict:
+    """src 를 기계친화 사본 out 으로. 요약 dict 반환.
+
+    *override* (styleName→ROLE) 가 있으면 자동추론 대신 명시적 매핑을 적용한다 —
+    스타일 이름이 번호 모양을 안 담는 서식(브리프 등)이나, 명명이 바뀌어 자동추론이
+    깨진 서식의 복구 경로.
+    """
+    from hwp_agent.ops import (
+        apply_normalization,
+        apply_style_roles,
+        classify_document,
+        plan_normalization,
+    )
 
     # .hwp → .hwpx 먼저
     if src.suffix.lower() == ".hwp":
@@ -138,14 +161,31 @@ def bake_one(src: Path, out: Path, workdir: Path) -> dict:
     else:
         target = src
 
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    if override:
+        # 명시적 매핑(override): 자동추론 우회, 지정한 스타일에 engName 을 확정 선언.
+        before = classify_document(target)
+        actions = apply_style_roles(target, override, out)  # 없는 스타일이면 raise
+        return {
+            "source": src.name,
+            "classification_before": before,
+            "classification_after": classify_document(out),
+            "declarations": len(actions),
+            "plan_warnings": [],
+            "note": "명시적 매핑(override) 적용",
+        }
+
     plan = plan_normalization(target)
     summary = {
         "source": src.name,
         "classification_before": plan.classification_before,
         "classification_after": plan.classification_expected,
         "declarations": len(plan.actions),
+        # normalize가 사다리를 못 세운 이유(번호 모양 겹침·OUTLINE 혼재 등) — 명명이
+        # 바뀌어 회귀했을 때 사람이 원인을 바로 보게.
+        "plan_warnings": list(plan.warnings),
     }
-    out.parent.mkdir(parents=True, exist_ok=True)
     if plan.actions:
         apply_normalization(target, plan, out)
     else:
@@ -238,16 +278,25 @@ def publish_pr(baked: dict[str, Path], summaries: list[dict]) -> str | None:
             log("worktree 에 실질 변경 없음 — 커밋/PR 생략")
             return None
         lines = "\n".join(
-            f"- {s['source']}: {s['classification_before']} → "
-            f"{s['classification_after']} (선언 {s['declarations']}건)"
+            f"- {'⚠️ 회귀 ' if s.get('regressed') else ''}{s['source']}: "
+            f"{s['classification_before']} → {s['classification_after']} "
+            f"(선언 {s['declarations']}건)"
             + (f" — {s['note']}" if s.get("note") else "")
+            + ("".join(f"\n  ↳ {w}" for w in s.get("plan_warnings", []))
+               if s.get("regressed") else "")
             for s in summaries
+        )
+        regressed = [s["source"] for s in summaries if s.get("regressed")]
+        banner = (
+            f"⚠️ 회귀 {len(regressed)}건 — 이전엔 기계친화였는데 이번 개정에서 떨어짐 "
+            "(스타일 명명 변경 의심). 머지 전 원인 확인·매핑 보정 필요.\n\n"
+            if regressed else ""
         )
         msg = (
             "chore(house-forms): 서식 개정 초벌구이 (자동)\n\n"
             "전략기획실 공용드라이브 서식을 normalize 로 기계친화화.\n"
             "한글 육안검증(보안경고·레이아웃·F6 영문이름) 후 머지.\n\n"
-            f"{lines}\n\n"
+            f"{banner}{lines}\n\n"
             "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n"
         )
         _git(["commit", "-m", msg], wt)
@@ -266,7 +315,7 @@ def publish_pr(baked: dict[str, Path], summaries: list[dict]) -> str | None:
              "--title", "chore(house-forms): 서식 개정 초벌구이 (자동)",
              "--body",
              "전략기획실 서식 개정 자동 감지 → normalize 초벌구이.\n\n"
-             f"{lines}\n\n"
+             f"{banner}{lines}\n\n"
              "**머지 전 한글 육안검증**: 보안경고 없음 · 레이아웃 정상 · "
              "스타일(F6) 영문이름에 AI:HEADING_n/AI:BULLET_n.\n\n"
              "🤖 Generated with [Claude Code](https://claude.com/claude-code)"],
@@ -293,6 +342,8 @@ def main() -> int:
     args = ap.parse_args()
 
     state = load_state()
+    # 직전 확정값 스냅샷 (회귀 감지 기준). _pending 을 뒤에 붙여도 이 사본은 안 바뀜.
+    baseline = {name: dict(state.get(name, {})) for name in TARGETS}
     try:
         sources = list_sources()
     except (RuntimeError, json.JSONDecodeError) as e:
@@ -329,7 +380,7 @@ def main() -> int:
             src = workdir / name  # WORKS 다운로드 로컬 사본 (suffix 유지)
             download_source(sources[name]["fileId"], src)
             out = out_root / (Path(name).stem + ".normalized.hwpx")
-            summ = bake_one(src, out, workdir)
+            summ = bake_one(src, out, workdir, override=load_override(name))
             baked[name] = out
             summaries.append(summ)
             log(f"구움: {name} → {out.name}  "
@@ -342,6 +393,26 @@ def main() -> int:
     if not baked:
         log("✗ 구워진 산출물 없음 — 상태 미갱신, 종료")
         return 1
+
+    # 회귀 감지: 직전에 기계친화(structured/선언≥1)였던 서식이 이번에 떨어졌으면
+    # 스타일 명명이 바뀐 신호 — 조용히 넘기지 않고 크게 알린다.
+    for summ in summaries:
+        prev = baseline.get(summ["source"], {})
+        prev_class = prev.get("classification")
+        prev_decls = prev.get("declarations")
+        summ["regressed"] = (
+            prev_class == "structured"
+            and summ["classification_after"] != "structured"
+        ) or (
+            isinstance(prev_decls, int)
+            and prev_decls > 0
+            and summ["declarations"] < prev_decls
+        )
+        if summ["regressed"]:
+            log(f"⚠⚠ 회귀 감지: {summ['source']} — 직전 {prev_class}({prev_decls}선언) "
+                f"→ 이번 {summ['classification_after']}({summ['declarations']}선언). "
+                f"스타일 명명 변경 의심 — 수동 확인 필요. "
+                f"{'; '.join(summ.get('plan_warnings', [])) or '(normalize 경고 없음)'}")
 
     if args.dry_run:
         log(f"[dry-run] 산출물 {len(baked)}건: {out_root}")
@@ -359,22 +430,39 @@ def main() -> int:
 
     # 성공 → 상태 확정 (성공적으로 처리된 것만)
     stamp = datetime.now().isoformat(timespec="seconds")
+    by_name = {s["source"]: s for s in summaries}
     for name in list(state.keys()):
         pend = state[name].pop("_pending", None)
         if name in baked and pend:
-            state[name] = {**pend, "baked_at": stamp}
+            s = by_name.get(name, {})
+            state[name] = {
+                **pend,
+                "classification": s.get("classification_after"),
+                "declarations": s.get("declarations"),
+                "baked_at": stamp,
+            }
     save_state(state)
 
     # Slack DM
     if not args.no_slack:
         lines = "\n".join(
-            f"• {s['source']}: {s['classification_before']}→{s['classification_after']} "
-            f"(선언 {s['declarations']})" + (f" — {s['note']}" if s.get("note") else "")
+            (f"{'⚠️ ' if s.get('regressed') else '• '}"
+             f"{s['source']}: {s['classification_before']}→{s['classification_after']} "
+             f"(선언 {s['declarations']})"
+             + (f" — {s['note']}" if s.get("note") else "")
+             + ("".join(f"\n    ↳ {w}" for w in s.get("plan_warnings", []))
+                if s.get("regressed") else ""))
             for s in summaries
         )
-        text = (
-            f"📄 *서식 개정 초벌구이* — {len(baked)}건 처리\n{lines}\n"
-            + (f"\nPR(한글 육안검증 후 머지): {pr_url}" if pr_url else "")
+        regressed = [s["source"] for s in summaries if s.get("regressed")]
+        head = (
+            f"🚨 *서식 회귀 감지 {len(regressed)}건* (스타일 명명 변경 의심 — 수동 확인) "
+            f"+ 초벌구이 {len(baked)}건"
+            if regressed
+            else f"📄 *서식 개정 초벌구이* — {len(baked)}건 처리"
+        )
+        text = head + f"\n{lines}\n" + (
+            f"\nPR(한글 육안검증 후 머지): {pr_url}" if pr_url else ""
         )
         slack_dm(text)
 

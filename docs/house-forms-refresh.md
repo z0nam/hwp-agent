@@ -10,7 +10,8 @@ outline 선언이 없는 **flat 스타일**이라 `hwp-agent write` 가 그대�
 
 매일 **05:30**(launchd), 이 맥에서:
 
-1. 소스 폴더의 대상 서식을 **content-hash** 로 스캔 → 개정/신규만 선별
+1. **WORKS Drive API**(`works ls`)로 대상 서식의 `modifiedTime` 을 조회 →
+   개정/신규만 선별하고, 바뀐 것만 `works download` 로 받는다
 2. (`.hwp` 면 `convert` →) **`normalize`** 로 `AI:HEADING_n`/`AI:BULLET_n` 사다리를
    선언한 사본을 굽는다 (한글 이름 보존, 컨테이너 보존)
 3. `examples/house-forms/<이름>.normalized.hwpx` 로 커밋 — **격리된 git worktree**
@@ -21,7 +22,10 @@ outline 선언이 없는 **flat 스타일**이라 `hwp-agent write` 가 그대�
 
 ### 설계 원칙
 
-- **소스는 절대 수정 안 함.** 공유드라이브 원본은 읽기 전용, 언제나 사본에만 작업.
+- **소스는 절대 수정 안 함.** 공유드라이브 원본은 읽기 전용(다운로드만), 사본에만 작업.
+- **로컬 마운트 대신 WORKS API(`works` CLI).** launchd 백그라운드는 NAVER WORKS
+  CloudStorage **FileProvider 마운트를 못 서비스**해 `open()` 이 무한 대기한다(실증됨).
+  서비스계정 위임 API 로 받으면 헤드리스·이식 가능하고 이 행이 사라진다.
 - **normalize 만 (초벌구이).** 견고한 스타일 기반 변환. 예시 본문을 걷어내는 완전
   golden template(슬롯·지침) 스켈레톤화는 표지/판권 문자열 매칭이 서식마다 달라
   개정 자동화에 취약하므로 **자동 범위에서 제외** — 필요할 때 사람이 수동 큐레이션
@@ -66,7 +70,10 @@ rm ~/Library/LaunchAgents/re.ji.hwp-agent.refresh-forms.plist
 ```
 
 - **상태파일**(개정 감지 기준): `~/.local/share/hwp-agent/house-forms.state.json`
-  — 소스별 마지막 초벌구이 해시. 지우면 다음 실행에서 전부 다시 굽는다.
+  — 소스별 마지막 초벌구이 시점의 WORKS `modifiedTime`. 지우면 전부 다시 굽는다.
+- **소스 접근**: `works` CLI(서비스계정 위임). 공유드라이브 `WORKS_SD`, 폴더
+  `WORKS_FOLDER_ID`, 대상 `TARGETS` 는 스크립트 상단. 인증은 works 설정
+  (`~/.config/ji-works/.env` 등, `works doctor` 로 점검).
 - **로그**: `~/.local/share/hwp-agent/refresh-forms.log` (+ launchd stdout
   `refresh-forms.launchd.log`).
 - **Slack**: gw 의 봇토큰을 재사용한다(`SLACK_BOT_TOKEN`). 탐색 순서
@@ -75,10 +82,11 @@ rm ~/Library/LaunchAgents/re.ji.hwp-agent.refresh-forms.plist
 
 ## 전제·한계
 
-- **로그인 세션 전용**(LaunchAgent): git push(SSH 키)·`gh`(토큰)·NAVER WORKS
-  마운트 모두 로그인 상태에서만 닿는다. 로그아웃/로그인 화면에서는 안 돈다.
-- **이 맥 고정**: 공유드라이브가 이 맥의 CloudStorage 로컬 마운트라, 클라우드
-  에이전트로는 못 옮긴다.
+- **로그인 세션 전용**(LaunchAgent): git push(SSH 키)·`gh`(토큰)가 로그인 상태의
+  키체인/에이전트에 기댄다. 로그아웃/로그인 화면에서는 push 단계가 막힐 수 있다.
+  (소스는 works API 라 마운트·로그인과 무관.)
+- **이식 여지**: 소스 취득이 works API 로 바뀌어 마운트 의존이 사라졌다. git/gh 자격만
+  갖추면 이 루틴은 다른 머신·헤드리스에서도 돌 수 있다(현재는 이 맥 launchd 로 운영).
 - **PR 이 안 머지된 채 소스가 또 개정되면** 같은 `auto/house-forms-refresh` 브랜치를
   force-push 로 갱신한다(PR 하나 유지). PR 을 머지 없이 닫으면 그 초벌구이는
   다음 소스 개정까지 재생성되지 않는다(상태파일이 이미 최신 해시라서). 필요하면

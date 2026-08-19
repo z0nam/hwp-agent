@@ -24,7 +24,6 @@ main 직접 push 안 함. 개정본은 한글 육안검증 후 사람이 머지�
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import shutil
 import subprocess
@@ -39,10 +38,13 @@ from pathlib import Path
 
 # ── 설정 ────────────────────────────────────────────────────────────────────
 REPO = Path(__file__).resolve().parents[1]
-SOURCE_DIR = Path(
-    "/Users/namun/Library/CloudStorage/NAVERWORKSDrive-namun@ji.re.kr"
-    "/Collaborative Drive/0.서식(과제 관련)/연구보고서(유형별) 서식 및 보도자료 서식"
-)
+# 소스는 로컬 CloudStorage 마운트가 아니라 NAVER WORKS Drive API(`works` CLI)로
+# 가져온다 — launchd 백그라운드는 FileProvider 마운트를 못 서비스해 open()이 무한
+# 대기하기 때문. works 는 서비스계정 위임 API 라 헤드리스·이식 가능.
+WORKS_BIN = "works"  # PATH(~/.local/bin/works)
+WORKS_SD = "@2001000000544029"  # 공유드라이브 "0.서식(과제 관련)"
+# 폴더 "연구보고서(유형별) 서식 및 보도자료 서식"
+WORKS_FOLDER_ID = "QDIwMDEwMDAwMDA1NDQwMjl8MzQ3MjYxMzYwNjcyMzY3NDEyMHxEfDA"
 # 대상 서식 (인용표기방법.hwp 는 채우는 서식이 아니라 제외). 개정되면 여기 갱신.
 TARGETS = [
     "기반과제_서식.hwpx",
@@ -76,12 +78,28 @@ def log(msg: str) -> None:
         pass
 
 
-def sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def _works(args: list[str]) -> str:
+    r = subprocess.run(
+        [WORKS_BIN, *args], capture_output=True, text=True
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"works {' '.join(args)} 실패: {r.stderr.strip()}")
+    return r.stdout
+
+
+def list_sources() -> dict[str, dict]:
+    """WORKS 폴더의 파일 → {fileName: {fileId, modifiedTime}}. 개정 시그널=modifiedTime."""
+    data = json.loads(_works(["ls", "--sd", WORKS_SD, WORKS_FOLDER_ID, "--json"]))
+    files = data if isinstance(data, list) else data.get("files", [])
+    return {
+        f["fileName"]: {"fileId": f["fileId"], "modifiedTime": f["modifiedTime"]}
+        for f in files
+        if f.get("fileType") not in ("FOLDER",)
+    }
+
+
+def download_source(file_id: str, dest: Path) -> None:
+    _works(["download", "--sd", WORKS_SD, "-o", str(dest), file_id])
 
 
 def load_state() -> dict:
@@ -274,45 +292,51 @@ def main() -> int:
     ap.add_argument("--no-slack", action="store_true", help="Slack DM 생략")
     args = ap.parse_args()
 
-    if not SOURCE_DIR.is_dir():
-        log(f"✗ 소스 폴더 접근 불가(마운트 안 됨?): {SOURCE_DIR}")
+    state = load_state()
+    try:
+        sources = list_sources()
+    except (RuntimeError, json.JSONDecodeError) as e:
+        log(f"✗ WORKS 소스 목록 실패(인증/네트워크?): {e}")
         return 2
 
-    state = load_state()
-    to_bake: list[Path] = []
+    to_bake: list[str] = []
     for name in TARGETS:
-        src = SOURCE_DIR / name
-        if not src.is_file():
-            log(f"⚠ 대상 없음(폴더 구조 바뀜?): {name}")
+        meta = sources.get(name)
+        if not meta:
+            log(f"⚠ 대상 없음(WORKS 폴더에서 사라짐/이름 변경?): {name}")
             continue
-        digest = sha256(src)
-        prev = state.get(name, {}).get("sha256")
-        if args.force or digest != prev:
-            to_bake.append(src)
-        state.setdefault(name, {})["_pending_sha256"] = digest
+        rev = meta["modifiedTime"]
+        prev = state.get(name, {}).get("modifiedTime")
+        if args.force or rev != prev:
+            to_bake.append(name)
+        state.setdefault(name, {})["_pending"] = {
+            "modifiedTime": rev, "fileId": meta["fileId"]
+        }
 
     if not to_bake:
         log("변경 없음 — 종료 (noop)")
         return 0
 
-    log(f"개정/신규 {len(to_bake)}건: {', '.join(p.name for p in to_bake)}")
+    log(f"개정/신규 {len(to_bake)}건: {', '.join(to_bake)}")
 
     baked: dict[str, Path] = {}
     summaries: list[dict] = []
     out_root = Path(tempfile.mkdtemp(prefix="house-forms-out-"))
     workdir = out_root / "work"
     workdir.mkdir()
-    for src in to_bake:
+    for name in to_bake:
         try:
-            out = out_root / (src.stem + ".normalized.hwpx")
+            src = workdir / name  # WORKS 다운로드 로컬 사본 (suffix 유지)
+            download_source(sources[name]["fileId"], src)
+            out = out_root / (Path(name).stem + ".normalized.hwpx")
             summ = bake_one(src, out, workdir)
-            baked[src.name] = out
+            baked[name] = out
             summaries.append(summ)
-            log(f"구움: {src.name} → {out.name}  "
+            log(f"구움: {name} → {out.name}  "
                 f"[{summ['classification_before']}→{summ['classification_after']}, "
                 f"선언 {summ['declarations']}]")
         except Exception as e:  # noqa: BLE001 — 한 파일 실패가 전체를 막지 않게
-            log(f"✗ 실패: {src.name}: {e}")
+            log(f"✗ 실패: {name}: {e}")
             traceback.print_exc()
 
     if not baked:
@@ -336,9 +360,9 @@ def main() -> int:
     # 성공 → 상태 확정 (성공적으로 처리된 것만)
     stamp = datetime.now().isoformat(timespec="seconds")
     for name in list(state.keys()):
-        pend = state[name].pop("_pending_sha256", None)
+        pend = state[name].pop("_pending", None)
         if name in baked and pend:
-            state[name] = {"sha256": pend, "baked_at": stamp}
+            state[name] = {**pend, "baked_at": stamp}
     save_state(state)
 
     # Slack DM

@@ -10,7 +10,7 @@
   즉시 1회 실행(테스트):  launchctl kickstart -k gui/$(id -u)/re.ji.hwp-agent.refresh-forms
 
   전제: 로그인 세션(LaunchAgent)에서 실행 — SSH 키(git push)·gh 토큰 접근 필요.
-  NAVER WORKS 마운트가 있어야 소스 접근 가능(로그인 후 마운트됨).
+  소스는 works API(서비스계정)로 받으므로 CloudStorage 마운트는 불필요.
 -->
 <plist version="1.0">
 <dict>

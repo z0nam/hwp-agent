@@ -1,0 +1,4 @@
+{
+  "_note": "본문 섹션(section4)에 굽는 단계에서 {{body}} 마커 삽입 → write가 판권지 대신 본문에 배치. styles는 생략 = 이름 기반 자동추론 유지.",
+  "body": { "section": 4, "position": "start" }
+}

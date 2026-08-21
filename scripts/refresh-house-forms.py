@@ -24,7 +24,9 @@ main 직접 push 안 함. 개정본은 한글 육안검증 후 사람이 머지�
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +35,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -106,13 +109,76 @@ def download_source(file_id: str, dest: Path) -> None:
     _works(["download", "--sd", WORKS_SD, "-o", str(dest), file_id])
 
 
-def load_override(name: str) -> dict | None:
-    """overrides/<name>.json 의 styleName→ROLE 매핑 (있으면). {"styles":{...}} 또는 평면."""
+def load_config(name: str) -> dict:
+    """overrides/<name>.json 전체. {"styles": {name→ROLE}, "body": {"section": N}}."""
     f = OVERRIDE_DIR / f"{name}.json"
     if not f.is_file():
-        return None
-    data = json.loads(f.read_text(encoding="utf-8"))
-    return data.get("styles", data)
+        return {}
+    return json.loads(f.read_text(encoding="utf-8"))
+
+
+_HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+
+def _hp(tag: str) -> str:
+    return f"{{{_HP}}}{tag}"
+
+
+def insert_body_marker(path: Path, section_index: int, position: str = "start") -> None:
+    """굽는 사본의 지정 섹션에 ``{{body}}`` 마커 문단을 삽입(컨테이너 보존).
+
+    write 가 본문을 이 자리에 넣게 한다 — 마커가 없으면 마지막 섹션(판권지 등)에
+    붙어버리므로. 섹션 안 단순 문단을 복제해 텍스트만 ``{{body}}`` 로 바꿔 넣는다.
+    """
+    from lxml import etree
+
+    from hwp_agent.ops.container import _rewrite_zip_preserving
+
+    part = f"Contents/section{section_index}.xml"
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+        if part not in names:
+            secs = sorted(n for n in names if re.search(r"section\d+\.xml$", n))
+            part = secs[section_index]
+        xml = z.read(part)
+    root = etree.fromstring(xml)
+
+    src = None
+    for p in root.findall(_hp("p")):
+        if (
+            p.find(_hp("run") + "/" + _hp("t")) is not None
+            and p.find(".//" + _hp("secPr")) is None
+            and p.find(".//" + _hp("tbl")) is None
+        ):
+            src = p
+            break
+    if src is None:
+        raise RuntimeError(f"{part}: {{body}} 마커로 복제할 단순 문단이 없음")
+
+    marker = copy.deepcopy(src)
+    marker.set("styleIDRef", "0")
+    runs = marker.findall(_hp("run"))
+    for r in runs[1:]:
+        marker.remove(r)
+    for child in list(runs[0]):
+        runs[0].remove(child)
+    etree.SubElement(runs[0], _hp("t")).text = "{{body}}"
+
+    paras = root.findall(_hp("p"))
+    if position == "end":
+        paras[-1].addnext(marker)
+    else:  # start: secPr 오프너 다음(없으면 첫 문단 앞)
+        opener = next((p for p in paras if p.find(".//" + _hp("secPr")) is not None), None)
+        if opener is not None:
+            opener.addnext(marker)
+        else:
+            paras[0].addprevious(marker)
+
+    decl = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+    new = decl + etree.tostring(root, encoding="UTF-8", xml_declaration=False)
+    tmp = path.with_suffix(".mark.tmp")
+    _rewrite_zip_preserving(path, tmp, {part: new})
+    tmp.replace(path)
 
 
 def load_state() -> dict:
@@ -132,12 +198,13 @@ def save_state(state: dict) -> None:
 
 
 # ── 초벌구이 (convert + normalize) ──────────────────────────────────────────
-def bake_one(src: Path, out: Path, workdir: Path, override: dict | None = None) -> dict:
+def bake_one(src: Path, out: Path, workdir: Path, config: dict | None = None) -> dict:
     """src 를 기계친화 사본 out 으로. 요약 dict 반환.
 
-    *override* (styleName→ROLE) 가 있으면 자동추론 대신 명시적 매핑을 적용한다 —
-    스타일 이름이 번호 모양을 안 담는 서식(브리프 등)이나, 명명이 바뀌어 자동추론이
-    깨진 서식의 복구 경로.
+    config["styles"] (styleName→ROLE) 가 있으면 자동추론 대신 명시적 매핑을 적용
+    (스타일 이름이 번호 모양을 안 담는 서식/명명 변경 복구 경로). config["body"]
+    ({"section": N}) 가 있으면 굽는 사본에 ``{{body}}`` 마커를 삽입해 write 의 본문
+    삽입 위치를 지정한다(없으면 마지막 섹션=판권지 등에 붙음).
     """
     from hwp_agent.ops import (
         apply_normalization,
@@ -145,6 +212,9 @@ def bake_one(src: Path, out: Path, workdir: Path, override: dict | None = None) 
         classify_document,
         plan_normalization,
     )
+
+    config = config or {}
+    styles_override = config.get("styles")
 
     # .hwp → .hwpx 먼저
     if src.suffix.lower() == ".hwp":
@@ -163,11 +233,11 @@ def bake_one(src: Path, out: Path, workdir: Path, override: dict | None = None) 
 
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    if override:
-        # 명시적 매핑(override): 자동추론 우회, 지정한 스타일에 engName 을 확정 선언.
+    if styles_override:
+        # 명시적 매핑(override): 자동추론 우회, 지정 스타일에 engName 확정 선언.
         before = classify_document(target)
-        actions = apply_style_roles(target, override, out)  # 없는 스타일이면 raise
-        return {
+        actions = apply_style_roles(target, styles_override, out)  # 없는 스타일이면 raise
+        summary = {
             "source": src.name,
             "classification_before": before,
             "classification_after": classify_document(out),
@@ -175,23 +245,27 @@ def bake_one(src: Path, out: Path, workdir: Path, override: dict | None = None) 
             "plan_warnings": [],
             "note": "명시적 매핑(override) 적용",
         }
-
-    plan = plan_normalization(target)
-    summary = {
-        "source": src.name,
-        "classification_before": plan.classification_before,
-        "classification_after": plan.classification_expected,
-        "declarations": len(plan.actions),
-        # normalize가 사다리를 못 세운 이유(번호 모양 겹침·OUTLINE 혼재 등) — 명명이
-        # 바뀌어 회귀했을 때 사람이 원인을 바로 보게.
-        "plan_warnings": list(plan.warnings),
-    }
-    if plan.actions:
-        apply_normalization(target, plan, out)
     else:
-        # 선언할 게 없으면 (이미 구조적이거나 사다리 없음) 변환본을 그대로 산출
-        shutil.copyfile(target, out)
-        summary["note"] = "선언 불필요 (이미 기계친화이거나 사다리 없음)"
+        plan = plan_normalization(target)
+        summary = {
+            "source": src.name,
+            "classification_before": plan.classification_before,
+            "classification_after": plan.classification_expected,
+            "declarations": len(plan.actions),
+            # normalize가 사다리를 못 세운 이유(번호 겹침·OUTLINE 혼재 등) — 회귀 시 원인 표시.
+            "plan_warnings": list(plan.warnings),
+        }
+        if plan.actions:
+            apply_normalization(target, plan, out)
+        else:
+            # 선언할 게 없으면 (이미 구조적이거나 사다리 없음) 변환본을 그대로 산출
+            shutil.copyfile(target, out)
+            summary["note"] = "선언 불필요 (이미 기계친화이거나 사다리 없음)"
+
+    body = config.get("body")
+    if body and body.get("section") is not None:
+        insert_body_marker(out, int(body["section"]), body.get("position", "start"))
+        summary["body_marker"] = f"section{body['section']}"
     return summary
 
 
@@ -391,13 +465,15 @@ def main() -> int:
             src = workdir / name  # WORKS 다운로드 로컬 사본 (suffix 유지)
             download_source(sources[name]["fileId"], src)
             out = out_root / (Path(name).stem + ".normalized.hwpx")
-            summ = bake_one(src, out, workdir, override=load_override(name))
+            summ = bake_one(src, out, workdir, config=load_config(name))
             summ["changed"] = name in changed_set
             baked[name] = out
             summaries.append(summ)
             log(f"구움{'🆕' if summ['changed'] else '·유지'}: {name} → {out.name}  "
                 f"[{summ['classification_before']}→{summ['classification_after']}, "
-                f"선언 {summ['declarations']}]")
+                f"선언 {summ['declarations']}"
+                + (f", {summ['body_marker']}에 {{body}}" if summ.get("body_marker") else "")
+                + "]")
         except Exception as e:  # noqa: BLE001 — 한 파일 실패가 전체를 막지 않게
             log(f"✗ 실패: {name}: {e}")
             traceback.print_exc()

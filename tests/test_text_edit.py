@@ -171,3 +171,89 @@ def test_anchor_level_must_be_positive(tmp_path):
         insert_markdown(
             FIXTURE, "x", anchor=ANCHOR, output=tmp_path / "o.hwpx", anchor_level=0
         )
+
+
+# --------------------------------------------------------------------------- #
+# synthetic packages — shapes the real fixture doesn't have
+# --------------------------------------------------------------------------- #
+_HEADER = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"'
+    ' xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">'
+    '<hh:refList><hh:paraProperties itemCnt="2">'
+    '<hh:paraPr id="0"><hh:heading type="NONE"/>'
+    '<hh:margin><hc:left value="0"/><hc:intent value="0"/></hh:margin></hh:paraPr>'
+    '<hh:paraPr id="1"><hh:heading type="BULLET"/>'
+    '<hh:margin><hc:left value="1000"/><hc:intent value="0"/></hh:margin></hh:paraPr>'
+    "</hh:paraProperties></hh:refList></hh:head>"
+)
+
+
+def _para(text: str, *, para_pr: str = "0", lead: str = "") -> str:
+    return (
+        f'<hp:p id="7" paraPrIDRef="{para_pr}" styleIDRef="0">'
+        f'{lead}<hp:run charPrIDRef="0"><hp:t>{text}</hp:t></hp:run></hp:p>'
+    )
+
+
+def _package(tmp_path: Path, sections: dict[str, str], name: str = "doc.hwpx") -> Path:
+    path = tmp_path / name
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("mimetype", "application/hwp+zip")
+        zf.writestr("Contents/header.xml", _HEADER)
+        for part, body in sections.items():
+            zf.writestr(part, f'<?xml version="1.0"?><hs:sec xmlns:hp="x">{body}</hs:sec>')
+    return path
+
+
+def test_sections_are_read_in_document_order_past_ten(tmp_path):
+    """Lexically section10 precedes section2 — --occurrence would target the wrong one."""
+    src = _package(
+        tmp_path,
+        {f"Contents/section{n}.xml": _para(f"공통 문구 {n}") for n in range(12)},
+    )
+    hits = find_anchors(src, "공통 문구")
+    assert [h.section for h in hits] == [f"Contents/section{n}.xml" for n in range(12)]
+
+
+def test_occurrence_out_of_range_is_an_error_not_a_traceback(tmp_path):
+    src = _package(tmp_path, {"Contents/section0.xml": _para("한 번만 나오는 말")})
+    with pytest.raises(TextEditError, match="1..1"):
+        insert_markdown(
+            src, "새 문단", anchor="한 번만", occurrence=5, output=tmp_path / "o.hwpx"
+        )
+
+
+def test_anchor_matches_what_hangul_displays_not_the_escaped_source(tmp_path):
+    src = _package(tmp_path, {"Contents/section0.xml": _para("연구 &amp; 개발 부문")})
+    hits = find_anchors(src, "연구 & 개발")
+    assert len(hits) == 1
+    assert hits[0].text == "연구 & 개발 부문"
+
+
+def test_clone_skips_a_textless_control_run(tmp_path):
+    """A section's first paragraph carries <hp:secPr> in a leading textless run."""
+    lead = '<hp:run charPrIDRef="0"><hp:secPr id="9"/></hp:run>'
+    src = _package(tmp_path, {"Contents/section0.xml": _para("구역 첫 문단", lead=lead)})
+    out = tmp_path / "out.hwpx"
+    insert_markdown(src, "새 문단", anchor="구역 첫 문단", output=out)
+    added = _find(_paragraphs(out, "Contents/section0.xml"), "새 문단")
+    assert _text(added) == "새 문단"
+    assert "secPr" not in added
+
+
+def test_manual_bullet_head_is_carried_onto_the_new_item(tmp_path):
+    """JI 관행: the marker is literal text, so cloning properties alone loses it."""
+    src = _package(tmp_path, {"Contents/section0.xml": _para("￭ 기존 항목")})
+    out = tmp_path / "out.hwpx"
+    result = insert_markdown(src, "* 새 항목", anchor="기존 항목", output=out)
+    texts = [_text(p) for p in _paragraphs(out, "Contents/section0.xml")]
+    assert "￭ 새 항목" in texts
+    assert not result.warnings
+
+
+def test_bullet_onto_an_unmarked_template_warns(tmp_path):
+    src = _package(tmp_path, {"Contents/section0.xml": _para("그냥 본문 문단")})
+    out = tmp_path / "out.hwpx"
+    result = insert_markdown(src, "* 새 항목", anchor="그냥 본문", output=out)
+    assert any("글머리 표시가 없어" in w for w in result.warnings)

@@ -13,6 +13,10 @@ The rules below are the ones that make Hangul accept the result:
   order and compression, ``mimetype`` first and ``STORED`` (see :mod:`.container`).
   A full re-zip — what ``HwpxDocument.save_to_path`` does — trips Hangul's 보안경고.
   For the same reason the section is edited as **text**, not through the DOM.
+  ⚠ The CLI stamps a provenance fingerprint afterwards (:func:`.guard.stamp_fingerprint`)
+  and *that* step still repacks the whole archive, so today the guarantee holds end to
+  end only on the Python API path — see ``docs/report-kit-review.md`` §3 for the
+  evidence either way and the open question.
 * **Style comes from a sibling, not from a role.** A hand-edited document's styles
   are whatever the human settled on, so declared ``AI:*`` roles (if any) no longer
   describe it. Each new paragraph clones the ``paraPrIDRef``/``styleIDRef``/
@@ -24,6 +28,11 @@ The rules below are the ones that make Hangul accept the result:
   paragraph lacks that cache is demoted to body text (the same hazard
   :func:`hwp_agent.ops.author._lineseg_index` guards against), so stripping the
   section wholesale would silently flatten every heading in it.
+* **List markers come from the template, or are re-supplied.** Markdown carries
+  ``* ``/``1. `` as syntax and ``parse_markdown`` strips it, while the document holds
+  the marker either in the paragraph properties (cloned for free) or as literal text
+  (JI 관행 — re-supplied by :func:`_marked`). When the template has neither, the
+  insertion warns rather than quietly emitting an unmarked paragraph.
 * **Anchors must be unique.** A substring that matches two paragraphs is an error,
   not a coin toss — ``find_anchors`` exists so the caller can see the candidates.
 
@@ -42,14 +51,18 @@ from pathlib import Path
 
 from .author import Block, TableBlock, parse_markdown
 from .container import _read_text, _rewrite_zip_preserving
+from .styles import bullet_glyph_name
 
 _HH = "http://www.hancom.co.kr/hwpml/2011/head"
 
 _SECTION_RE = re.compile(r"Contents/section\d+\.xml$")
+_SECTION_NUM_RE = re.compile(r"section(\d+)\.xml$")
 _P_RE = re.compile(r"<hp:p\b.*?</hp:p>", re.S)
 _T_RE = re.compile(r"<hp:t>(.*?)</hp:t>", re.S)
 _RUN_RE = re.compile(r"<hp:run\b.*?</hp:run>", re.S)
 _LINESEG_RE = re.compile(r"<hp:linesegarray>.*?</hp:linesegarray>", re.S)
+_CTRL_RE = re.compile(r"<hp:ctrl\b.*?</hp:ctrl>", re.S)
+_ENTITY_RE = re.compile(r"&(?:#(\d+)|#[xX]([0-9A-Fa-f]+)|(lt|gt|amp|quot|apos));")
 _OPEN_RE = re.compile(r"<hp:p\b[^>]*>")
 _IDS_RE = re.compile(r'paraPrIDRef="(\d+)"\s+styleIDRef="(\d+)"')
 _CHAR_RE = re.compile(r'charPrIDRef="(\d+)"')
@@ -90,8 +103,28 @@ class TextEditError(RuntimeError):
 # --------------------------------------------------------------------------- #
 # reading
 # --------------------------------------------------------------------------- #
+_NAMED_ENTITIES = {"lt": "<", "gt": ">", "amp": "&", "quot": '"', "apos": "'"}
+
+
+def _unesc(text: str) -> str:
+    """Serialized XML text → what Hangul displays.
+
+    Anchors are typed by a human copying what they see on the page, so a paragraph
+    holding ``&amp;`` has to match the ``&`` they pasted. Escaping is re-applied on
+    write by :func:`_esc`.
+    """
+
+    def one(m: re.Match[str]) -> str:
+        dec, hexa, name = m.groups()
+        if name:
+            return _NAMED_ENTITIES[name]
+        return chr(int(dec or "0") if dec else int(hexa, 16))
+
+    return _ENTITY_RE.sub(one, text)
+
+
 def _para_text(paragraph: str) -> str:
-    return "".join(_T_RE.findall(paragraph))
+    return _unesc("".join(_T_RE.findall(paragraph)))
 
 
 def _ids(paragraph: str) -> tuple[str, str, str]:
@@ -120,6 +153,29 @@ def _indent_by_para_pr(header_xml: str) -> dict[str, int]:
     return out
 
 
+def _heading_type_by_para_pr(header_xml: str) -> dict[str, str]:
+    """Map paraPr id → its ``<hh:heading>`` type ("NONE" | "OUTLINE" | "NUMBER" | "BULLET").
+
+    A list marker can come from the paragraph properties (Hangul draws it) or be
+    literal text at the head of the paragraph (JI 관행 — see
+    :func:`hwp_agent.ops.author._bullet_render_text`). Cloning the properties carries
+    only the first kind, so we need to tell them apart.
+    """
+    out: dict[str, str] = {}
+    for m in re.finditer(r"<hh:paraPr\b[^>]*\bid=\"(\d+)\".*?</hh:paraPr>", header_xml, re.S):
+        h = re.search(r"<hh:heading\b[^>]*\btype=\"([A-Z]+)\"", m.group(0))
+        out[m.group(1)] = h.group(1) if h else "NONE"
+    return out
+
+
+def _leading_glyph(text: str) -> str | None:
+    """The manual bullet head a paragraph starts with ("￭ 항목" → "￭"), else None."""
+    body = text.lstrip()
+    if len(body) < 2 or not body[1:2].isspace():
+        return None
+    return bullet_glyph_name(body[0])
+
+
 def _sections(path: str | Path) -> dict[str, str]:
     with zipfile.ZipFile(path) as zf:
         return {
@@ -127,6 +183,18 @@ def _sections(path: str | Path) -> dict[str, str]:
             for name in zf.namelist()
             if _SECTION_RE.match(name)
         }
+
+
+def _section_key(name: str) -> int:
+    """Numeric order of a section part — ``section10`` follows ``section9``.
+
+    Lexical order would put ``section10.xml`` before ``section2.xml``, so from the
+    11th section on ``find_anchors`` would report matches out of document order and
+    ``--occurrence N`` would silently target a different paragraph than the reader's
+    Nth match.
+    """
+    m = _SECTION_NUM_RE.search(name)
+    return int(m.group(1)) if m else 0
 
 
 def _header(path: str | Path) -> str:
@@ -138,9 +206,10 @@ def find_anchors(path: str | Path, needle: str) -> list[Anchor]:
     """Every paragraph whose text contains *needle*, in document order."""
     header = _header(path)
     indents = _indent_by_para_pr(header)
+    sections = _sections(path)
     found: list[Anchor] = []
-    for name in sorted(_sections(path)):
-        paragraphs = _P_RE.findall(_sections(path)[name])
+    for name in sorted(sections, key=_section_key):
+        paragraphs = _P_RE.findall(sections[name])
         ladder = _depth_ladder(paragraphs, indents)
         for i, p in enumerate(paragraphs):
             text = _para_text(p)
@@ -192,13 +261,16 @@ def _clone(template: str, text: str) -> str:
     The line-layout cache is dropped: a body paragraph does not need one and a stale
     one would describe the template's text, not this one.
     """
-    runs = _RUN_RE.findall(template)
+    runs = [r for r in _RUN_RE.findall(template) if _T_RE.search(r)]
     if not runs:
-        raise TextEditError("복제할 문단에 <hp:run> 이 없음")
+        raise TextEditError("복제할 문단에 글자를 담은 <hp:run> 이 없음")
     shell = _OPEN_RE.search(template)
     if shell is None:  # pragma: no cover - _P_RE guarantees an open tag
         raise TextEditError("문단 여는 태그를 찾지 못함")
-    run = _LINESEG_RE.sub("", runs[0])
+    # A section-opening paragraph carries <hp:secPr> in a textless leading run, and
+    # controls (fields, footnotes, auto-numbers) belong to the template's own text —
+    # copying either would duplicate a section break or a footnote reference.
+    run = _CTRL_RE.sub("", _LINESEG_RE.sub("", runs[0]))
     run = _T_RE.sub(lambda _m: f"<hp:t>{_esc(text)}</hp:t>", run, count=1)
     # a template run may hold several <hp:t>; keep only the one we just wrote
     kept = False
@@ -214,6 +286,38 @@ def _clone(template: str, text: str) -> str:
     para_id = random.randint(10**8, 2 * 10**9)
     shell_xml = re.sub(r'\bid="\d+"', f'id="{para_id}"', shell.group(0), count=1)
     return f"{shell_xml}{run}</hp:p>"
+
+
+def _marked(
+    block: Block, template: str, heading_types: dict[str, str], result: InsertResult
+) -> str:
+    """The text to write, with the list marker the template implies.
+
+    Markdown carries the marker (``* ``/``1. ``) as syntax and :func:`parse_markdown`
+    strips it; the document carries it either in the paragraph properties or as literal
+    text. Cloning gives us the first kind for free — for the second we re-supply the
+    glyph, and when the template has neither we say so instead of quietly emitting an
+    unmarked paragraph.
+    """
+    if block.kind not in ("bullet", "ordered"):
+        return block.text
+    marker = heading_types.get(_ids(template)[0], "NONE")
+    if block.kind == "bullet":
+        glyph = _leading_glyph(_para_text(template))
+        if glyph:
+            return f"{glyph} {block.text}"
+        if marker in ("BULLET", "NUMBER", "OUTLINE"):
+            return block.text
+        result.warnings.append(
+            f"본뜬 문단에 글머리 표시가 없어 기호 없는 문단이 됨: {block.text[:20]}"
+        )
+        return block.text
+    if marker not in ("NUMBER", "OUTLINE"):
+        # numbers must not be typed in: the document renumbers, a literal string doesn't
+        result.warnings.append(
+            f"본뜬 문단에 번호 매기기가 없어 번호 없는 문단이 됨: {block.text[:20]}"
+        )
+    return block.text
 
 
 def _templates_by_indent(
@@ -285,14 +389,16 @@ def insert_markdown(
             f"앵커가 {len(candidates)}곳과 일치함 — 더 길게 적거나 "
             f"--occurrence 로 고를 것: {preview}"
         )
-    target = candidates[(occurrence - 1) if occurrence else 0]
     if occurrence is not None and not 1 <= occurrence <= len(candidates):
         raise TextEditError(f"--occurrence 는 1..{len(candidates)} 범위")
+    target = candidates[(occurrence - 1) if occurrence else 0]
 
     section_xml = _sections(src)[target.section]
     spans = [(m.start(), m.end()) for m in _P_RE.finditer(section_xml)]
     paragraphs = _P_RE.findall(section_xml)
-    indents = _indent_by_para_pr(_header(src))
+    header_xml = _header(src)
+    indents = _indent_by_para_pr(header_xml)
+    heading_types = _heading_type_by_para_pr(header_xml)
     templates = _templates_by_indent(paragraphs, indents, target.index)
     if not templates:
         raise TextEditError("앵커 주변에서 본뜰 문단을 찾지 못함")
@@ -323,7 +429,7 @@ def insert_markdown(
         else:
             want = anchor_indent
         template = templates.get(want) or templates[min(templates, key=lambda i: abs(i - want))]
-        chunks.append(_clone(template, block.text))
+        chunks.append(_clone(template, _marked(block, template, heading_types, result)))
 
     at = spans[target.index][1] if where == "after" else spans[target.index][0]
     edited = section_xml[:at] + "".join(chunks) + section_xml[at:]

@@ -511,6 +511,56 @@ def _cmd_image(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_text(args: argparse.Namespace) -> int:
+    import json
+
+    from ..ops import TextEditError, find_anchors, insert_markdown
+
+    if args.action == "find":
+        hits = find_anchors(args.file, args.anchor)
+        if args.json:
+            print(json.dumps([h.__dict__ for h in hits], ensure_ascii=False, indent=2))
+            return 0
+        if not hits:
+            print("(no paragraph matched)")
+            return 1
+        for i, h in enumerate(hits, 1):
+            print(f"[{i}] {h.section} #{h.index} depth={h.depth}  {h.text[:70]}")
+        return 0
+
+    # insert
+    if bool(args.after) == bool(args.before):
+        print("error: pass exactly one of --after or --before", file=sys.stderr)
+        return 2
+    if bool(args.md) == bool(args.text):
+        print("error: pass exactly one of --md or --text", file=sys.stderr)
+        return 2
+
+    markdown = Path(args.md).read_text(encoding="utf-8") if args.md else args.text
+    gr = _guard_output(args.output or args.file)
+    try:
+        result = insert_markdown(
+            args.file,
+            markdown,
+            anchor=args.after or args.before,
+            where="after" if args.after else "before",
+            output=gr.target,
+            occurrence=args.occurrence,
+            anchor_level=args.anchor_level,
+        )
+    except TextEditError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    for w in result.warnings:
+        print(f"  warning: {w}", file=sys.stderr)
+    _guard_finalize(gr)
+    print(
+        f"inserted {result.inserted} paragraph(s) {result.where} "
+        f"{result.anchor.section} #{result.anchor.index} -> {gr.target}"
+    )
+    return 0
+
+
 def _cmd_instructions(args: argparse.Namespace) -> int:
     import json
 
@@ -773,6 +823,42 @@ def build_parser() -> argparse.ArgumentParser:
     ir.set_defaults(func=_cmd_image)
 
     img.set_defaults(func=lambda _args: (img.print_help(), 0)[1])
+
+    txt = sub.add_parser(
+        "text",
+        help="insert paragraphs into an already type-set HWPX (no re-typeset)",
+    )
+    txt_sub = txt.add_subparsers(dest="action", metavar="<find|insert>")
+
+    tf = txt_sub.add_parser("find", help="list paragraphs matching an anchor")
+    tf.add_argument("file", type=Path, help=".hwpx file")
+    tf.add_argument("anchor", help="text to look for (substring)")
+    tf.add_argument("--json", action="store_true", help="emit matches as JSON")
+    tf.set_defaults(func=_cmd_text)
+
+    ti = txt_sub.add_parser("insert", help="insert Markdown paragraphs next to an anchor")
+    ti.add_argument("file", type=Path, help=".hwpx file")
+    ti.add_argument("--after", default=None, help="anchor paragraph to insert after")
+    ti.add_argument("--before", default=None, help="anchor paragraph to insert before")
+    ti.add_argument("--md", type=Path, default=None, help="Markdown file to insert")
+    ti.add_argument("--text", default=None, help="Markdown text to insert")
+    ti.add_argument(
+        "--occurrence",
+        type=int,
+        default=None,
+        help="1-based pick when the anchor matches several paragraphs",
+    )
+    ti.add_argument(
+        "--anchor-level",
+        type=int,
+        default=1,
+        help="which Markdown bullet level the anchor paragraph itself sits at "
+        "(default 1: a top-level bullet lands where the anchor is)",
+    )
+    ti.add_argument("-o", "--output", type=Path, default=None, help="output file")
+    ti.set_defaults(func=_cmd_text)
+
+    txt.set_defaults(func=lambda _args: (txt.print_help(), 0)[1])
 
     wr = sub.add_parser(
         "write",

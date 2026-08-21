@@ -58,6 +58,7 @@ from .template import (
     describe_template_source,
     resolve_template_path,
 )
+from .text_edit import Anchor, InsertResult, TextEditError, find_anchors, insert_markdown
 from .verify import (
     PageIssue,
     PageVerdict,
@@ -121,6 +122,11 @@ __all__ = [
     "PicInfo",
     "ReplaceOutcome",
     "ImageReplaceResult",
+    "Anchor",
+    "InsertResult",
+    "TextEditError",
+    "find_anchors",
+    "insert_markdown",
     "list_images",
     "replace_image",
     "parse_alt_text",

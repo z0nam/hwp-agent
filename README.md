@@ -108,6 +108,22 @@ cp examples/profile.example.json ~/.config/hwp-agent/profile.json   # edit it on
 hwp-agent form fill 등록신청서.hwpx --profile --date today -o out.hwpx
 ```
 
+```bash
+# a one-line correction to a document that is already type-set — no re-typeset
+hwp-agent text find 최종보고서.hwpx "이러한 단절은"          # check the anchor is unique
+hwp-agent text insert 최종보고서.hwpx --before "이러한 단절은" --md 덧붙임.md -o out.hwpx
+
+# anchored on a second-level bullet? say so, or a top-level bullet lands on top of it
+hwp-agent text insert 최종보고서.hwpx --after "기능 설명서 방식은" --anchor-level 2 \
+                     --md 덧붙임.md -o out.hwpx
+```
+
+`text insert` adds paragraphs to a finished document and touches nothing else: each new
+paragraph clones the styles of a neighbour at the same indent, existing paragraphs keep
+their line-layout cache, and the ZIP container is preserved so Hangul does not flag the
+file. Headings and tables are out of scope — they renumber things the rest of the
+document already agreed on, so those need a re-typeset with `write`.
+
 `form fill` slot keys can be a label (`성명`), a label path (`성명 > right`),
 a stable address (`cell:<table>:<row>:<col>`), a `checkbox:<label>` (`on`/`off`,
 □↔■), a `tab:<anchor>` inline field, or a `{{placeholder}}`. Fills overwrite, so

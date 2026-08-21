@@ -811,6 +811,39 @@ def test_fill_at_marker_is_not_warned(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_fill_sections_places_each_part(tmp_path: Path) -> None:
+    """fill_sections fills each named marker from its own part, in its own section."""
+    from hwpx.document import HwpxDocument
+
+    from hwp_agent.ops.author import fill_sections
+
+    tmpl = tmp_path / "t.hwpx"
+    doc = HwpxDocument.open(str(TYPE1))
+    doc.sections[0].add_paragraph("{{summary}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.sections[-1].add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.save_to_path(str(tmpl))
+
+    out = tmp_path / "o.hwpx"
+    res = fill_sections(
+        tmpl,
+        [
+            ("{{summary}}", "# 요약장\n\n요약내용 AAA\n"),
+            ("{{body}}", "# 본문장\n\n본문내용 BBB\n"),
+        ],
+        output=out,
+    )
+    assert res is not None
+
+    d2 = HwpxDocument.open(str(out))
+    s0 = " ".join(p.text or "" for p in d2.sections[0].paragraphs)
+    slast = " ".join(p.text or "" for p in d2.sections[-1].paragraphs)
+    assert "AAA" in s0 and "요약장" in s0
+    assert "BBB" in slast and "본문장" in slast
+    # markers consumed
+    assert "{{summary}}" not in s0 and "{{body}}" not in slast
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
 def test_fill_inserts_at_appendix_marker(tmp_path: Path) -> None:
     """{{appendix}} is an insertion marker too, and is consumed on fill."""
     from hwpx.document import HwpxDocument

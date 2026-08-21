@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import copy
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -35,11 +36,22 @@ from .form import extract_placeholders
 from .styles import INSTRUCTION, bullet_glyph_name, read_style_system, role_map
 
 #: tokens marking where authored content is inserted (each on a paragraph of its
-#: own); the marker paragraph is consumed (removed) on fill. ``{{body}}`` = start of
-#: the main body, ``{{appendix}}`` = start of an appendix.
+#: own); the marker paragraph is consumed (removed) on fill. A full report has
+#: several parts, each in its own section with its own running heads: ``{{summary}}``
+#: (요약), ``{{intro}}`` (들어가며), ``{{body}}`` (main body), ``{{references}}``
+#: (참고문헌), ``{{appendix}}`` (부록). Ordered as they appear front-to-back.
+SUMMARY_MARKER = "{{summary}}"
+INTRO_MARKER = "{{intro}}"
 BODY_MARKER = "{{body}}"
+REFERENCES_MARKER = "{{references}}"
 APPENDIX_MARKER = "{{appendix}}"
-INSERTION_MARKERS = (BODY_MARKER, APPENDIX_MARKER)
+INSERTION_MARKERS = (
+    SUMMARY_MARKER,
+    INTRO_MARKER,
+    BODY_MARKER,
+    REFERENCES_MARKER,
+    APPENDIX_MARKER,
+)
 #: a table whose caption carries a ``{{table…}}`` token (e.g. ``{{table}}``,
 #: ``{{table_template}}``) is the format reference for generated tables.
 _TABLE_TOKEN_RE = re.compile(r"\{\{\s*table[\w:-]*\s*\}\}", re.IGNORECASE)
@@ -823,16 +835,19 @@ def _emphasis_char(doc: HwpxDocument, base_char: str | None, *, bold: bool, ital
         return base_char  # never inflate the font; worst case the run stays plain-styled
 
 
-def _find_insertion_marker(doc: HwpxDocument):
-    """Locate the paragraph holding an insertion marker ({{body}}/{{appendix}}), if any.
+def _find_insertion_marker(doc: HwpxDocument, marker_token: str | None = None):
+    """Locate the paragraph holding an insertion marker, if any.
 
-    The first marker in document order wins; whichever is found is consumed (its
-    whole paragraph removed) once content is inserted before it.
+    With *marker_token* given, only that exact token is matched (for filling one
+    named part). Otherwise the first of :data:`INSERTION_MARKERS` in document
+    order wins. Whichever is found is consumed (its whole paragraph removed) once
+    content is inserted before it.
     """
+    markers = (marker_token,) if marker_token else INSERTION_MARKERS
     for section in doc.sections:
         for paragraph in section.paragraphs:
             text = paragraph.text or ""
-            if any(m in text for m in INSERTION_MARKERS):
+            if any(m in text for m in markers):
                 return section, paragraph
     return None, None
 
@@ -876,6 +891,7 @@ def fill_from_markdown(
     output: Path | str | None = None,
     chapter: str | int | None = None,
     table_template: str | None = None,
+    marker_token: str | None = None,
 ) -> AuthorResult:
     """Fill a template from Markdown, styled with its own outline styles.
 
@@ -924,8 +940,8 @@ def fill_from_markdown(
             p.remove()
             result.instructions_removed += 1
 
-    # insert at a {{body}}/{{appendix}} marker if present, else append to the last section
-    marker_section, marker = _find_insertion_marker(doc)
+    # insert at a marker if present, else append to the last section
+    marker_section, marker = _find_insertion_marker(doc, marker_token)
     target_section = marker_section or doc.sections[-1]
     result.inserted_at_marker = marker is not None
     try:
@@ -1154,3 +1170,51 @@ def fill_from_markdown(
 
     doc.save_to_path(str(output or template))
     return result
+
+
+def fill_sections(
+    template: Path | str,
+    parts: list[tuple[str, str]],
+    *,
+    output: Path | str | None = None,
+    chapter: str | int | None = None,
+    table_template: str | None = None,
+) -> AuthorResult:
+    """Fill several named markers, each from its own Markdown part.
+
+    *parts* is ``[(marker_token, markdown), …]`` — e.g. ``[("{{summary}}", …),
+    ("{{body}}", …), ("{{references}}", …)]``. Each part is placed at its own
+    marker (so 요약·들어가며·본문·참고문헌 land in their own sections with their own
+    running heads), consuming that marker. Implemented by chaining
+    :func:`fill_from_markdown` so its block/table/cross-ref logic is reused
+    unchanged. The aggregate result sums the per-part counts and warnings.
+    """
+    import tempfile
+
+    agg = AuthorResult()
+    if not parts:
+        return agg
+    final_out = Path(output) if output else Path(template)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="fill-sections-"))
+    try:
+        src: Path | str = template
+        last = len(parts) - 1
+        for i, (token, markdown) in enumerate(parts):
+            dest = final_out if i == last else tmp_dir / f"step{i}.hwpx"
+            res = fill_from_markdown(
+                src,
+                markdown,
+                output=dest,
+                chapter=chapter,
+                table_template=table_template,
+                marker_token=token,
+            )
+            agg.instructions_removed += res.instructions_removed
+            agg.unmapped_roles += [
+                r for r in res.unmapped_roles if r not in agg.unmapped_roles
+            ]
+            agg.warnings += [f"[{token}] {w}" for w in res.warnings]
+            src = dest
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    return agg

@@ -16,7 +16,7 @@ The rules below are the ones that make Hangul accept the result:
   ⚠ The CLI stamps a provenance fingerprint afterwards (:func:`.guard.stamp_fingerprint`)
   and *that* step still repacks the whole archive, so today the guarantee holds end to
   end only on the Python API path — see ``docs/report-kit-review.md`` §3 for the
-  evidence either way and the open question.
+  evidence either way and the open question (issue #9).
 * **Style comes from a sibling, not from a role.** A hand-edited document's styles
   are whatever the human settled on, so declared ``AI:*`` roles (if any) no longer
   describe it. Each new paragraph clones the ``paraPrIDRef``/``styleIDRef``/

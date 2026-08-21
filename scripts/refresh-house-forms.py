@@ -277,8 +277,12 @@ def publish_pr(baked: dict[str, Path], summaries: list[dict]) -> str | None:
         if _git(["status", "--porcelain"], wt).stdout.strip() == "":
             log("worktree 에 실질 변경 없음 — 커밋/PR 생략")
             return None
+        def _tag(s: dict) -> str:
+            if s.get("regressed"):
+                return "⚠️ 회귀 "
+            return "🆕 " if s.get("changed") else ""
         lines = "\n".join(
-            f"- {'⚠️ 회귀 ' if s.get('regressed') else ''}{s['source']}: "
+            f"- {_tag(s)}{s['source']}: "
             f"{s['classification_before']} → {s['classification_after']} "
             f"(선언 {s['declarations']}건)"
             + (f" — {s['note']}" if s.get("note") else "")
@@ -350,40 +354,48 @@ def main() -> int:
         log(f"✗ WORKS 소스 목록 실패(인증/네트워크?): {e}")
         return 2
 
-    to_bake: list[str] = []
+    changed: list[str] = []
+    present: list[str] = []
     for name in TARGETS:
         meta = sources.get(name)
         if not meta:
             log(f"⚠ 대상 없음(WORKS 폴더에서 사라짐/이름 변경?): {name}")
             continue
+        present.append(name)
         rev = meta["modifiedTime"]
         prev = state.get(name, {}).get("modifiedTime")
         if args.force or rev != prev:
-            to_bake.append(name)
+            changed.append(name)
         state.setdefault(name, {})["_pending"] = {
             "modifiedTime": rev, "fileId": meta["fileId"]
         }
 
-    if not to_bake:
+    if not changed:
         log("변경 없음 — 종료 (noop)")
         return 0
 
-    log(f"개정/신규 {len(to_bake)}건: {', '.join(to_bake)}")
+    # 무언가 바뀌었으면 PR 은 항상 전체 집합을 담는다 — 부분 재굽기가 나머지를
+    # 떨구지 않도록(브랜치는 house-forms 없는 origin/main 기준이라, 이번 구운 것만
+    # 올리면 나머지가 사라짐). 감지된 변경분(changed)은 보고 강조용으로만 구분.
+    changed_set = set(changed)
+    log(f"개정/신규 {len(changed)}건: {', '.join(changed)} "
+        f"→ PR 완결성 위해 전체 {len(present)}종 재굽기")
 
     baked: dict[str, Path] = {}
     summaries: list[dict] = []
     out_root = Path(tempfile.mkdtemp(prefix="house-forms-out-"))
     workdir = out_root / "work"
     workdir.mkdir()
-    for name in to_bake:
+    for name in present:
         try:
             src = workdir / name  # WORKS 다운로드 로컬 사본 (suffix 유지)
             download_source(sources[name]["fileId"], src)
             out = out_root / (Path(name).stem + ".normalized.hwpx")
             summ = bake_one(src, out, workdir, override=load_override(name))
+            summ["changed"] = name in changed_set
             baked[name] = out
             summaries.append(summ)
-            log(f"구움: {name} → {out.name}  "
+            log(f"구움{'🆕' if summ['changed'] else '·유지'}: {name} → {out.name}  "
                 f"[{summ['classification_before']}→{summ['classification_after']}, "
                 f"선언 {summ['declarations']}]")
         except Exception as e:  # noqa: BLE001 — 한 파일 실패가 전체를 막지 않게
@@ -445,8 +457,12 @@ def main() -> int:
 
     # Slack DM
     if not args.no_slack:
+        def _prefix(s: dict) -> str:
+            if s.get("regressed"):
+                return "⚠️ "
+            return "🆕 " if s.get("changed") else "· "
         lines = "\n".join(
-            (f"{'⚠️ ' if s.get('regressed') else '• '}"
+            (f"{_prefix(s)}"
              f"{s['source']}: {s['classification_before']}→{s['classification_after']} "
              f"(선언 {s['declarations']})"
              + (f" — {s['note']}" if s.get("note") else "")
@@ -457,9 +473,9 @@ def main() -> int:
         regressed = [s["source"] for s in summaries if s.get("regressed")]
         head = (
             f"🚨 *서식 회귀 감지 {len(regressed)}건* (스타일 명명 변경 의심 — 수동 확인) "
-            f"+ 초벌구이 {len(baked)}건"
+            f"· 변경 {len(changed)} / 전체 {len(baked)}종 PR 갱신"
             if regressed
-            else f"📄 *서식 개정 초벌구이* — {len(baked)}건 처리"
+            else f"📄 *서식 개정* — 변경 {len(changed)}건 · 전체 {len(baked)}종 PR 갱신"
         )
         text = head + f"\n{lines}\n" + (
             f"\nPR(한글 육안검증 후 머지): {pr_url}" if pr_url else ""

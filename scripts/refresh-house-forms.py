@@ -124,11 +124,47 @@ def _hp(tag: str) -> str:
     return f"{{{_HP}}}{tag}"
 
 
-def insert_body_marker(path: Path, section_index: int, position: str = "start") -> None:
-    """굽는 사본의 지정 섹션에 ``{{body}}`` 마커 문단을 삽입(컨테이너 보존).
+def _blank_para(p) -> None:
+    """문단의 보이는 텍스트를 비운다 — 첫 <hp:t>만 빈 문자열, 나머지 제거. ctrl/secPr 유지."""
+    ts = p.findall(".//" + _hp("t"))
+    for i, t in enumerate(ts):
+        if i == 0:
+            t.text = ""
+        else:
+            t.getparent().remove(t)
+    p.set("styleIDRef", "0")
 
-    write 가 본문을 이 자리에 넣게 한다 — 마커가 없으면 마지막 섹션(판권지 등)에
-    붙어버리므로. 섹션 안 단순 문단을 복제해 텍스트만 ``{{body}}`` 로 바꿔 넣는다.
+
+def _make_marker(opener):
+    """opener 를 복제해 secPr/ctrl 런을 떼고 텍스트를 ``{{body}}`` 로 만든 마커 문단."""
+    from lxml import etree
+
+    m = copy.deepcopy(opener)
+    for run in m.findall(_hp("run")):
+        if run.find(_hp("secPr")) is not None or run.find(_hp("ctrl")) is not None:
+            m.remove(run)
+    runs = m.findall(_hp("run"))
+    if runs:
+        run = runs[0]
+        for r in runs[1:]:
+            m.remove(r)
+        for c in list(run):
+            run.remove(c)
+    else:
+        run = etree.SubElement(m, _hp("run"))
+    etree.SubElement(run, _hp("t")).text = "{{body}}"
+    m.set("styleIDRef", "0")
+    return m
+
+
+def insert_body_marker(
+    path: Path, section_index: int, position: str = "start", strip: bool = False
+) -> None:
+    """굽는 사본의 본문 섹션을 ``{{body}}`` 마커로 정리(컨테이너 보존).
+
+    write 가 본문을 이 자리에 넣게 한다 — 마커가 없으면 마지막 섹션(판권지)에 붙음.
+    *strip* 이면 그 섹션의 예시 문단을 걷어내고 [빈 opener][{{body}}] 만 남긴다
+    (표지·판권·목차 등 다른 섹션은 무손상). *strip* 이 아니면 마커만 끼워 넣는다.
     """
     from lxml import etree
 
@@ -142,37 +178,46 @@ def insert_body_marker(path: Path, section_index: int, position: str = "start") 
             part = secs[section_index]
         xml = z.read(part)
     root = etree.fromstring(xml)
-
-    src = None
-    for p in root.findall(_hp("p")):
-        if (
-            p.find(_hp("run") + "/" + _hp("t")) is not None
-            and p.find(".//" + _hp("secPr")) is None
-            and p.find(".//" + _hp("tbl")) is None
-        ):
-            src = p
-            break
-    if src is None:
-        raise RuntimeError(f"{part}: {{body}} 마커로 복제할 단순 문단이 없음")
-
-    marker = copy.deepcopy(src)
-    marker.set("styleIDRef", "0")
-    runs = marker.findall(_hp("run"))
-    for r in runs[1:]:
-        marker.remove(r)
-    for child in list(runs[0]):
-        runs[0].remove(child)
-    etree.SubElement(runs[0], _hp("t")).text = "{{body}}"
-
     paras = root.findall(_hp("p"))
-    if position == "end":
-        paras[-1].addnext(marker)
-    else:  # start: secPr 오프너 다음(없으면 첫 문단 앞)
-        opener = next((p for p in paras if p.find(".//" + _hp("secPr")) is not None), None)
-        if opener is not None:
-            opener.addnext(marker)
+
+    if strip:
+        # 본문 예시 제거: opener(secPr) 만 남겨 비우고, 그 뒤에 {{body}} 마커.
+        opener = next((p for p in paras if p.find(".//" + _hp("secPr")) is not None), paras[0])
+        marker = _make_marker(opener)
+        _blank_para(opener)
+        for p in paras:
+            if p is not opener:
+                root.remove(p)
+        opener.addnext(marker)
+    else:
+        src = next(
+            (
+                p
+                for p in paras
+                if p.find(_hp("run") + "/" + _hp("t")) is not None
+                and p.find(".//" + _hp("secPr")) is None
+                and p.find(".//" + _hp("tbl")) is None
+            ),
+            None,
+        )
+        if src is None:
+            raise RuntimeError(f"{part}: {{body}} 마커로 복제할 단순 문단이 없음")
+        marker = copy.deepcopy(src)
+        marker.set("styleIDRef", "0")
+        runs = marker.findall(_hp("run"))
+        for r in runs[1:]:
+            marker.remove(r)
+        for child in list(runs[0]):
+            runs[0].remove(child)
+        etree.SubElement(runs[0], _hp("t")).text = "{{body}}"
+        if position == "end":
+            paras[-1].addnext(marker)
         else:
-            paras[0].addprevious(marker)
+            opener = next((p for p in paras if p.find(".//" + _hp("secPr")) is not None), None)
+            if opener is not None:
+                opener.addnext(marker)
+            else:
+                paras[0].addprevious(marker)
 
     decl = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
     new = decl + etree.tostring(root, encoding="UTF-8", xml_declaration=False)
@@ -264,8 +309,15 @@ def bake_one(src: Path, out: Path, workdir: Path, config: dict | None = None) ->
 
     body = config.get("body")
     if body and body.get("section") is not None:
-        insert_body_marker(out, int(body["section"]), body.get("position", "start"))
-        summary["body_marker"] = f"section{body['section']}"
+        insert_body_marker(
+            out,
+            int(body["section"]),
+            body.get("position", "start"),
+            strip=bool(body.get("strip")),
+        )
+        summary["body_marker"] = (
+            f"section{body['section']}" + (" strip" if body.get("strip") else "")
+        )
     return summary
 
 

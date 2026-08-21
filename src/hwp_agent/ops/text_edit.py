@@ -247,11 +247,18 @@ def insert_markdown(
     where: str = "after",
     output: str | Path | None = None,
     occurrence: int | None = None,
+    anchor_level: int = 1,
 ) -> InsertResult:
     """Insert *markdown*'s paragraphs next to the paragraph matching *anchor*.
 
     *occurrence* (1-based) picks one when the anchor is not unique; without it an
     ambiguous anchor is an error, because guessing would edit the wrong place.
+
+    *anchor_level* says which Markdown bullet level the anchor paragraph itself sits
+    at, which is how the Markdown outline is pinned onto the document's own indents.
+    The default 1 means "a top-level bullet lands where the anchor is". Anchor a
+    second-level bullet and pass ``anchor_level=2`` so a top-level bullet steps one
+    indent out instead of landing on top of it.
     """
     if where not in ("before", "after"):
         raise TextEditError("where 는 before 또는 after")
@@ -290,25 +297,29 @@ def insert_markdown(
     if not templates:
         raise TextEditError("앵커 주변에서 본뜰 문단을 찾지 못함")
 
+    if anchor_level < 1:
+        raise TextEditError("anchor_level 은 1 이상")
     anchor_indent = indents.get(target.para_pr, 0)
-    # The anchor sets the outermost level: a level-1 bullet sits where the anchor sits,
-    # level 2 one indent in, and so on. Anything shallower than the anchor belongs to an
-    # enclosing heading or a different outline branch, so it never supplies a template.
-    ladder = sorted(i for i in templates if i >= anchor_indent)
+    # Pin the Markdown outline onto the document's own indents: the anchor is known to
+    # sit at *anchor_level*, so level N is that many steps away on the local ladder.
+    ladder = sorted(templates)
+    try:
+        base = ladder.index(anchor_indent) - (anchor_level - 1)
+    except ValueError:  # pragma: no cover - the anchor is always among the templates
+        base = 0
 
     result = InsertResult(output=dst, anchor=target, where=where)
     chunks: list[str] = []
     for block in blocks:
         if block.kind in ("bullet", "ordered") and block.level >= 1:
-            step = block.level - 1
-            if step < len(ladder):
-                want = ladder[step]
-            else:
-                want = ladder[-1]
+            want_at = base + block.level - 1
+            clamped = min(max(want_at, 0), len(ladder) - 1)
+            if clamped != want_at:
                 result.warnings.append(
                     f"{block.level}단계 글머리에 해당하는 문단이 앵커 주변에 없어 "
-                    f"{len(ladder)}단계 서식을 씀"
+                    f"{clamped + 1 - base}단계 서식을 씀"
                 )
+            want = ladder[clamped]
         else:
             want = anchor_indent
         template = templates.get(want) or templates[min(templates, key=lambda i: abs(i - want))]

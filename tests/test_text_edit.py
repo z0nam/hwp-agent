@@ -145,3 +145,29 @@ def test_special_characters_are_escaped(tmp_path):
     with zipfile.ZipFile(out) as zf:
         xml = zf.read("Contents/section4.xml").decode("utf-8")
     assert "<hp:t>A &lt; B &amp; C &gt; D</hp:t>" in xml
+
+
+def test_anchor_level_pins_the_markdown_outline_onto_the_document(tmp_path):
+    """Anchoring on a second-level bullet must not flatten a top-level one onto it."""
+    deep = "글로벌 경기 둔화"  # a paragraph one indent in from its heading
+    md = "* 위 수준\n  * 아래 수준"
+
+    flat = tmp_path / "flat.hwpx"
+    insert_markdown(FIXTURE, md, anchor=deep, output=flat)
+    after = _paragraphs(flat)
+    # with the default the top-level bullet lands where the anchor sits
+    assert _ids(_find(after, "위 수준")) == _ids(_find(after, deep))
+
+    stepped = tmp_path / "stepped.hwpx"
+    insert_markdown(FIXTURE, md, anchor=deep, output=stepped, anchor_level=2)
+    after = _paragraphs(stepped)
+    # declaring the anchor a level-2 bullet steps the top-level one an indent out
+    assert _ids(_find(after, "위 수준")) != _ids(_find(after, deep))
+    assert _ids(_find(after, "아래 수준")) == _ids(_find(after, deep))
+
+
+def test_anchor_level_must_be_positive(tmp_path):
+    with pytest.raises(TextEditError, match="anchor_level"):
+        insert_markdown(
+            FIXTURE, "x", anchor=ANCHOR, output=tmp_path / "o.hwpx", anchor_level=0
+        )

@@ -546,6 +546,7 @@ def _cmd_text(args: argparse.Namespace) -> int:
             where="after" if args.after else "before",
             output=gr.target,
             occurrence=args.occurrence,
+            anchor_level=args.anchor_level,
         )
     except TextEditError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -846,6 +847,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="1-based pick when the anchor matches several paragraphs",
+    )
+    ti.add_argument(
+        "--anchor-level",
+        type=int,
+        default=1,
+        help="which Markdown bullet level the anchor paragraph itself sits at "
+        "(default 1: a top-level bullet lands where the anchor is)",
     )
     ti.add_argument("-o", "--output", type=Path, default=None, help="output file")
     ti.set_defaults(func=_cmd_text)

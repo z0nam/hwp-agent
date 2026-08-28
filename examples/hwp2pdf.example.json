@@ -1,0 +1,12 @@
+{
+  "_note": "Tier-2 원격 hwp2pdf(한컴 권위 변환) 엔드포인트. ~/.config/hwp-agent/hwp2pdf.json 로 복사해 값 채움. host는 ~/.ssh/config 의 Host 별칭(Tailscale MagicDNS). exe_path는 워커 스크립트(namun-ji)에서만 쓰이며 클라이언트는 무시. 없으면 auto는 rhwp로 폴백.",
+  "host": "namun-ji",
+  "exe_path": "C:\\Users\\user\\dev\\hwp2pdf\\.venv\\Scripts\\hwp2pdf.exe",
+  "remote_inbox": "C:/Users/user/.hwp-agent/inbox",
+  "remote_outbox": "C:/Users/user/.hwp-agent/outbox",
+  "task_name": "hwp-agent-hwp2pdf",
+  "default_format": "pdf",
+  "connect_timeout": 5,
+  "convert_timeout": 180,
+  "poll_interval": 2.0
+}

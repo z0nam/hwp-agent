@@ -275,6 +275,41 @@ def _cmd_form(args: argparse.Namespace) -> int:
     return 1 if result.missing and not result.filled else 0
 
 
+def _render_cmd(args: argparse.Namespace, *, fmt: str, engine: str) -> int:
+    import dataclasses
+
+    from ..render import render_document, resolve_hwp2pdf_config
+
+    src: Path = args.input
+    if not src.is_file():
+        print(f"error: input not found: {src}", file=sys.stderr)
+        return 2
+    out: Path = args.output or src.with_suffix(f".{fmt}")
+
+    config = resolve_hwp2pdf_config(getattr(args, "config", None))
+    if config is not None and getattr(args, "timeout", None):
+        config = dataclasses.replace(config, convert_timeout=args.timeout)
+
+    result = render_document(
+        src, out, fmt=fmt, engine=engine, config=config,
+        rhwp_bin=getattr(args, "rhwp", None),
+    )
+    if result.ok:
+        where = "/namun-ji" if result.remote else ""
+        print(f"wrote {out}  (via {result.backend}{where})")
+        return 0
+    print(f"error: {result.stderr}", file=sys.stderr)
+    return result.returncode or 1
+
+
+def _cmd_pdf(args: argparse.Namespace) -> int:
+    return _render_cmd(args, fmt="pdf", engine=args.engine)
+
+
+def _cmd_docx(args: argparse.Namespace) -> int:
+    return _render_cmd(args, fmt="docx", engine="hwp2pdf")
+
+
 def _cmd_verify(args: argparse.Namespace) -> int:
     import json
     import os
@@ -743,6 +778,46 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vfy.add_argument("--json", action="store_true", help="emit the report as JSON")
     vfy.set_defaults(func=_cmd_verify)
+
+    rpdf = sub.add_parser(
+        "pdf", help="render an HWP/HWPX to PDF (hwp2pdf/namun-ji if reachable, else rhwp)",
+    )
+    rpdf.add_argument("input", type=Path, help="source .hwp/.hwpx file")
+    rpdf.add_argument(
+        "-o", "--output", type=Path, default=None,
+        help="destination .pdf (default: alongside input)",
+    )
+    rpdf.add_argument(
+        "--engine", choices=("auto", "hwp2pdf", "rhwp"), default="auto",
+        help="auto = hwp2pdf if reachable, else rhwp (Tier-1)",
+    )
+    rpdf.add_argument("--rhwp", default=None, help="path to the rhwp CLI (Tier-1)")
+    rpdf.add_argument(
+        "--config", type=Path, default=None,
+        help="hwp2pdf endpoint config (default: ~/.config/hwp-agent/hwp2pdf.json)",
+    )
+    rpdf.add_argument(
+        "--timeout", type=int, default=None, dest="timeout",
+        help="Tier-2 convert timeout in seconds (overrides config)",
+    )
+    rpdf.set_defaults(func=_cmd_pdf)
+
+    rdocx = sub.add_parser(
+        "docx", help="render an HWP/HWPX to DOCX (Hancom hwp2pdf/namun-ji only)",
+    )
+    rdocx.add_argument("input", type=Path, help="source .hwp/.hwpx file")
+    rdocx.add_argument(
+        "-o", "--output", type=Path, default=None,
+        help="destination .docx (default: alongside input)",
+    )
+    rdocx.add_argument(
+        "--config", type=Path, default=None, help="hwp2pdf endpoint config",
+    )
+    rdocx.add_argument(
+        "--timeout", type=int, default=None, dest="timeout",
+        help="convert timeout in seconds (overrides config)",
+    )
+    rdocx.set_defaults(func=_cmd_docx)
 
     cls = sub.add_parser("classify", help="classify a doc: structured | weak | flat")
     cls.add_argument("file", type=Path, help=".hwpx file")

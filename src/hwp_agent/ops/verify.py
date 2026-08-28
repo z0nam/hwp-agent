@@ -20,17 +20,17 @@ else — institutional documents stay local except for that one model call.
 from __future__ import annotations
 
 import base64
-import os
-import shutil
-import subprocess
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..render.rhwp import RenderFn
+from ..render.rhwp import resolve_rhwp as _resolve_rhwp
+from ..render.rhwp import rhwp_render_fn as _rhwp_render_fn
+
 DEFAULT_MODEL = "claude-opus-4-8"
 DEFAULT_DPI = 150
-DEFAULT_RHWP = "rhwp"
 
 #: rendering-defect vocabulary the vision model classifies into
 ISSUE_TYPES = (
@@ -107,10 +107,6 @@ class VerifyResult:
 #: a vision function: (png_bytes, page_number, total_pages) -> PageVerdict
 VisionFn = Callable[[bytes, int, int], PageVerdict]
 
-#: a render function: (source .hwp/.hwpx, output .pdf) -> None (raises on failure)
-RenderFn = Callable[[Path, Path], None]
-
-
 def _render_pages(pdf_path: Path, dpi: int) -> list[bytes]:
     """Rasterize each PDF page to PNG bytes, in memory. Raises on a corrupt PDF."""
     import fitz  # PyMuPDF — lazy (optional dependency)
@@ -169,33 +165,10 @@ def verify_pdf(
 
 
 # --------------------------------------------------------------------------- #
-# .hwp/.hwpx input — render to PDF locally via rhwp, then verify (Tier 1)
+# .hwp/.hwpx input — render to PDF locally via rhwp, then verify (Tier 1).
+# The rhwp helpers (_resolve_rhwp / _rhwp_render_fn / RenderFn) live in
+# hwp_agent.render.rhwp and are imported above.
 # --------------------------------------------------------------------------- #
-def _resolve_rhwp(explicit: str | None = None) -> str | None:
-    """Find the rhwp CLI: explicit arg > ``$RHWP_BIN`` > PATH. None if absent."""
-    cand = explicit or os.environ.get("RHWP_BIN") or DEFAULT_RHWP
-    if Path(cand).is_file():
-        return cand
-    return shutil.which(cand)
-
-
-def _rhwp_render_fn(rhwp_bin: str) -> RenderFn:
-    """Default renderer: ``rhwp export-pdf <src> -o <out.pdf>`` (native HWP/HWPX)."""
-
-    def render(src: Path, out_pdf: Path) -> None:
-        proc = subprocess.run(  # noqa: S603
-            [rhwp_bin, "export-pdf", str(src), "-o", str(out_pdf)],
-            capture_output=True,
-            text=True,
-        )
-        if proc.returncode != 0 or not out_pdf.is_file():
-            detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-            tail = " | ".join(detail[-3:]) if detail else f"exit {proc.returncode}"
-            raise RuntimeError(f"rhwp export-pdf failed: {tail}")
-
-    return render
-
-
 def verify_hwp(
     hwp_path: str | Path,
     *,

@@ -99,6 +99,14 @@ runtime; install a JRE 17+ (e.g. [Temurin](https://adoptium.net/)) to run
 hwp-agent convert report.hwp report.hwpx
 hwp-agent --version
 
+# render HWP/HWPX -> PDF/DOCX. auto = Hancom hwp2pdf (via a Windows node) if
+# reachable, else local rhwp for PDF. DOCX is Hancom-only (rhwp can't).
+hwp-agent pdf report.hwpx                 # auto tier
+hwp-agent pdf report.hwpx --engine rhwp   # force local (no Hancom)
+hwp-agent docx report.hwpx                # DOCX -> hwp2pdf/namun-ji only
+#   Tier-2 needs ~/.config/hwp-agent/hwp2pdf.json (see examples/hwp2pdf.example.json)
+#   and a one-time worker on the Windows node: scripts/install-hwp2pdf-worker.ps1
+
 # fill a Korean form: inspect slots, then fill
 hwp-agent form analyze 등록신청서.hwpx --json
 hwp-agent form fill 등록신청서.hwpx --set "성명=조남운" -o out.hwpx

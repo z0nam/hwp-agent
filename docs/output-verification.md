@@ -126,3 +126,30 @@ COM이 세션 1에서만 도는 게 실증됐으므로, **inbox/outbox 큐 + 세
   `hwp2pdf <file> --pdf` 호출 → PDF 회수 → `verify_pdf`. 자동 로그인+잠금해제 유지는 여전히 필요.
 - 부수효과: hwp2pdf 자체 무인 배치 신뢰도도 해결됨. (auto-allow watcher 브랜치는 보안모듈로
   대체되어 불필요 — 대화상자가 안 뜨므로 클릭할 게 없음.)
+
+### Step 2 클라이언트 (구현됨) — `hwp-agent pdf` / `hwp-agent docx`
+
+hwp-agent 쪽 티어드 렌더 축(`src/hwp_agent/render/`)이 붙었다. HWP→HWPX(`convert/`)와
+별개로 HWP/HWPX→**PDF/DOCX**를 낸다.
+
+```bash
+hwp-agent pdf report.hwpx                 # auto: namun-ji(hwp2pdf) 닿으면 그걸로, 아니면 rhwp
+hwp-agent pdf report.hwpx --engine rhwp   # 강제 Tier-1(로컬, 한컴 무관)
+hwp-agent pdf report.hwpx --engine hwp2pdf -o out.pdf
+hwp-agent docx report.hwpx                # DOCX = Tier-2(hwp2pdf) 전용 (rhwp는 docx 불가)
+hwp-agent verify out.pdf                  # 한컴 PDF면 권위 사인오프(Step 1)
+```
+
+- **선택(`--engine auto`)**: `docx`는 항상 Tier-2. `pdf`는 Tier-2 사용가능(config 있음 + ssh
+  프로브 성공)이면 Tier-2, 아니면 Tier-1(rhwp)로 폴백.
+- **Tier-2 왕복(schtasks 온디맨드)**: scp로 파일을 namun-ji inbox에 올림 → SSH로
+  `schtasks /run /tn hwp-agent-hwp2pdf`(세션1) → outbox의 `<job>.done` 폴링 → scp로 회수 →
+  정리. 워커 `scripts/render-inbox.ps1`이 `hwp2pdf <inbox> --pdf --docx --kill-hwp` 실행 후
+  outbox로 옮기고 `.done`/`.err` 마커를 남긴다.
+- **config**: `~/.config/hwp-agent/hwp2pdf.json`(예시 `examples/hwp2pdf.example.json`) —
+  `host`(ssh 별칭), inbox/outbox 원격경로, task_name, 타임아웃. 필드별 `$HWP2PDF_*` env 오버라이드.
+  없으면 Tier-2 미가용 → auto는 rhwp.
+- **namun-ji 1회 세팅**: `scripts/install-hwp2pdf-worker.ps1`(세션1 `schtasks /it` 등록 +
+  inbox/outbox + 워커 배치). 전제(자동로그인·잠금해제·FilePathCheckerModule)는 위 Step-2 해결
+  그대로 — 스크립트가 강제하지 못하므로 타임아웃 메시지가 이 둘을 지목한다.
+- 클라이언트/transport는 주입 가능(`tests/test_render.py`) → namun-ji 없이 오프라인 테스트.

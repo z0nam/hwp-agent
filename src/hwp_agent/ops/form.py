@@ -287,6 +287,55 @@ def _rc(table) -> tuple[int, int]:
     return (rc() if callable(rc) else rc), (cc() if callable(cc) else cc)
 
 
+@dataclass
+class GridCell:
+    """One addressable table cell — fillable via its ``cell:<t>:<r>:<c>`` path."""
+
+    cell_path: str
+    table_index: int
+    row: int
+    col: int
+    text: str = ""
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+def dump_grid(hwpx_path: Path | str) -> list[GridCell]:
+    """Every table cell with its ``cell:`` path and current text.
+
+    :func:`analyze_form` only surfaces label→*empty*-neighbour pairs, so a cell
+    that already holds text is never reported as a slot. ``fill_form`` accepts a
+    ``cell:<table>:<row>:<col>`` key for *any* cell, though, so this enumerates
+    the addresses needed to overwrite pre-filled cells (checkbox rows, forms
+    whose answer cells ship with placeholder text, repeated labels).
+    """
+    cells: list[GridCell] = []
+    doc = HwpxDocument.open(str(hwpx_path))
+    for it in _tn._collect_document_tables(doc):
+        ti, table = it.table_index, it.table
+        try:
+            nrows, ncols = _rc(table)
+        except Exception:
+            continue
+        for r in range(nrows):
+            for c in range(ncols):
+                try:
+                    text = (table.cell(r, c).text or "").strip()
+                except Exception:
+                    continue
+                cells.append(
+                    GridCell(
+                        cell_path=f"cell:{ti}:{r}:{c}",
+                        table_index=ti,
+                        row=r,
+                        col=c,
+                        text=text,
+                    )
+                )
+    return cells
+
+
 def _locate_cell_addr(doc: HwpxDocument, table_index: int, row: int, col: int):
     for it in _tn._collect_document_tables(doc):
         if it.table_index == table_index:

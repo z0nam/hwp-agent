@@ -111,6 +111,10 @@ hwp-agent docx report.hwpx                # DOCX -> hwp2pdf/namun-ji only
 hwp-agent form analyze 등록신청서.hwpx --json
 hwp-agent form fill 등록신청서.hwpx --set "성명=조남운" -o out.hwpx
 
+# a cell that already holds text is not a "slot" — address it directly
+hwp-agent form analyze 자문의견서.hwpx --grid          # every cell + its cell: path
+hwp-agent form fill 자문의견서.hwpx --set "cell:0:1:2=□ 적정  ■ 보통  □ 보완" -o out.hwpx
+
 # auto-fill standing personal data (성명/주소/학력/경력/계좌…) from a saved profile
 cp examples/profile.example.json ~/.config/hwp-agent/profile.json   # edit it once
 hwp-agent form fill 등록신청서.hwpx --profile --date today -o out.hwpx
@@ -136,6 +140,13 @@ document already agreed on, so those need a re-typeset with `write`.
 a stable address (`cell:<table>:<row>:<col>`), a `checkbox:<label>` (`on`/`off`,
 □↔■), a `tab:<anchor>` inline field, or a `{{placeholder}}`. Fills overwrite, so
 re-running is safe.
+
+`form analyze` reports *slots* — label cells whose neighbour is **empty**. A form
+that ships its answer cells pre-filled (repeated `□ 적정 □ 보통 □ 보완` rows, say)
+therefore lists few or no slots, even though every one of those cells is
+writable. `form analyze --grid` enumerates each cell with the
+`cell:<table>:<row>:<col>` key that `form fill` takes, which is the way to reach
+them.
 
 Point at a jar elsewhere with `--jar /path/to/hwp2hwpx.jar` or the
 `HWP2HWPX_JAR` environment variable (rarely needed — the editable install

@@ -19,7 +19,15 @@ from .author import (
 )
 from .doctor import diagnose_template
 from .extract import extract_markdown
-from .form import FillResult, FormSlot, FormSpec, analyze_form, fill_form
+from .form import (
+    FillResult,
+    FormSlot,
+    FormSpec,
+    GridCell,
+    analyze_form,
+    dump_grid,
+    fill_form,
+)
 from .guard import (
     GuardResult,
     plan_output,
@@ -76,7 +84,9 @@ __all__ = [
     "FormSlot",
     "FormSpec",
     "FillResult",
+    "GridCell",
     "analyze_form",
+    "dump_grid",
     "fill_form",
     "Profile",
     "ProfileMatch",

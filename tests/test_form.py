@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from lxml import etree
 
-from hwp_agent.ops import analyze_form, fill_form
+from hwp_agent.ops import analyze_form, dump_grid, fill_form
 from hwp_agent.ops.form import (
     _heal_split_placeholders,
     _is_label_shaped,
@@ -194,3 +194,31 @@ def test_fill_reports_missing_for_unknown(tmp_path: Path) -> None:
     result = fill_form(REF_HWPX, {"존재하지않는라벨": "x"}, output=out)
     assert result.missing == ["존재하지않는라벨"]
     assert not result.filled
+
+
+@pytest.mark.skipif(not REF_HWPX.is_file(), reason="reference HWPX not present")
+def test_dump_grid_addresses_prefilled_cells() -> None:
+    """`analyze_form` skips non-empty cells; `dump_grid` still addresses them."""
+    cells = dump_grid(REF_HWPX)
+    assert cells, "reference form has tables"
+
+    # every cell carries the cell:<table>:<row>:<col> key that fill_form accepts
+    for c in cells:
+        assert c.cell_path == f"cell:{c.table_index}:{c.row}:{c.col}"
+
+    # the point of the command: cells that already hold text are listed too,
+    # even though analyze_form never reports them as slots
+    filled = [c for c in cells if c.text]
+    assert filled, "reference form has pre-filled cells"
+    slot_paths = {s.cell_path for s in analyze_form(REF_HWPX).slots}
+    assert any(c.cell_path not in slot_paths for c in filled)
+
+
+@pytest.mark.skipif(not REF_HWPX.is_file(), reason="reference HWPX not present")
+def test_dump_grid_paths_are_fillable(tmp_path: Path) -> None:
+    """A path from dump_grid round-trips through fill_form."""
+    target = next(c for c in dump_grid(REF_HWPX) if c.text)
+    out = tmp_path / "filled.hwpx"
+    fill_form(REF_HWPX, {target.cell_path: "덮어쓴 값"}, output=out)
+    after = {c.cell_path: c.text for c in dump_grid(out)}
+    assert after[target.cell_path] == "덮어쓴 값"

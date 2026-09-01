@@ -222,3 +222,24 @@ def test_dump_grid_paths_are_fillable(tmp_path: Path) -> None:
     fill_form(REF_HWPX, {target.cell_path: "덮어쓴 값"}, output=out)
     after = {c.cell_path: c.text for c in dump_grid(out)}
     assert after[target.cell_path] == "덮어쓴 값"
+
+
+def test_release_table_flow_toggles_attrs() -> None:
+    """--allow-table-flow releases treatAsChar/pageBreak so content can flow (#12)."""
+    from lxml import etree
+
+    from hwp_agent.ops.form import _release_table_flow, _trapped_table_count, q
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    root = etree.fromstring(
+        f'<hs:sec xmlns:hs="urn:x" xmlns:hp="{hp}">'
+        '<hp:tbl pageBreak="TABLE"><hp:pos treatAsChar="1"/></hp:tbl>'
+        '<hp:tbl pageBreak="CELL"><hp:pos treatAsChar="0"/></hp:tbl>'
+        "</hs:sec>"
+    )
+    assert _trapped_table_count([root]) == 1
+    assert _release_table_flow([root]) == 1
+    trapped = root.findall(q("tbl"))[0]
+    assert trapped.get("pageBreak") == "CELL"
+    assert trapped.find(q("pos")).get("treatAsChar") == "0"
+    assert _trapped_table_count([root]) == 0  # nothing trapped anymore

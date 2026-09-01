@@ -292,13 +292,18 @@ def _cmd_form(args: argparse.Namespace) -> int:
         return 2
 
     gr = _guard_output(args.output or args.file)
-    result = fill_form(args.file, mapping, output=gr.target, precise=args.precise)
+    result = fill_form(
+        args.file, mapping, output=gr.target, precise=args.precise,
+        allow_table_flow=getattr(args, "allow_table_flow", False),
+    )
     _guard_finalize(gr)
     print(f"filled {len(result.filled)} -> {gr.target}")
     if result.filled:
         print(f"  ok: {', '.join(result.filled)}")
     if result.missing:
         print(f"  missing: {', '.join(result.missing)}")
+    for w in result.warnings:
+        print(f"  warning: {w}", file=sys.stderr)
     return 1 if result.missing and not result.filled else 0
 
 
@@ -766,6 +771,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ff.add_argument(
         "--date", choices=["today"], default=None, help="resolve date slots to today"
+    )
+    ff.add_argument(
+        "--allow-table-flow",
+        dest="allow_table_flow",
+        action="store_true",
+        help="let long cell content flow across pages (treatAsChar=0, pageBreak=CELL) "
+        "instead of being truncated — changes the table's layout semantics (issue #12)",
     )
     ff.add_argument(
         "--precise",

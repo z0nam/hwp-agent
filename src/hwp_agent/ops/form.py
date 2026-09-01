@@ -91,9 +91,14 @@ class FormSpec:
 class FillResult:
     filled: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
-        return {"filled": self.filled, "missing": self.missing}
+        return {
+            "filled": self.filled,
+            "missing": self.missing,
+            "warnings": self.warnings,
+        }
 
 
 # --------------------------------------------------------------------------- #
@@ -603,12 +608,50 @@ def _apply_one(
     return _replace_text_everywhere(roots, f"{{{{{key}}}}}", value) > 0
 
 
+def _release_table_flow(roots) -> int:
+    """Let table content flow across pages: on every ``<hp:tbl>`` set
+    ``pageBreak="CELL"`` and its own ``<hp:pos treatAsChar="0">``.
+
+    A form saved from Hangul often ships tables as ``treatAsChar="1"`` +
+    ``pageBreak="TABLE"``, which traps the table in one paragraph so long cell
+    content is silently truncated at the page edge (issue #12). Returns the count
+    of tables changed. This *does* alter the document's layout semantics, so it is
+    opt-in (``allow_table_flow``), never automatic.
+    """
+    changed = 0
+    for root in roots:
+        for tbl in root.iter(q("tbl")):
+            touched = False
+            if tbl.get("pageBreak") not in (None, "CELL"):
+                tbl.set("pageBreak", "CELL")
+                touched = True
+            pos = tbl.find(q("pos"))  # the table's own position (direct child)
+            if pos is not None and pos.get("treatAsChar") == "1":
+                pos.set("treatAsChar", "0")
+                touched = True
+            if touched:
+                changed += 1
+    return changed
+
+
+def _trapped_table_count(roots) -> int:
+    """Count tables that would trap overflowing content (treatAsChar='1')."""
+    n = 0
+    for root in roots:
+        for tbl in root.iter(q("tbl")):
+            pos = tbl.find(q("pos"))
+            if pos is not None and pos.get("treatAsChar") == "1":
+                n += 1
+    return n
+
+
 def fill_form(
     hwpx_path: Path | str,
     mapping: dict[str, str],
     *,
     output: Path | str | None = None,
     precise: bool = True,
+    allow_table_flow: bool = False,
 ) -> FillResult:
     """Fill slots by name/path, then save (in place unless ``output`` is given).
 
@@ -632,6 +675,25 @@ def fill_form(
     for key, value in mapping.items():
         ok = _apply_one(doc, roots, key, value, by_name)
         (result.filled if ok else result.missing).append(key)
+
+    if allow_table_flow:
+        n = _release_table_flow(roots)
+        if n:
+            result.warnings.append(
+                f"released {n} table(s) to flow across pages "
+                "(treatAsChar=0, pageBreak=CELL) — layout semantics changed"
+            )
+    else:
+        # warn (coarse) when long content lands in a page-trapped table: it would
+        # be silently truncated. Precise overflow needs real typesetting; a length
+        # heuristic is enough to stop it happening unnoticed (issue #12).
+        longest = max((len(v) for v in mapping.values()), default=0)
+        if longest > 200 and _trapped_table_count(roots):
+            result.warnings.append(
+                "long content in a table set to '글자처럼 취급'(treatAsChar=1) may be "
+                "truncated at the page edge without flowing. Pass --allow-table-flow "
+                "to release it, or clear the table's 배치 in Hangul."
+            )
 
     for sec in doc.sections:  # raw lxml edits don't set the dirty flag themselves
         sec.mark_dirty()

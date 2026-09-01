@@ -115,6 +115,9 @@ hwp-agent form fill 등록신청서.hwpx --set "성명=조남운" -o out.hwpx
 hwp-agent form analyze 자문의견서.hwpx --grid          # every cell + its cell: path
 hwp-agent form fill 자문의견서.hwpx --set "cell:0:1:2=□ 적정  ■ 보통  □ 보완" -o out.hwpx
 
+# long content in a page-trapped table (treatAsChar=1) is truncated — let it flow
+hwp-agent form fill 자문의견서.hwpx --set "cell:0:1:2=$(cat long.txt)" --allow-table-flow -o out.hwpx
+
 # auto-fill standing personal data (성명/주소/학력/경력/계좌…) from a saved profile
 cp examples/profile.example.json ~/.config/hwp-agent/profile.json   # edit it once
 hwp-agent form fill 등록신청서.hwpx --profile --date today -o out.hwpx

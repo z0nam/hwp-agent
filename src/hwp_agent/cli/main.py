@@ -207,9 +207,29 @@ def _cmd_meta(args: argparse.Namespace) -> int:
 def _cmd_form(args: argparse.Namespace) -> int:
     import json
 
-    from ..ops import analyze_form, fill_form
+    from ..ops import analyze_form, dump_grid, fill_form
 
     if args.action == "analyze":
+        if args.grid:
+            cells = dump_grid(args.file)
+            if args.json:
+                print(
+                    json.dumps(
+                        {"cells": [c.as_dict() for c in cells]},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            else:
+                if not cells:
+                    print("(no tables found)")
+                for c in cells:
+                    preview = c.text.replace("\n", " ")
+                    if len(preview) > 60:
+                        preview = preview[:57] + "..."
+                    print(f"{c.cell_path:16} {preview}")
+            return 0
+
         spec = analyze_form(args.file)
         if args.json:
             print(json.dumps(spec.as_dict(), ensure_ascii=False, indent=2))
@@ -219,6 +239,13 @@ def _cmd_form(args: argparse.Namespace) -> int:
             for s in spec.slots:
                 cur = f"  [{s.current}]" if s.current else ""
                 print(f"{s.kind:11} {s.name}  ->  {s.locator}{cur}")
+            if spec.slots:
+                print(
+                    "\nnote: slots cover label -> empty-neighbour cells only. "
+                    "To overwrite a cell that already has text, address it "
+                    "directly with --set 'cell:<table>:<row>:<col>=...' "
+                    "(list them with --grid)."
+                )
         return 0
 
     # fill from a personal-data profile (auto-map standing data to slots)
@@ -715,6 +742,11 @@ def build_parser() -> argparse.ArgumentParser:
     fa = form_sub.add_parser("analyze", help="list fillable slots")
     fa.add_argument("file", type=Path, help=".hwpx form")
     fa.add_argument("--json", action="store_true", help="emit slots as JSON (for an AI)")
+    fa.add_argument(
+        "--grid",
+        action="store_true",
+        help="list every table cell with its cell:<table>:<row>:<col> fill path",
+    )
     fa.set_defaults(func=_cmd_form)
 
     ff = form_sub.add_parser("fill", help="fill slots by name/path/profile")

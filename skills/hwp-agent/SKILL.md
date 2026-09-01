@@ -69,7 +69,10 @@ output.
 5. **Choose the path:**
    - **Form/slot fill** (fixed fields: dates, names, table cells with labels) —
      `hwp-agent form analyze work.hwpx --json` to list slots, then
-     `hwp-agent form fill work.hwpx --set "신청일=2026-05-24" -o out.hwpx`
+     `hwp-agent form fill work.hwpx --set "신청일=2026-05-24" -o out.hwpx`.
+     Slots only cover label cells whose neighbour is empty — if the cell you need
+     already holds text, run `hwp-agent form analyze work.hwpx --grid` and fill it
+     by address: `--set "cell:0:1:2=..."`
      (or `--map values.json`). Slot keys may be a label (`성명`), a label path
      (`성명 > right` / `> below`), a stable address (`cell:<table>:<row>:<col>`,
      also emitted as `cell_path` by `analyze`), a `checkbox:<label>` set `on`/`off`
@@ -212,7 +215,8 @@ reference **explicitly**:
 | `hwp-agent normalize FILE.hwpx [-o OUT] [--dry-run] [--json]` | declare `AI:HEADING_n`/`AI:BULLET_n` on a flat template's number/bullet styles (never in-place; default `<input>.normalized.hwpx`) |
 | `hwp-agent instructions FILE.hwpx [--json]` | AI:INSTRUCTION directions + `{{slots}}` |
 | `hwp-agent extract FILE.hwpx [--body-only] [-o OUT.md]` | extract HWPX as body-focused Markdown; merged cells flattened (Excel-style) |
-| `hwp-agent form analyze FILE.hwpx [--json]` | list fillable slots |
+| `hwp-agent form analyze FILE.hwpx [--json]` | list fillable slots (label -> *empty* neighbour only) |
+| `hwp-agent form analyze FILE.hwpx --grid [--json]` | list every table cell with its `cell:<t>:<r>:<c>` fill path — use when the cell you want already has text |
 | `hwp-agent form fill FILE.hwpx --set K=V [-o OUT]` | fill slots by name |
 | `hwp-agent write C.md --template FILE.hwpx [--chapter N] [--table-template CAPTION] [-o OUT]` | write Markdown into a template (`author` = alias) |
 | `hwp-agent image list FILE.hwpx [--json]` | list figure image slots (ref, format, px size, caption) |

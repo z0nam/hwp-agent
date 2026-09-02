@@ -25,6 +25,7 @@ from .form import (
     FormSpec,
     GridCell,
     analyze_form,
+    autofit_table,
     dump_grid,
     fill_form,
 )
@@ -87,6 +88,7 @@ __all__ = [
     "GridCell",
     "analyze_form",
     "dump_grid",
+    "autofit_table",
     "fill_form",
     "Profile",
     "ProfileMatch",

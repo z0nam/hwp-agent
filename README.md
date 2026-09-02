@@ -118,6 +118,9 @@ hwp-agent form fill 자문의견서.hwpx --set "cell:0:1:2=□ 적정  ■ 보�
 # long content in a page-trapped table (treatAsChar=1) is truncated — let it flow
 hwp-agent form fill 자문의견서.hwpx --set "cell:0:1:2=$(cat long.txt)" --allow-table-flow -o out.hwpx
 
+# rebalance equal columns by how much content each holds (no text change; total width kept)
+hwp-agent form autofit 자문의견서.hwpx --table 0 -o out.hwpx      # add --min-width 0=7000 to pin a column
+
 # auto-fill standing personal data (성명/주소/학력/경력/계좌…) from a saved profile
 cp examples/profile.example.json ~/.config/hwp-agent/profile.json   # edit it once
 hwp-agent form fill 등록신청서.hwpx --profile --date today -o out.hwpx

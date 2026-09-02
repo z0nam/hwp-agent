@@ -341,6 +341,116 @@ def dump_grid(hwpx_path: Path | str) -> list[GridCell]:
     return cells
 
 
+#: coarse column-width heuristics (HWPUNIT ~ 1/7200 inch; a 10pt CJK glyph ~1000)
+_AUTOFIT_CHAR_W = 1000
+_AUTOFIT_MIN_FLOOR = 3000
+
+
+def _nth_tbl(roots, table_index: int):
+    """The ``table_index``-th ``<hp:tbl>`` in document order (matches dump_grid)."""
+    idx = -1
+    for root in roots:
+        for t in root.iter(q("tbl")):
+            idx += 1
+            if idx == table_index:
+                return t
+    return None
+
+
+def autofit_table(
+    hwpx_path: Path | str,
+    table_index: int = 0,
+    *,
+    min_widths: dict[int, int] | None = None,
+    output: Path | str | None = None,
+) -> dict:
+    """Rebalance a table's column widths by content volume — no text is changed.
+
+    Institutional forms ship tables with near-equal columns, but real content
+    piles into one column, stretching the table vertically (issue #13). This
+    redistributes the *same total width*: a per-column **min clamp** (longest
+    word not cut) plus **√(content) damping** of the remainder, so a column with
+    much more text gets more room without starving the label columns.
+    ``min_widths`` (``{col: hwpunit}``) pins specific columns. Returns a summary.
+    """
+    from math import sqrt
+
+    doc = HwpxDocument.open(str(hwpx_path))
+    roots = _roots(doc)
+    tbl = _nth_tbl(roots, table_index)
+    if tbl is None:
+        raise ValueError(f"table index {table_index} not found")
+
+    cells: list[tuple] = []  # (cellSz elem, colAddr, colSpan, textlen, longest_word)
+    ncols = 0
+    for tc in tbl.iter(q("tc")):
+        addr, span, sz = tc.find(q("cellAddr")), tc.find(q("cellSpan")), tc.find(q("cellSz"))
+        if addr is None or sz is None:
+            continue
+        c = int(addr.get("colAddr"))
+        cs = int(span.get("colSpan")) if span is not None else 1
+        text = "".join(e.text or "" for e in tc.iter(q("t")))
+        lw = max((len(w) for w in text.split()), default=0)
+        cells.append((sz, c, cs, len(text.strip()), lw))
+        ncols = max(ncols, c + cs)
+    if ncols == 0:
+        raise ValueError("table has no addressable cells")
+
+    col_w = [0] * ncols
+    col_content = [0.0] * ncols
+    longest = [0] * ncols
+    span_w: dict[int, int] = {}  # fallback width for merged-only columns
+    for sz, c, cs, tlen, lw in cells:
+        w = int(sz.get("width"))
+        if cs == 1:  # single-span cells define column geometry + min-clamp
+            col_w[c] = w
+            longest[c] = max(longest[c], lw)
+        else:
+            for cc in range(c, c + cs):
+                span_w.setdefault(cc, w // cs)
+        per = tlen / cs  # content in a merged cell spreads over the columns it covers
+        for cc in range(c, c + cs):
+            col_content[cc] += per
+    for c in range(ncols):
+        if col_w[c] == 0 and c in span_w:
+            col_w[c] = span_w[c]
+    total = sum(col_w)
+    if total <= 0:
+        raise ValueError("could not read column widths (merged-only columns?)")
+
+    mins = min_widths or {}
+    col_min = [
+        min(mins.get(c, max(_AUTOFIT_MIN_FLOOR, longest[c] * _AUTOFIT_CHAR_W)), total)
+        for c in range(ncols)
+    ]
+    smin = sum(col_min)
+    if smin > total:  # clamps don't fit — scale them down proportionally
+        col_min = [int(m * total / smin) for m in col_min]
+        smin = sum(col_min)
+    remaining = total - smin
+    weights = [sqrt(col_content[c]) if col_content[c] > 0 else 0.0 for c in range(ncols)]
+    sw = sum(weights)
+    new = [
+        col_min[c] + (int(remaining * weights[c] / sw) if sw > 0 else remaining // ncols)
+        for c in range(ncols)
+    ]
+    new[max(range(ncols), key=lambda c: new[c])] += total - sum(new)  # keep sum == total
+
+    for sz, c, cs, _tlen, _lw in cells:
+        sz.set("width", str(sum(new[c : c + cs])))
+
+    for sec in doc.sections:
+        sec.mark_dirty()
+    doc.save_to_path(str(output or hwpx_path))
+    return {
+        "table_index": table_index,
+        "ncols": ncols,
+        "old_widths": col_w,
+        "new_widths": new,
+        "total": total,
+    }
+
+
 def _locate_cell_addr(doc: HwpxDocument, table_index: int, row: int, col: int):
     for it in _tn._collect_document_tables(doc):
         if it.table_index == table_index:

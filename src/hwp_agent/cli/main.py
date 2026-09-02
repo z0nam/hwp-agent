@@ -209,6 +209,35 @@ def _cmd_form(args: argparse.Namespace) -> int:
 
     from ..ops import analyze_form, dump_grid, fill_form
 
+    if args.action == "autofit":
+        from ..ops import autofit_table
+
+        mins: dict[int, int] = {}
+        for item in args.min_width or []:
+            k, _, v = item.partition("=")
+            try:
+                mins[int(k)] = int(v)
+            except ValueError:
+                print(f"error: --min-width expects COL=N, got {item!r}", file=sys.stderr)
+                return 2
+        gr = _guard_output(args.output or args.file)
+        try:
+            summary = autofit_table(
+                args.file, args.table, min_widths=mins or None, output=gr.target
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        _guard_finalize(gr)
+        if args.json:
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+        else:
+            olds = ", ".join(str(w) for w in summary["old_widths"])
+            news = ", ".join(str(w) for w in summary["new_widths"])
+            print(f"table {summary['table_index']} ({summary['ncols']} cols) -> {gr.target}")
+            print(f"  widths: [{olds}]  ->  [{news}]  (total {summary['total']})")
+        return 0
+
     if args.action == "analyze":
         if args.grid:
             cells = dump_grid(args.file)
@@ -753,6 +782,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="list every table cell with its cell:<table>:<row>:<col> fill path",
     )
     fa.set_defaults(func=_cmd_form)
+
+    faf = form_sub.add_parser(
+        "autofit", help="rebalance a table's column widths by content (no text change)"
+    )
+    faf.add_argument("file", type=Path, help=".hwpx form")
+    faf.add_argument("--table", type=int, default=0, help="table index (document order, default 0)")
+    faf.add_argument(
+        "--min-width", action="append", metavar="COL=N", dest="min_width",
+        help="pin a column's minimum width in HWPUNIT (repeatable)",
+    )
+    faf.add_argument("--json", action="store_true", help="emit the width summary as JSON")
+    faf.add_argument(
+        "-o", "--output", type=Path, default=None, help="destination (default in place)"
+    )
+    faf.set_defaults(func=_cmd_form)
 
     ff = form_sub.add_parser("fill", help="fill slots by name/path/profile")
     ff.add_argument("file", type=Path, help=".hwpx form")

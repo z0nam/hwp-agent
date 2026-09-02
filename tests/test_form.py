@@ -243,3 +243,27 @@ def test_release_table_flow_toggles_attrs() -> None:
     assert trapped.get("pageBreak") == "CELL"
     assert trapped.find(q("pos")).get("treatAsChar") == "0"
     assert _trapped_table_count([root]) == 0  # nothing trapped anymore
+
+
+_EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "정책과제-template.hwpx"
+
+
+@pytest.mark.skipif(not _EXAMPLE.is_file(), reason="example template not present")
+def test_autofit_preserves_total(tmp_path: Path) -> None:
+    """autofit redistributes column widths but keeps the total (#13)."""
+    from hwp_agent.ops import autofit_table
+
+    out = tmp_path / "af.hwpx"
+    s = autofit_table(_EXAMPLE, 0, output=out)
+    assert out.is_file() and s["ncols"] >= 2
+    assert sum(s["new_widths"]) == s["total"] == sum(s["old_widths"])
+    assert all(w > 0 for w in s["new_widths"])
+
+
+@pytest.mark.skipif(not _EXAMPLE.is_file(), reason="example template not present")
+def test_autofit_min_width_pins_column(tmp_path: Path) -> None:
+    from hwp_agent.ops import autofit_table
+
+    s = autofit_table(_EXAMPLE, 0, min_widths={0: 20000}, output=tmp_path / "af2.hwpx")
+    assert s["new_widths"][0] >= 20000  # the pinned floor is honoured
+    assert sum(s["new_widths"]) == s["total"]

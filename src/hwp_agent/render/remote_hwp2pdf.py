@@ -55,19 +55,19 @@ class SshTransport:
 
     def run(self, argv: list[str], *, timeout: int) -> subprocess.CompletedProcess:
         return subprocess.run(  # noqa: S603
-            self._base + argv, capture_output=True, text=True, timeout=timeout
+            self._base + argv, capture_output=True, text=True, errors="replace", timeout=timeout
         )
 
     def push(self, local: Path, remote: str) -> None:
         subprocess.run(  # noqa: S603
             ["scp", "-o", "BatchMode=yes", str(local), f"{self._host}:{remote}"],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, errors="replace", check=True,
         )
 
     def pull(self, remote: str, local: Path) -> None:
         subprocess.run(  # noqa: S603
             ["scp", "-o", "BatchMode=yes", f"{self._host}:{remote}", str(local)],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, errors="replace", check=True,
         )
 
 

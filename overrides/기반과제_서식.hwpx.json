@@ -1,4 +1,8 @@
 {
-  "_note": "본문 섹션(section4)의 예시(형식 시연용 더미)를 걷어내고 {{body}} 마커만 남김 → write가 깨끗한 본문에 배치. 표지·판권·목차·들어가며 등 다른 섹션은 무손상. styles 생략 = 자동추론 유지.",
-  "body": { "section": 4, "strip": true, "position": "start" }
+  "_note": "다중 섹션 조립용 마커. 들어가며(s3)·본문(s4)·참고문헌(s5)의 예시를 걷어내고 {{intro}}/{{body}}/{{references}} 마커 삽입 → hwp-agent build로 MD 파트 조립. 요약(s2)은 표 양식이라 제외(form fill 대상), 표지·판권 무손상. styles 생략 = 자동추론.",
+  "sections": [
+    { "section": 3, "marker": "intro", "strip": true },
+    { "section": 4, "marker": "body", "strip": true },
+    { "section": 5, "marker": "references", "strip": true }
+  ]
 }

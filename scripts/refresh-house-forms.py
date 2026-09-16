@@ -135,8 +135,8 @@ def _blank_para(p) -> None:
     p.set("styleIDRef", "0")
 
 
-def _make_marker(opener):
-    """opener 를 복제해 secPr/ctrl 런을 떼고 텍스트를 ``{{body}}`` 로 만든 마커 문단."""
+def _make_marker(opener, token: str = "{{body}}"):
+    """opener 를 복제해 secPr/ctrl 런을 떼고 텍스트를 *token* 으로 만든 마커 문단."""
     from lxml import etree
 
     m = copy.deepcopy(opener)
@@ -152,20 +152,26 @@ def _make_marker(opener):
             run.remove(c)
     else:
         run = etree.SubElement(m, _hp("run"))
-    etree.SubElement(run, _hp("t")).text = "{{body}}"
+    etree.SubElement(run, _hp("t")).text = token
     m.set("styleIDRef", "0")
     return m
 
 
 def insert_body_marker(
-    path: Path, section_index: int, position: str = "start", strip: bool = False
+    path: Path,
+    section_index: int,
+    position: str = "start",
+    strip: bool = False,
+    marker: str = "body",
 ) -> None:
-    """굽는 사본의 본문 섹션을 ``{{body}}`` 마커로 정리(컨테이너 보존).
+    """굽는 사본의 지정 섹션을 ``{{<marker>}}`` 마커로 정리(컨테이너 보존).
 
-    write 가 본문을 이 자리에 넣게 한다 — 마커가 없으면 마지막 섹션(판권지)에 붙음.
-    *strip* 이면 그 섹션의 예시 문단을 걷어내고 [빈 opener][{{body}}] 만 남긴다
-    (표지·판권·목차 등 다른 섹션은 무손상). *strip* 이 아니면 마커만 끼워 넣는다.
+    write/build 가 그 파트를 이 자리에 넣게 한다 — 마커가 없으면 마지막 섹션(판권지)에
+    붙음. *strip* 이면 그 섹션의 예시 문단을 걷어내고 [빈 opener][마커] 만 남긴다
+    (표지·판권 등 다른 섹션은 무손상). *strip* 이 아니면 마커만 끼워 넣는다.
+    *marker* 는 마커 이름(``body``·``intro``·``references`` …) — 토큰은 ``{{name}}``.
     """
+    token = "{{" + marker + "}}"
     from lxml import etree
 
     from hwp_agent.ops.container import _rewrite_zip_preserving
@@ -183,7 +189,7 @@ def insert_body_marker(
     if strip:
         # 본문 예시 제거: opener(secPr) 만 남겨 비우고, 그 뒤에 {{body}} 마커.
         opener = next((p for p in paras if p.find(".//" + _hp("secPr")) is not None), paras[0])
-        marker = _make_marker(opener)
+        marker = _make_marker(opener, token)
         _blank_para(opener)
         for p in paras:
             if p is not opener:
@@ -201,7 +207,7 @@ def insert_body_marker(
             None,
         )
         if src is None:
-            raise RuntimeError(f"{part}: {{body}} 마커로 복제할 단순 문단이 없음")
+            raise RuntimeError(f"{part}: 마커로 복제할 단순 문단이 없음")
         marker = copy.deepcopy(src)
         marker.set("styleIDRef", "0")
         runs = marker.findall(_hp("run"))
@@ -209,7 +215,7 @@ def insert_body_marker(
             marker.remove(r)
         for child in list(runs[0]):
             runs[0].remove(child)
-        etree.SubElement(runs[0], _hp("t")).text = "{{body}}"
+        etree.SubElement(runs[0], _hp("t")).text = token
         if position == "end":
             paras[-1].addnext(marker)
         else:
@@ -307,17 +313,28 @@ def bake_one(src: Path, out: Path, workdir: Path, config: dict | None = None) ->
             shutil.copyfile(target, out)
             summary["note"] = "선언 불필요 (이미 기계친화이거나 사다리 없음)"
 
-    body = config.get("body")
-    if body and body.get("section") is not None:
+    # marker insertion: a `sections` list (multi-marker) or the `body` shorthand.
+    # Each spec: {"section": N, "marker": "body"|"intro"|"references"…, "strip": bool}.
+    specs = config.get("sections")
+    if not specs and config.get("body", {}).get("section") is not None:
+        b = config["body"]
+        specs = [{"section": b["section"], "marker": "body", **b}]
+    placed_markers = []
+    for spec in specs or []:
+        if spec.get("section") is None:
+            continue
+        mk = spec.get("marker", "body")
         insert_body_marker(
             out,
-            int(body["section"]),
-            body.get("position", "start"),
-            strip=bool(body.get("strip")),
+            int(spec["section"]),
+            spec.get("position", "start"),
+            strip=bool(spec.get("strip")),
+            marker=mk,
         )
-        summary["body_marker"] = (
-            f"section{body['section']}" + (" strip" if body.get("strip") else "")
-        )
+        tag = "·strip" if spec.get("strip") else ""
+        placed_markers.append(f"s{spec['section']}:{{{{{mk}}}}}{tag}")
+    if placed_markers:
+        summary["body_marker"] = " ".join(placed_markers)
     return summary
 
 
@@ -524,7 +541,7 @@ def main() -> int:
             log(f"구움{'🆕' if summ['changed'] else '·유지'}: {name} → {out.name}  "
                 f"[{summ['classification_before']}→{summ['classification_after']}, "
                 f"선언 {summ['declarations']}"
-                + (f", {summ['body_marker']}에 {{body}}" if summ.get("body_marker") else "")
+                + (f", 마커 {summ['body_marker']}" if summ.get("body_marker") else "")
                 + "]")
         except Exception as e:  # noqa: BLE001 — 한 파일 실패가 전체를 막지 않게
             log(f"✗ 실패: {name}: {e}")

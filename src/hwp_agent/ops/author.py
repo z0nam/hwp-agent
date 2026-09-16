@@ -1249,6 +1249,7 @@ def fill_sections(
                 marker_token=token,
                 equal_columns=equal_columns,
             )
+            agg.placed += res.placed
             agg.instructions_removed += res.instructions_removed
             agg.unmapped_roles += [
                 r for r in res.unmapped_roles if r not in agg.unmapped_roles
@@ -1258,3 +1259,67 @@ def fill_sections(
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
     return agg
+
+
+def build_report(
+    manifest: Path | str, *, output: Path | str | None = None
+) -> AuthorResult:
+    """Assemble a multi-section report from a JSON manifest into one template.
+
+    The manifest (paths relative to its own directory) names the template and the
+    Markdown for each part; parts are placed at their markers via
+    :func:`fill_sections` (front-to-back order), so 요약·들어가며·본문·참고문헌 land in
+    their own sections. A part may be a single file or a list (concatenated)::
+
+        {
+          "template": "전략과제.normalized.hwpx",
+          "output": "최종보고서.hwpx",
+          "chapter": null,
+          "parts": {
+            "summary": "src/00_요약.md",
+            "intro": "들어가며.md",
+            "body": ["src/01_서론.md", "src/02_동향.md"],
+            "references": "src/09_참고문헌.md"
+          }
+        }
+
+    A part whose marker isn't in the template falls back (append to last section)
+    with a warning — surfaced in the result, prefixed by the marker.
+    """
+    import json
+
+    mpath = Path(manifest)
+    data = json.loads(mpath.read_text(encoding="utf-8"))
+    base = mpath.parent
+
+    def _resolve(p: str) -> str:
+        return p if Path(p).is_absolute() else str(base / p)
+
+    template = _resolve(data["template"])
+    parts_cfg = data.get("parts", {})
+    part_order = ("summary", "intro", "body", "references", "appendix")
+    parts: list[tuple[str, str]] = []
+    for name in part_order:
+        if name not in parts_cfg:
+            continue
+        files = parts_cfg[name]
+        if isinstance(files, str):
+            files = [files]
+        md = "\n\n".join(
+            Path(_resolve(f)).read_text(encoding="utf-8") for f in files
+        )
+        parts.append(("{{" + name + "}}", md))
+    if not parts:
+        raise ValueError("manifest has no 'parts' to assemble")
+
+    out = output if output is not None else data.get("output")
+    if out is not None and not Path(out).is_absolute():
+        out = str(base / out)
+    return fill_sections(
+        template,
+        parts,
+        output=out,
+        chapter=data.get("chapter"),
+        table_template=data.get("table_template"),
+        equal_columns=data.get("equal_columns", False),
+    )

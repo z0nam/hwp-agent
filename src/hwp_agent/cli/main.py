@@ -716,6 +716,40 @@ def _cmd_write(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_build(args: argparse.Namespace) -> int:
+    import json
+
+    from ..ops import build_report
+
+    # resolve the output up front so we can guard it and report the path
+    try:
+        mdata = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"error: bad manifest: {exc}", file=sys.stderr)
+        return 2
+    out = args.output or mdata.get("output")
+    if not out:
+        print("error: manifest needs 'output' (or pass -o OUT)", file=sys.stderr)
+        return 2
+    out = Path(out)
+    if not args.output and not out.is_absolute():
+        out = Path(args.manifest).parent / out
+
+    gr = _guard_output(out)
+    try:
+        result = build_report(args.manifest, output=gr.target)
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    _guard_finalize(gr)
+    print(f"assembled {result.placed} block(s) -> {gr.target}")
+    if result.unmapped_roles:
+        print(f"  unmapped (fell back to BODY): {', '.join(result.unmapped_roles)}")
+    for warning in result.warnings:
+        print(f"  warning: {warning}", file=sys.stderr)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hwp-agent",
@@ -1059,6 +1093,18 @@ def build_parser() -> argparse.ArgumentParser:
     wr.add_argument("-o", "--output", type=Path, default=None, help="output file")
     wr.set_defaults(func=_cmd_write)
 
+    bd = sub.add_parser(
+        "build",
+        help="assemble a multi-section report from a JSON manifest "
+        "(요약·들어가며·본문·참고문헌 → 각 섹션)",
+    )
+    bd.add_argument("manifest", type=Path, help="JSON manifest (template + parts by marker)")
+    bd.add_argument(
+        "-o", "--output", type=Path, default=None,
+        help="output file (overrides the manifest's 'output')",
+    )
+    bd.set_defaults(func=_cmd_build)
+
     return parser
 
 
@@ -1071,7 +1117,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     # validate input files up front so a missing path is a clear message, not a
     # Python traceback (output paths are never checked — they're created).
-    for attr in ("input", "file", "template", "md", "image"):
+    for attr in ("input", "file", "template", "md", "image", "manifest"):
         path = getattr(args, attr, None)
         if path is not None and not Path(path).is_file():
             print(f"error: 파일을 찾을 수 없습니다: {path}", file=sys.stderr)

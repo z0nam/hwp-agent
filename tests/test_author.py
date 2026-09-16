@@ -1119,3 +1119,39 @@ def test_write_sizes_table_columns_by_content(tmp_path: Path) -> None:
     assert wc[2] == max(wc) and wc[2] > wc[0] and wc[2] > wc[1]  # 설명 widest
     assert max(we) - min(we) <= 1  # equal columns (rounding drift only)
     assert sum(wc) == sum(we)  # same total width
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_build_report_assembles_from_manifest(tmp_path: Path) -> None:
+    """build_report places each manifest part at its marker; list parts concat (#A1)."""
+    import json
+
+    from hwpx.document import HwpxDocument
+
+    from hwp_agent.ops import build_report
+
+    tmpl = tmp_path / "t.hwpx"
+    doc = HwpxDocument.open(str(TYPE1))
+    doc.sections[0].add_paragraph("{{summary}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.sections[-1].add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.save_to_path(str(tmpl))
+
+    (tmp_path / "s.md").write_text("# 요약장\n\n요약 AAA\n", encoding="utf-8")
+    (tmp_path / "b1.md").write_text("# 본문1\n\n본문 BBB\n", encoding="utf-8")
+    (tmp_path / "b2.md").write_text("# 본문2\n\n본문 CCC\n", encoding="utf-8")
+    (tmp_path / "m.json").write_text(
+        json.dumps({
+            "template": "t.hwpx", "output": "out.hwpx",
+            "parts": {"summary": "s.md", "body": ["b1.md", "b2.md"]},
+        }),
+        encoding="utf-8",
+    )
+    res = build_report(tmp_path / "m.json")
+    out = tmp_path / "out.hwpx"
+    assert out.is_file() and res.placed > 0
+
+    d2 = HwpxDocument.open(str(out))
+    s0 = " ".join(p.text or "" for p in d2.sections[0].paragraphs)
+    slast = " ".join(p.text or "" for p in d2.sections[-1].paragraphs)
+    assert "AAA" in s0 and "요약장" in s0
+    assert "BBB" in slast and "CCC" in slast  # both body files concatenated

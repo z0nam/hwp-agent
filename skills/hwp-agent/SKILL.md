@@ -218,7 +218,7 @@ reference **explicitly**:
 | `hwp-agent form analyze FILE.hwpx [--json]` | list fillable slots (label -> *empty* neighbour only) |
 | `hwp-agent form analyze FILE.hwpx --grid [--json]` | list every table cell with its `cell:<t>:<r>:<c>` fill path — use when the cell you want already has text |
 | `hwp-agent form fill FILE.hwpx --set K=V [-o OUT]` | fill slots by name |
-| `hwp-agent write C.md --template FILE.hwpx [--chapter N] [--table-template CAPTION] [-o OUT]` | write Markdown into a template (`author` = alias) |
+| `hwp-agent write C.md --template FILE.hwpx [--chapter N] [--table-template CAPTION] [--equal-columns] [-o OUT]` | write Markdown into a template (`author` = alias). Generated tables size columns by content by default; `--equal-columns` keeps them equal |
 | `hwp-agent image list FILE.hwpx [--json]` | list figure image slots (ref, format, px size, caption) |
 | `hwp-agent image replace FILE.hwpx IMG --ref image7 [--fit aspect\|none] [-o OUT]` | swap one figure image in place (`--caption "[그림 …]"` also targets it) |
 | `hwp-agent meta FILE.hwpx [--set K=V]` | read/set document metadata |

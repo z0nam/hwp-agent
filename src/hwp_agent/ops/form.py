@@ -30,6 +30,8 @@ import hwpx.tools.table_navigation as _tn
 from hwpx.document import HwpxDocument
 from hwpx.opc.package import HwpxPackage
 
+from .tablewidth import compute_column_widths
+
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 PLACEHOLDER_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
@@ -341,11 +343,6 @@ def dump_grid(hwpx_path: Path | str) -> list[GridCell]:
     return cells
 
 
-#: coarse column-width heuristics (HWPUNIT ~ 1/7200 inch; a 10pt CJK glyph ~1000)
-_AUTOFIT_CHAR_W = 1000
-_AUTOFIT_MIN_FLOOR = 3000
-
-
 def _nth_tbl(roots, table_index: int):
     """The ``table_index``-th ``<hp:tbl>`` in document order (matches dump_grid)."""
     idx = -1
@@ -373,8 +370,6 @@ def autofit_table(
     much more text gets more room without starving the label columns.
     ``min_widths`` (``{col: hwpunit}``) pins specific columns. Returns a summary.
     """
-    from math import sqrt
-
     doc = HwpxDocument.open(str(hwpx_path))
     roots = _roots(doc)
     tbl = _nth_tbl(roots, table_index)
@@ -418,23 +413,7 @@ def autofit_table(
     if total <= 0:
         raise ValueError("could not read column widths (merged-only columns?)")
 
-    mins = min_widths or {}
-    col_min = [
-        min(mins.get(c, max(_AUTOFIT_MIN_FLOOR, longest[c] * _AUTOFIT_CHAR_W)), total)
-        for c in range(ncols)
-    ]
-    smin = sum(col_min)
-    if smin > total:  # clamps don't fit — scale them down proportionally
-        col_min = [int(m * total / smin) for m in col_min]
-        smin = sum(col_min)
-    remaining = total - smin
-    weights = [sqrt(col_content[c]) if col_content[c] > 0 else 0.0 for c in range(ncols)]
-    sw = sum(weights)
-    new = [
-        col_min[c] + (int(remaining * weights[c] / sw) if sw > 0 else remaining // ncols)
-        for c in range(ncols)
-    ]
-    new[max(range(ncols), key=lambda c: new[c])] += total - sum(new)  # keep sum == total
+    new = compute_column_widths(col_content, longest, total, min_widths)
 
     for sz, c, cs, _tlen, _lw in cells:
         sz.set("width", str(sum(new[c : c + cs])))

@@ -34,6 +34,7 @@ from hwpx.document import HwpxDocument
 
 from .form import extract_placeholders
 from .styles import INSTRUCTION, bullet_glyph_name, read_style_system, role_map
+from .tablewidth import compute_column_widths
 
 #: tokens marking where authored content is inserted (each on a paragraph of its
 #: own); the marker paragraph is consumed (removed) on fill. A full report has
@@ -690,8 +691,41 @@ def _fit_table_width(table_el, text_width: int) -> None:
         cell_szs[-1].set("width", str(text_width - running))  # drift → last cell
 
 
+def _fit_table_width_by_content(table_el, block: TableBlock, text_width: int) -> None:
+    """Size columns by how much content each holds (default), summing to *text_width*.
+
+    Equal columns waste width when content piles into one column; this gives each
+    column a share by √(content) with a min-clamp so the longest word isn't cut
+    (shared with ``form autofit`` via :func:`compute_column_widths`). Every row is
+    still ``n_cols`` cells at this point (the note row is merged later), so one
+    per-column width applies to all rows.
+    """
+    ncols = block.n_cols
+    contents: list[float] = [0.0] * ncols
+    longest: list[int] = [0] * ncols
+    for row in block.rows:
+        for c in range(ncols):
+            cell = row[c] if c < len(row) else ""
+            contents[c] += len(cell)
+            longest[c] = max(longest[c], max((len(w) for w in cell.split()), default=0))
+    widths = compute_column_widths(contents, longest, text_width)
+    sz = table_el.find(f"{{{_HP}}}sz")
+    if sz is not None:
+        sz.set("width", str(text_width))
+    for tr in table_el.findall(f"{{{_HP}}}tr"):
+        cell_szs = [tc.find(f"{{{_HP}}}cellSz") for tc in tr.findall(f"{{{_HP}}}tc")]
+        cell_szs = [c for c in cell_szs if c is not None]
+        if len(cell_szs) == ncols:
+            for c, csz in enumerate(cell_szs):
+                csz.set("width", str(widths[c]))
+        else:  # already-merged/odd row: fill the width so the row still sums right
+            for csz in cell_szs:
+                csz.set("width", str(text_width))
+
+
 def _build_table(
-    doc, section, block: TableBlock, fmt, body_style, body_para, ref_el, chapter=None
+    doc, section, block: TableBlock, fmt, body_style, body_para, ref_el, chapter=None,
+    *, equal_columns: bool = False,
 ):
     """Create a table sized to *block*, styled by *fmt*'s zones, and fill its cells.
 
@@ -728,7 +762,10 @@ def _build_table(
     # styling, so a later note-row merge sums the already-fitted cell widths
     tw = _text_width(section)
     if tw:
-        _fit_table_width(table.element, tw)
+        if equal_columns:
+            _fit_table_width(table.element, tw)
+        else:
+            _fit_table_width_by_content(table.element, block, tw)
 
     last_data = len(data_rows) - 1
     for r, row in enumerate(data_rows):
@@ -892,6 +929,7 @@ def fill_from_markdown(
     chapter: str | int | None = None,
     table_template: str | None = None,
     marker_token: str | None = None,
+    equal_columns: bool = False,
 ) -> AuthorResult:
     """Fill a template from Markdown, styled with its own outline styles.
 
@@ -1065,7 +1103,7 @@ def fill_from_markdown(
         if isinstance(block, TableBlock):
             table = _build_table(
                 doc, target_section, block, table_fmt, body_style, body_para,
-                ref_element, chapter_label(),
+                ref_element, chapter_label(), equal_columns=equal_columns,
             )
             place(table.paragraph.element)
             result.placed += 1
@@ -1179,6 +1217,7 @@ def fill_sections(
     output: Path | str | None = None,
     chapter: str | int | None = None,
     table_template: str | None = None,
+    equal_columns: bool = False,
 ) -> AuthorResult:
     """Fill several named markers, each from its own Markdown part.
 
@@ -1208,6 +1247,7 @@ def fill_sections(
                 chapter=chapter,
                 table_template=table_template,
                 marker_token=token,
+                equal_columns=equal_columns,
             )
             agg.instructions_removed += res.instructions_removed
             agg.unmapped_roles += [

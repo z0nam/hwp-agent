@@ -703,6 +703,7 @@ def _cmd_write(args: argparse.Namespace) -> int:
         output=gr.target,
         chapter=args.chapter,
         table_template=args.table_template,
+        equal_columns=getattr(args, "equal_columns", False),
     )
     _guard_finalize(gr)
     print(f"placed {result.placed} block(s) -> {gr.target}")
@@ -1048,6 +1049,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CAPTION",
         help="caption text of the table whose format generated tables copy "
         "(use when the {{table_template}} token was consumed by a prior run)",
+    )
+    wr.add_argument(
+        "--equal-columns",
+        dest="equal_columns",
+        action="store_true",
+        help="keep generated table columns equal-width (default: size columns by content)",
     )
     wr.add_argument("-o", "--output", type=Path, default=None, help="output file")
     wr.set_defaults(func=_cmd_write)

@@ -1082,3 +1082,40 @@ def test_heading_spacing_author_blank_forces_gap(tmp_path: Path) -> None:
 
     assert hugs("# 부모\n## 자식\n") is True  # direct child, tight → hugs (no gap)
     assert hugs("# 부모\n\n## 자식\n") is False  # author blank line → gap honored
+
+
+_TEMPLATE = Path(__file__).resolve().parents[1] / "examples" / "정책과제-template.hwpx"
+
+
+def _generated_table_widths(hwpx: Path) -> list[int]:
+    """First-row cell widths of the generated (구분/설명) table, doc order."""
+    import re
+    import zipfile
+
+    z = zipfile.ZipFile(str(hwpx))
+    for n in sorted(x for x in z.namelist() if re.search(r"section\d+\.xml$", x)):
+        x = z.read(n).decode("utf-8")
+        for tm in re.finditer(r"<hp:tbl.*?</hp:tbl>", x, re.S):
+            if "구분" in tm.group(0) and "설명" in tm.group(0):
+                tr = re.search(r"<hp:tr>.*?</hp:tr>", tm.group(0), re.S).group(0)
+                return [int(w) for w in re.findall(r'<hp:cellSz width="(\d+)"', tr)]
+    return []
+
+
+@pytest.mark.skipif(not _TEMPLATE.is_file(), reason="example template not present")
+def test_write_sizes_table_columns_by_content(tmp_path: Path) -> None:
+    """write sizes generated table columns by content by default (#16); the
+    content-heavy column gets the most width, --equal-columns opts back to equal."""
+    from hwp_agent.ops import fill_from_markdown
+
+    md = "# Ⅰ. T\n\n| 구분 | 값 | 설명 |\n|---|---|---|\n| 가 | 1 | " + "가나다라 " * 40 + "|\n"
+    c = tmp_path / "content.hwpx"
+    fill_from_markdown(_TEMPLATE, md, output=c)
+    e = tmp_path / "equal.hwpx"
+    fill_from_markdown(_TEMPLATE, md, output=e, equal_columns=True)
+
+    wc, we = _generated_table_widths(c), _generated_table_widths(e)
+    assert len(wc) == 3 and len(we) == 3
+    assert wc[2] == max(wc) and wc[2] > wc[0] and wc[2] > wc[1]  # 설명 widest
+    assert max(we) - min(we) <= 1  # equal columns (rounding drift only)
+    assert sum(wc) == sum(we)  # same total width

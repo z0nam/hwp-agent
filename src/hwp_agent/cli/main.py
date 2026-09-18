@@ -697,13 +697,17 @@ def _cmd_write(args: argparse.Namespace) -> int:
     # template — writing back onto the bundled default would corrupt it.
     default_out = args.output or Path(args.md).with_suffix(".hwpx")
     gr = _guard_output(default_out)
+    section = getattr(args, "section", None)
+    marker_token = ("{{" + section + "}}") if section else None
     result = fill_from_markdown(
         template,
         markdown,
         output=gr.target,
         chapter=args.chapter,
         table_template=args.table_template,
+        marker_token=marker_token,
         equal_columns=getattr(args, "equal_columns", False),
+        strip_other_markers=True,
     )
     _guard_finalize(gr)
     print(f"placed {result.placed} block(s) -> {gr.target}")
@@ -1089,6 +1093,13 @@ def build_parser() -> argparse.ArgumentParser:
         dest="equal_columns",
         action="store_true",
         help="keep generated table columns equal-width (default: size columns by content)",
+    )
+    wr.add_argument(
+        "--section",
+        default=None,
+        choices=["summary", "intro", "body", "references", "appendix"],
+        help="which marker to fill in a multi-marker template "
+        "(default: {{body}} if present, else the first marker)",
     )
     wr.add_argument("-o", "--output", type=Path, default=None, help="output file")
     wr.set_defaults(func=_cmd_write)

@@ -876,17 +876,62 @@ def _find_insertion_marker(doc: HwpxDocument, marker_token: str | None = None):
     """Locate the paragraph holding an insertion marker, if any.
 
     With *marker_token* given, only that exact token is matched (for filling one
-    named part). Otherwise the first of :data:`INSERTION_MARKERS` in document
-    order wins. Whichever is found is consumed (its whole paragraph removed) once
-    content is inserted before it.
+    named part). With no token — a single-part ``write`` — the main body is the
+    intended target, so ``{{body}}`` is preferred **wherever** it sits; only if
+    the template has no ``{{body}}`` do we fall back to the first of
+    :data:`INSERTION_MARKERS` in document order. This keeps main-body Markdown out
+    of ``{{intro}}`` when a multi-marker template happens to place intro first
+    (PR #16 / Codex P1). Whichever is found is consumed (its paragraph removed)
+    once content is inserted before it.
     """
-    markers = (marker_token,) if marker_token else INSERTION_MARKERS
+    if marker_token:
+        markers: tuple[str, ...] = (marker_token,)
+    elif any(
+        BODY_MARKER in (p.text or "")
+        for section in doc.sections
+        for p in section.paragraphs
+    ):
+        markers = (BODY_MARKER,)
+    else:
+        markers = INSERTION_MARKERS
     for section in doc.sections:
         for paragraph in section.paragraphs:
             text = paragraph.text or ""
             if any(m in text for m in markers):
                 return section, paragraph
     return None, None
+
+
+def _strip_unfilled_markers(doc: HwpxDocument) -> int:
+    """Remove any :data:`INSERTION_MARKERS` paragraphs left unfilled.
+
+    A build that supplies only some parts (e.g. ``body`` only) leaves the other
+    markers (``{{intro}}``, ``{{references}}``) sitting in the template; a literal
+    ``{{references}}`` must never survive into the output (PR #16 / Codex P2). A
+    marker that opens its 구역 keeps its (now blank) paragraph so the section
+    boundary/secPr survives; otherwise the whole paragraph is dropped. Returns the
+    number of markers stripped.
+    """
+    stripped = 0
+    for section in doc.sections:
+        changed = False
+        for paragraph in list(section.paragraphs):
+            if not any(m in (paragraph.text or "") for m in INSERTION_MARKERS):
+                continue
+            el = paragraph.element
+            opener = _section_opener_run(el)
+            if opener is not None:
+                # keep the section opener paragraph; drop only the marker text runs
+                for run in list(el.findall(f"{{{_HP}}}run")):
+                    if run is not opener:
+                        el.remove(run)
+            else:
+                el.getparent().remove(el)
+            stripped += 1
+            changed = True
+        if changed:
+            section.mark_dirty()
+    return stripped
 
 
 def _section_opener_run(para_el):
@@ -930,6 +975,7 @@ def fill_from_markdown(
     table_template: str | None = None,
     marker_token: str | None = None,
     equal_columns: bool = False,
+    strip_other_markers: bool = False,
 ) -> AuthorResult:
     """Fill a template from Markdown, styled with its own outline styles.
 
@@ -1206,6 +1252,16 @@ def fill_from_markdown(
         else:
             marker.element.getparent().remove(marker.element)
 
+    # single-part write into a multi-marker template: don't leave the other
+    # markers ({{intro}}, {{references}}, …) sitting in the output as literal
+    # text. fill_sections keeps this off and strips once, after all parts land.
+    if strip_other_markers:
+        n = _strip_unfilled_markers(doc)
+        if n:
+            result.warnings.append(
+                f"stripped {n} unfilled marker(s) (no content supplied for them)"
+            )
+
     doc.save_to_path(str(output or template))
     return result
 
@@ -1258,6 +1314,12 @@ def fill_sections(
             src = dest
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+    # consume markers for parts that weren't supplied, so no literal {{x}} survives
+    doc = HwpxDocument.open(str(final_out))
+    n = _strip_unfilled_markers(doc)
+    if n:
+        doc.save_to_path(str(final_out))
+        agg.warnings.append(f"stripped {n} unfilled marker(s) not supplied by this build")
     return agg
 
 

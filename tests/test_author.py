@@ -844,6 +844,82 @@ def test_fill_sections_places_each_part(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_write_default_prefers_body_over_earlier_intro(tmp_path: Path) -> None:
+    """No marker_token (single-part write) targets {{body}} even when {{intro}}
+    comes first in document order (PR #16 / Codex P1)."""
+    from hwpx.document import HwpxDocument
+
+    tmpl = tmp_path / "t.hwpx"
+    doc = HwpxDocument.open(str(TYPE1))
+    # intro marker sits BEFORE body in document order
+    doc.sections[0].add_paragraph("{{intro}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.sections[0].add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.save_to_path(str(tmpl))
+
+    out = tmp_path / "o.hwpx"
+    # no marker_token, no strip — assert routing only
+    result = fill_from_markdown(tmpl, "# 본문장\n\n본문 CCC\n", output=out)
+    assert result.inserted_at_marker is True
+
+    d2 = HwpxDocument.open(str(out))
+    joined = " ".join(p.text or "" for s in d2.sections for p in s.paragraphs)
+    assert "본문 CCC" in joined
+    assert "{{body}}" not in joined  # body marker consumed (content landed here)
+    assert "{{intro}}" in joined  # intro left for a later build, not hijacked
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_write_strip_other_markers_removes_leftovers(tmp_path: Path) -> None:
+    """strip_other_markers=True (the write CLI default) leaves no literal marker."""
+    from hwpx.document import HwpxDocument
+
+    tmpl = tmp_path / "t.hwpx"
+    doc = HwpxDocument.open(str(TYPE1))
+    doc.sections[0].add_paragraph("{{intro}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.sections[0].add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.sections[0].add_paragraph("{{references}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.save_to_path(str(tmpl))
+
+    out = tmp_path / "o.hwpx"
+    result = fill_from_markdown(
+        tmpl, "# 본문장\n\n본문 DDD\n", output=out, strip_other_markers=True
+    )
+    d2 = HwpxDocument.open(str(out))
+    joined = " ".join(p.text or "" for s in d2.sections for p in s.paragraphs)
+    assert "본문 DDD" in joined
+    for m in ("{{intro}}", "{{body}}", "{{references}}"):
+        assert m not in joined
+    assert any("stripped" in w for w in result.warnings)
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
+def test_fill_sections_strips_unsupplied_markers(tmp_path: Path) -> None:
+    """A build that supplies only some parts leaves no literal marker for the
+    others (PR #16 / Codex P2)."""
+    from hwpx.document import HwpxDocument
+
+    from hwp_agent.ops.author import fill_sections
+
+    tmpl = tmp_path / "t.hwpx"
+    doc = HwpxDocument.open(str(TYPE1))
+    doc.sections[0].add_paragraph("{{intro}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.sections[-1].add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.sections[-1].add_paragraph("{{references}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.save_to_path(str(tmpl))
+
+    out = tmp_path / "o.hwpx"
+    # supply body only — intro and references markers must not survive
+    res = fill_sections(tmpl, [("{{body}}", "# 본문장\n\n본문 EEE\n")], output=out)
+
+    d2 = HwpxDocument.open(str(out))
+    joined = " ".join(p.text or "" for s in d2.sections for p in s.paragraphs)
+    assert "본문 EEE" in joined
+    for m in ("{{intro}}", "{{body}}", "{{references}}"):
+        assert m not in joined
+    assert any("stripped" in w for w in res.warnings)
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 sample not present")
 def test_fill_inserts_at_appendix_marker(tmp_path: Path) -> None:
     """{{appendix}} is an insertion marker too, and is consumed on fill."""
     from hwpx.document import HwpxDocument

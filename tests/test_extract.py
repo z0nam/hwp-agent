@@ -8,7 +8,7 @@ from xml.etree import ElementTree as ET
 import pytest
 
 from hwp_agent.ops import extract_markdown
-from hwp_agent.ops.extract import _emit_table
+from hwp_agent.ops.extract import _emit_table, _paragraph_text, _t_text
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APPENDIX = REPO_ROOT / "tests" / "fixtures" / "sample_appendix.hwpx"
@@ -120,6 +120,58 @@ def test_pipe_in_cell_is_escaped() -> None:
     lines: list[str] = []
     _emit_table(lines, tbl)
     assert any(r"a\|b" in line for line in lines)
+
+
+# --------------------------------------------------------------------------- #
+# inline <hp:lineBreak/> inside <hp:t> — issue #14 (silent text loss)
+# --------------------------------------------------------------------------- #
+def _mk_t(inner: str):
+    return ET.fromstring(f'<hp:t xmlns:hp="{_HP}">{inner}</hp:t>')
+
+
+def test_t_text_keeps_tail_after_linebreak() -> None:
+    """Text after an inline <hp:lineBreak/> must not be dropped (issue #14)."""
+    t = _mk_t("제목<hp:lineBreak/>뒷부분")
+    assert _t_text(t) == "제목\n뒷부분"
+
+
+def test_t_text_trailing_linebreak_only() -> None:
+    """A title paragraph like `제 목<hp:lineBreak/>` keeps the text, adds a nl."""
+    t = _mk_t("제 목<hp:lineBreak/>")
+    assert _t_text(t) == "제 목\n"
+
+
+def test_t_text_tab_and_multiple_breaks() -> None:
+    """<hp:tab/> → tab, and every segment's tail survives."""
+    t = _mk_t("a<hp:tab/>b<hp:lineBreak/>c<hp:lineBreak/>d")
+    assert _t_text(t) == "a\tb\nc\nd"
+
+
+def test_paragraph_text_joins_runs_with_linebreaks() -> None:
+    """_paragraph_text keeps post-lineBreak text across runs."""
+    p = ET.fromstring(
+        f'<hp:p xmlns:hp="{_HP}"><hp:run>'
+        "<hp:t>첫<hp:lineBreak/>둘</hp:t></hp:run></hp:p>"
+    )
+
+    class _Wrap:
+        element = p
+
+    assert _paragraph_text(_Wrap()) == "첫\n둘"
+
+
+def test_table_cell_linebreak_becomes_br() -> None:
+    """An inline lineBreak inside a cell paragraph → soft <br>, not a lost line."""
+    cell = (
+        "<hp:tr><hp:tc><hp:subList><hp:p><hp:run>"
+        "<hp:t>윗줄<hp:lineBreak/>아랫줄</hp:t></hp:run></hp:p></hp:subList>"
+        '<hp:cellAddr colAddr="0" rowAddr="0"/>'
+        '<hp:cellSpan colSpan="1" rowSpan="1"/></hp:tc></hp:tr>'
+    )
+    xml = f'<hp:tbl xmlns:hp="{_HP}" rowCnt="1" colCnt="1">{cell}</hp:tbl>'
+    lines: list[str] = []
+    _emit_table(lines, ET.fromstring(xml))
+    assert any("윗줄<br>아랫줄" in line for line in lines)
 
 
 # --------------------------------------------------------------------------- #

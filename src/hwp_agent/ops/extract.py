@@ -90,13 +90,32 @@ def _classify(paragraph, doc, role_of: dict[str, str]) -> tuple[str, int]:
     return "BODY", 0
 
 
+def _t_text(t_el) -> str:
+    """Full text of an ``<hp:t>``, inline children included.
+
+    A bare ``t_el.text`` read drops everything after the first inline child —
+    e.g. ``<hp:t>제목<hp:lineBreak/>뒷부분</hp:t>`` silently loses ``뒷부분``
+    (issue #14). Walk the element instead: keep the leading text, convert
+    ``<hp:lineBreak/>`` to a newline and ``<hp:tab/>`` to a tab, and — the part
+    that was being lost — keep each child's *tail* text.
+    """
+    out: list[str] = [t_el.text or ""]
+    for child in t_el:
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "lineBreak":
+            out.append("\n")
+        elif tag == "tab":
+            out.append("\t")
+        out.append(child.tail or "")
+    return "".join(out)
+
+
 def _paragraph_text(paragraph) -> str:
     """All text content of *paragraph*, runs concatenated. v1 = no emphasis."""
     parts: list[str] = []
     for run in paragraph.element.findall(f"{{{_HP}}}run"):
         for t in run.findall(f"{{{_HP}}}t"):
-            if t.text:
-                parts.append(t.text)
+            parts.append(_t_text(t))
     return "".join(parts).strip()
 
 
@@ -133,7 +152,7 @@ def _emit_table(lines: list[str], tbl) -> None:
     cap_el = tbl.find(f"{{{_HP}}}caption")
     if cap_el is not None:
         cap_text = " ".join(
-            (t.text or "").strip() for t in cap_el.iter(f"{{{_HP}}}t")
+            _t_text(t).strip() for t in cap_el.iter(f"{{{_HP}}}t")
         ).strip()
         if cap_text:
             lines.append(cap_text)
@@ -154,15 +173,16 @@ def _emit_table(lines: list[str], tbl) -> None:
                 cell_paras: list[str] = []
                 for p in sub.findall(f"{{{_HP}}}p"):
                     paragraph_text = "".join(
-                        t.text or "" for t in p.iter(f"{{{_HP}}}t")
+                        _t_text(t) for t in p.iter(f"{{{_HP}}}t")
                     ).strip()
                     if paragraph_text:
                         cell_paras.append(paragraph_text)
                 # Markdown pipe cells are single-line; preserve paragraph breaks
                 # with a soft `<br>` so multi-paragraph cells stay readable
                 text = "<br>".join(cell_paras)
-            # pipe-table cells can't carry literal `|` or newlines
-            text = text.replace("|", r"\|").replace("\n", " ")
+            # pipe-table cells can't carry literal `|` or newlines; an inline
+            # <hp:lineBreak/> within a cell also becomes a soft `<br>`
+            text = text.replace("|", r"\|").replace("\n", "<br>")
             for dr in range(rs):
                 for dc in range(cs):
                     if row + dr < row_cnt and col + dc < col_cnt:

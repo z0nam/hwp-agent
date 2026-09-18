@@ -33,6 +33,7 @@ class RenderResult:
     stdout: str = ""
     stderr: str = ""
     remote: bool = False  # True when it round-tripped through a remote node
+    busy: bool = False  # remote node declined (Hangul open) — retry elsewhere
 
     @property
     def ok(self) -> bool:

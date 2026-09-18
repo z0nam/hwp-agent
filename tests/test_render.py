@@ -61,10 +61,11 @@ class FakeTransport:
     synthesizes <job>.<fmt> + <job>.done in outbox, Test-Path polling, scp pull."""
 
     def __init__(self, inbox: Path, outbox: Path, *, produce: str | None = "pdf",
-                 fail: bool = False) -> None:
+                 fail: bool = False, busy: bool = False) -> None:
         self.inbox, self.outbox = inbox, outbox
         self.produce = produce  # which output ext the worker makes; None = never done
         self.fail = fail
+        self.busy = busy  # worker declines (Hangul open) -> drops <job>.busy
         self.cleaned = False
 
     def push(self, local: Path, remote: str) -> None:
@@ -80,7 +81,9 @@ class FakeTransport:
             # worker: for each inbox file, drop product + marker
             for f in self.inbox.iterdir():
                 job = f.stem
-                if self.fail:
+                if self.busy:
+                    (self.outbox / f"{job}.busy").write_text("")
+                elif self.fail:
                     (self.outbox / f"{job}.err").write_text("boom on hancom")
                 elif self.produce:
                     (self.outbox / f"{job}.{self.produce}").write_bytes(b"%PDF-1.4")
@@ -93,6 +96,8 @@ class FakeTransport:
                 return _cp(0, "done")
             if base.with_suffix(".err").exists():
                 return _cp(0, "err")
+            if base.with_suffix(".busy").exists():
+                return _cp(0, "busy")
             return _cp(0, "wait")
         if "Get-Content" in script:
             m = re.search(r'Get-Content "([^"]+)"', script)
@@ -164,6 +169,48 @@ def test_remote_timeout_returns_error(tmp_path: Path) -> None:
     assert "session 1" in r.stderr and "no output within" in r.stderr
 
 
+def test_remote_busy_marker_sets_busy_flag(tmp_path: Path) -> None:
+    """A <job>.busy marker (Hangul open on the node) -> busy result, not a crash."""
+    inbox, outbox = tmp_path / "in", tmp_path / "out"
+    inbox.mkdir()
+    outbox.mkdir()
+    tx = FakeTransport(inbox, outbox, busy=True)
+    be = RemoteHwp2PdfBackend(_cfg(tmp_path), transport=tx)
+    src = tmp_path / "doc.hwpx"
+    src.write_bytes(b"x")
+    r = be.render(src, tmp_path / "doc.pdf", fmt="pdf")
+    assert not r.ok and r.busy is True and r.remote is True
+    assert "busy" in r.stderr.lower() and tx.cleaned
+
+
+def test_render_document_pdf_busy_falls_back_to_rhwp(tmp_path: Path) -> None:
+    """auto + PDF: a busy node falls back to the local rhwp engine (no failure)."""
+    inbox, outbox = tmp_path / "in", tmp_path / "out"
+    inbox.mkdir()
+    outbox.mkdir()
+    tx = FakeTransport(inbox, outbox, busy=True)
+    src = tmp_path / "doc.hwpx"
+    src.write_bytes(b"x")
+    out = tmp_path / "doc.pdf"
+    r = render_document(src, out, fmt="pdf", engine="auto",
+                        config=_cfg(tmp_path), transport=tx, render_fn=_fake_pdf)
+    assert r.ok and r.backend == "rhwp" and out.is_file()
+
+
+def test_render_document_docx_busy_has_no_fallback(tmp_path: Path) -> None:
+    """auto + DOCX: no local renderer, so a busy node returns the busy result."""
+    inbox, outbox = tmp_path / "in", tmp_path / "out"
+    inbox.mkdir()
+    outbox.mkdir()
+    tx = FakeTransport(inbox, outbox, busy=True)
+    src = tmp_path / "doc.hwpx"
+    src.write_bytes(b"x")
+    r = render_document(src, tmp_path / "doc.docx", fmt="docx", engine="auto",
+                        config=_cfg(tmp_path), transport=tx, render_fn=_fake_pdf)
+    assert not r.ok and r.busy is True and r.backend == "hwp2pdf"
+    assert "wait" in r.stderr.lower()
+
+
 def test_remote_worker_error_marker(tmp_path: Path) -> None:
     inbox, outbox = tmp_path / "in", tmp_path / "out"
     inbox.mkdir()
@@ -198,7 +245,12 @@ def test_select_docx_always_remote() -> None:
     assert be.name == "hwp2pdf"
 
 
-def test_render_document_docx_no_config_clean_error() -> None:
+def test_render_document_docx_no_config_clean_error(monkeypatch) -> None:
+    # force "no config" deterministically — don't pick up a real
+    # ~/.config/hwp-agent/hwp2pdf.json that may exist on the test machine
+    monkeypatch.setattr(
+        "hwp_agent.render.select.resolve_hwp2pdf_config", lambda *a, **k: None
+    )
     r = render_document("x.hwpx", "/tmp/x.docx", fmt="docx", engine="auto",
                         config=None)
     assert r.returncode == 2 and "hwp2pdf" in r.stderr.lower()

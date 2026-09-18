@@ -101,6 +101,8 @@ hwp-agent --version
 
 # render HWP/HWPX -> PDF/DOCX. auto = Hancom hwp2pdf (via a Windows node) if
 # reachable, else local rhwp for PDF. DOCX is Hancom-only (rhwp can't).
+# The node never closes a Hangul window you're editing: if Hangul is open there,
+# the job is skipped (PDF falls back to local rhwp; DOCX waits). See issue #17.
 hwp-agent pdf report.hwpx                 # auto tier
 hwp-agent pdf report.hwpx --engine rhwp   # force local (no Hancom)
 hwp-agent docx report.hwpx                # DOCX -> hwp2pdf/namun-ji only

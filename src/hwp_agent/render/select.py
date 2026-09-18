@@ -73,4 +73,12 @@ def render_document(
         else:
             hint = "rhwp not found — install the rhwp CLI on PATH or set $RHWP_BIN"
         return RenderResult(out, fmt, be.name, 2, stderr=hint)
-    return be.render(Path(src), out, fmt=fmt)
+    result = be.render(Path(src), out, fmt=fmt)
+    # auto: if the remote node declined because Hangul was open (busy), fall back
+    # to the local rhwp engine for PDF rather than failing. DOCX has no local
+    # renderer, so the busy result is returned as-is (with its "must wait" hint).
+    if engine == "auto" and result.busy and fmt == "pdf":
+        local = LocalRhwpBackend(rhwp_bin, render_fn)
+        if local.is_available():
+            return local.render(Path(src), out, fmt=fmt)
+    return result

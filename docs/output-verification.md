@@ -143,9 +143,15 @@ hwp-agent verify out.pdf                  # 한컴 PDF면 권위 사인오프(St
 - **선택(`--engine auto`)**: `docx`는 항상 Tier-2. `pdf`는 Tier-2 사용가능(config 있음 + ssh
   프로브 성공)이면 Tier-2, 아니면 Tier-1(rhwp)로 폴백.
 - **Tier-2 왕복(schtasks 온디맨드)**: scp로 파일을 namun-ji inbox에 올림 → SSH로
-  `schtasks /run /tn hwp-agent-hwp2pdf`(세션1) → outbox의 `<job>.done` 폴링 → scp로 회수 →
-  정리. 워커 `scripts/render-inbox.ps1`이 `hwp2pdf <inbox> --pdf --docx --kill-hwp` 실행 후
+  `schtasks /run /tn hwp-agent-hwp2pdf`(세션1) → outbox의 `<job>.done`/`.err`/`.busy` 폴링 →
+  scp로 회수 → 정리. 워커 `scripts/render-inbox.ps1`이 `hwp2pdf <inbox> --pdf --docx` 실행 후
   outbox로 옮기고 `.done`/`.err` 마커를 남긴다.
+- **busy 가드(#17)**: 워커는 **`--kill-hwp`를 절대 쓰지 않는다.** 렌더 전에 한글 프로세스
+  (`Hwp`)가 떠 있으면 `<job>.busy` 마커만 남기고 그 잡을 건너뛴다 — **편집 중인 문서를
+  닫아 미저장분을 날리지 않기 위함.** 클라이언트는 `.busy`를 받으면 `pdf`는 로컬 rhwp로
+  폴백하고, `docx`는 로컬 대체가 없어 "노드가 빌 때까지 대기" 안내를 반환한다. 절충: 크래시로
+  남은 stale 한글 프로세스도 "busy"로 보여 렌더를 막으므로, 그 경우 노드에서 한글을 닫아야
+  한다(살아있는 문서를 죽이는 것보다 안전).
 - **config**: `~/.config/hwp-agent/hwp2pdf.json`(예시 `examples/hwp2pdf.example.json`) —
   `host`(ssh 별칭), inbox/outbox 원격경로, task_name, 타임아웃. 필드별 `$HWP2PDF_*` env 오버라이드.
   없으면 Tier-2 미가용 → auto는 rhwp.

@@ -127,6 +127,7 @@ class RemoteHwp2PdfBackend(RenderBackend):
         remote_in = f"{cfg.remote_inbox}/{job}{src.suffix}"
         done = f"{cfg.remote_outbox}/{job}.done"
         errf = f"{cfg.remote_outbox}/{job}.err"
+        busyf = f"{cfg.remote_outbox}/{job}.busy"
         product = f"{cfg.remote_outbox}/{job}.{fmt}"
 
         try:
@@ -148,13 +149,23 @@ class RemoteHwp2PdfBackend(RenderBackend):
                 chk = tx.run(
                     _ps_encoded(
                         f'if (Test-Path "{done}") {{"done"}} '
-                        f'elseif (Test-Path "{errf}") {{"err"}} else {{"wait"}}'
+                        f'elseif (Test-Path "{errf}") {{"err"}} '
+                        f'elseif (Test-Path "{busyf}") {{"busy"}} else {{"wait"}}'
                     ),
                     timeout=cfg.connect_timeout + 5,
                 )
                 state = (chk.stdout or "").strip()
                 if state == "done":
                     break
+                if state == "busy":
+                    self._cleanup(tx, cfg, job)
+                    return RenderResult(
+                        out, fmt, self.name, 1, remote=True, busy=True,
+                        stderr=f"{cfg.host} is busy — Hangul is open with a document; "
+                               "skipped to avoid closing unsaved edits. PDF falls back "
+                               "to the local rhwp engine; DOCX must wait until the node "
+                               "is free (or close Hangul on the node).",
+                    )
                 if state == "err":
                     tail = tx.run(_ps_encoded(f'Get-Content "{errf}" -Tail 5'),
                                   timeout=cfg.connect_timeout + 5)

@@ -157,12 +157,17 @@ def _make_marker(opener, token: str = "{{body}}"):
     return m
 
 
+def _para_text(p) -> str:
+    return "".join((t.text or "") for t in p.findall(".//" + _hp("t")))
+
+
 def insert_body_marker(
     path: Path,
     section_index: int,
     position: str = "start",
     strip: bool = False,
     marker: str = "body",
+    keep_heading: bool = False,
 ) -> None:
     """굽는 사본의 지정 섹션을 ``{{<marker>}}`` 마커로 정리(컨테이너 보존).
 
@@ -170,6 +175,12 @@ def insert_body_marker(
     붙음. *strip* 이면 그 섹션의 예시 문단을 걷어내고 [빈 opener][마커] 만 남긴다
     (표지·판권 등 다른 섹션은 무손상). *strip* 이 아니면 마커만 끼워 넣는다.
     *marker* 는 마커 이름(``body``·``intro``·``references`` …) — 토큰은 ``{{name}}``.
+
+    *keep_heading* 이면 섹션의 고정 제목 문단을 **보존**하고 마커를 그 뒤에 둔다.
+    참고문헌 제목처럼 authoring 이 재현 못하는 전용 글자스타일(예: charPr 26, 15pt)을
+    유지하기 위함 — 이 경우 해당 파트 MD 는 제목(`# 참고문헌`)을 넣지 않는다. 제목이
+    opener(secPr) 에 얹혀 있으면 opener 를, opener 가 빈 문단이면 그 뒤 첫 텍스트
+    문단(제목)을 앵커로 삼는다.
     """
     token = "{{" + marker + "}}"
     from lxml import etree
@@ -190,11 +201,29 @@ def insert_body_marker(
         # 본문 예시 제거: opener(secPr) 만 남겨 비우고, 그 뒤에 {{body}} 마커.
         opener = next((p for p in paras if p.find(".//" + _hp("secPr")) is not None), paras[0])
         marker = _make_marker(opener, token)
-        _blank_para(opener)
-        for p in paras:
-            if p is not opener:
-                root.remove(p)
-        opener.addnext(marker)
+        if keep_heading:
+            # 고정 제목을 살린다: opener(제목이 얹힌 경우) 또는 opener 가 비어 있으면
+            # 뒤 첫 텍스트 문단(제목)까지 남기고, 나머지 예시만 제거. 마커는 앵커 뒤.
+            keep = {opener}
+            anchor = opener
+            if not _para_text(opener).strip():
+                title = next(
+                    (p for p in paras if p is not opener and _para_text(p).strip()),
+                    None,
+                )
+                if title is not None:
+                    keep.add(title)
+                    anchor = title
+            for p in paras:
+                if p not in keep:
+                    root.remove(p)
+            anchor.addnext(marker)
+        else:
+            _blank_para(opener)
+            for p in paras:
+                if p is not opener:
+                    root.remove(p)
+            opener.addnext(marker)
     else:
         src = next(
             (
@@ -330,6 +359,7 @@ def bake_one(src: Path, out: Path, workdir: Path, config: dict | None = None) ->
             spec.get("position", "start"),
             strip=bool(spec.get("strip")),
             marker=mk,
+            keep_heading=bool(spec.get("keep_heading")),
         )
         tag = "·strip" if spec.get("strip") else ""
         placed_markers.append(f"s{spec['section']}:{{{{{mk}}}}}{tag}")

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from hwpx.document import HwpxDocument
 
+from .linesegs import iter_mismatches
 from .styles import classify_document, read_style_system, role_map
 
 _HH = "{http://www.hancom.co.kr/hwpml/2011/head}"
@@ -130,6 +131,7 @@ def diagnose_template(path: str) -> dict:
         "hierarchy_violations": violations,
         "unmapped_ladder_siblings": siblings,
         "unmapped_structural": structural,
+        "lineseg_mismatches": [m.as_dict() for m in iter_mismatches(path)],
     }
     report["warnings"] = _warnings(report)
     return report
@@ -164,4 +166,12 @@ def _warnings(r: dict) -> list[str]:
         )
     if not r["ladders"].get("BULLET"):
         out.append("no BULLET_n roles — a bullet-heavy report needs a complete bullet ladder.")
+    lm = r.get("lineseg_mismatches") or []
+    if lm:
+        out.append(
+            f"{len(lm)} paragraph(s) have a stale <hp:linesegarray> (lineBreak+1 > lineseg) — "
+            "edited so lines were added but the layout cache is too small, so Hangul/rhwp pile "
+            "the extra lines onto one. Run `hwp-agent normalize --drop-linesegarray` to clear the "
+            "stale caches (Hangul recomputes them on open)."
+        )
     return out

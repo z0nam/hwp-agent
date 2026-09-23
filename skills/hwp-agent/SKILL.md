@@ -211,8 +211,8 @@ reference **explicitly**:
 | `hwp-agent convert IN.hwp OUT.hwpx` | HWP → HWPX (needs the jar) |
 | `hwp-agent classify FILE.hwpx` | structured / weak / flat |
 | `hwp-agent styles FILE.hwpx [--json]` | machine style roles (role → style id) |
-| `hwp-agent check FILE.hwpx [--json]` | check the style system: ladder gaps, font-hierarchy violations, un-mapped bullet/structural styles (`doctor` = alias) |
-| `hwp-agent normalize FILE.hwpx [-o OUT] [--dry-run] [--json]` | declare `AI:HEADING_n`/`AI:BULLET_n` on a flat template's number/bullet styles (never in-place; default `<input>.normalized.hwpx`) |
+| `hwp-agent check FILE.hwpx [--json]` | check the style system: ladder gaps, font-hierarchy violations, un-mapped bullet/structural styles, **stale `<hp:linesegarray>`** (`doctor` = alias) |
+| `hwp-agent normalize FILE.hwpx [-o OUT] [--dry-run] [--drop-linesegarray] [--json]` | declare `AI:HEADING_n`/`AI:BULLET_n` on a flat template's number/bullet styles (never in-place; default `<input>.normalized.hwpx`). `--drop-linesegarray` clears stale line-layout caches so Hangul recomputes them (fixes lines piled onto one — issue #15) |
 | `hwp-agent instructions FILE.hwpx [--json]` | AI:INSTRUCTION directions + `{{slots}}` |
 | `hwp-agent extract FILE.hwpx [--body-only] [-o OUT.md]` | extract HWPX as body-focused Markdown; merged cells flattened (Excel-style) |
 | `hwp-agent form analyze FILE.hwpx [--json]` | list fillable slots (label -> *empty* neighbour only) |

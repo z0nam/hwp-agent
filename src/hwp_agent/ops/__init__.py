@@ -45,6 +45,7 @@ from .images import (
     read_image_size,
     replace_image,
 )
+from .linesegs import drop_stale_linesegarrays, iter_mismatches
 from .metadata import Metadata, read_metadata, update_metadata
 from .normalize import (
     NormalizeAction,
@@ -129,6 +130,8 @@ __all__ = [
     "apply_normalization",
     "apply_style_roles",
     "extract_markdown",
+    "drop_stale_linesegarrays",
+    "iter_mismatches",
     "PageIssue",
     "PageVerdict",
     "VerifyResult",

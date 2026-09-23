@@ -500,6 +500,13 @@ def _cmd_check(args: argparse.Namespace) -> int:
         for e in r["unmapped_structural"][:12]:
             print(f"  style {e['style']:<3} {e['name']:<16} {e['size']}pt  used {e['use']}×")
 
+    lm = r.get("lineseg_mismatches") or []
+    if lm:
+        print(f"stale linesegarray ({len(lm)}) — lines added past the layout cache:")
+        for e in lm[:10]:
+            print(f"  {e['section'].split('/')[-1]} p#{e['index']}: "
+                  f"lineBreak {e['linebreaks']} / lineseg {e['linesegs']}  {e['text']!r}")
+
     if r["warnings"]:
         print("\nfindings:")
         for w in r["warnings"]:
@@ -512,17 +519,36 @@ def _cmd_check(args: argparse.Namespace) -> int:
 def _cmd_normalize(args: argparse.Namespace) -> int:
     import json
 
-    from ..ops import apply_normalization, plan_normalization
+    from ..ops import (
+        apply_normalization,
+        drop_stale_linesegarrays,
+        iter_mismatches,
+        plan_normalization,
+    )
 
     plan = plan_normalization(args.file)
     output = args.output or args.file.with_suffix(".normalized.hwpx")
+    drop = getattr(args, "drop_linesegarray", False)
+    stale = iter_mismatches(str(args.file)) if drop else []
+
+    def _write() -> int:
+        """Apply style declarations and/or the linesegarray drop; return #dropped."""
+        if plan.actions:
+            apply_normalization(args.file, plan, output)
+            return drop_stale_linesegarrays(output, output) if drop else 0
+        # no style actions — the drop (if any) is the only change
+        return drop_stale_linesegarrays(args.file, output) if drop else 0
 
     if args.json:
         report = plan.as_dict()
-        report["output"] = None if args.dry_run else str(output)
+        do_write = not args.dry_run and (bool(plan.actions) or drop)
         report["applied"] = bool(plan.actions) and not args.dry_run
-        if report["applied"]:
-            apply_normalization(args.file, plan, output)
+        if drop:
+            report["lineseg_mismatches"] = [m.as_dict() for m in stale]
+        dropped = _write() if do_write else 0
+        if drop:
+            report["linesegs_dropped"] = dropped
+        report["output"] = str(output) if do_write else None
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
 
@@ -545,13 +571,22 @@ def _cmd_normalize(args: argparse.Namespace) -> int:
             print(f"  style {s.style_id:<3} '{s.name}' (사용 {s.use_count}×) — {s.reason}")
     for w in plan.warnings:
         print(f"  ⚠ {w}")
+    if drop:
+        print(f"stale linesegarray: {len(stale)}건" + (" 감지" if stale else " 없음"))
 
-    if args.dry_run or not plan.actions:
-        print("\n(변경 없음 — dry-run이거나 적용할 선언이 없습니다)")
+    if args.dry_run or (not plan.actions and not drop):
+        print("\n(변경 없음 — dry-run이거나 적용할 항목이 없습니다)")
         return 0
 
-    apply_normalization(args.file, plan, output)
-    print(f"\nwrote {output}  [{plan.classification_before} → {plan.classification_expected}]")
+    dropped = _write()
+    if plan.actions:
+        print(f"\nwrote {output}  [{plan.classification_before} → {plan.classification_expected}]")
+    else:
+        print(f"\nwrote {output}  (linesegarray 정리만 적용)")
+    if drop:
+        print(f"  linesegarray 제거: {dropped}개 문단 (한글이 열 때 재계산)")
+    if not plan.actions:
+        return 0
     print("다음 단계:")
     print("  1. 한글에서 결과 파일을 열어 보안 경고가 없는지, 스타일(F6) 영문 이름에")
     print("     AI:HEADING_n/AI:BULLET_n이 들어갔는지 확인")
@@ -974,6 +1009,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="output path (default: <input>.normalized.hwpx)",
     )
     norm.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
+    norm.add_argument(
+        "--drop-linesegarray",
+        dest="drop_linesegarray",
+        action="store_true",
+        help="also clear stale <hp:linesegarray> caches (issue #15) so Hangul "
+        "recomputes line layout on open — fixes lines piled onto one",
+    )
     norm.add_argument("--json", action="store_true", help="emit the report as JSON")
     norm.set_defaults(func=_cmd_normalize)
 

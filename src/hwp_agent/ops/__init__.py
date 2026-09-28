@@ -18,6 +18,13 @@ from .author import (
     plain_text,
     read_instructions,
 )
+from .bands import (
+    Band,
+    BandReport,
+    bands_from_page_hashes,
+    detect_document_bands,
+    detect_section_bands,
+)
 from .doctor import diagnose_template
 from .extract import extract_markdown
 from .form import (
@@ -119,6 +126,11 @@ __all__ = [
     "bundled_template_path",
     "describe_template_source",
     "diagnose_template",
+    "Band",
+    "BandReport",
+    "detect_section_bands",
+    "detect_document_bands",
+    "bands_from_page_hashes",
     "GuardResult",
     "plan_output",
     "stamp_fingerprint",

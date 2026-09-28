@@ -223,6 +223,7 @@ reference **explicitly**:
 | `hwp-agent image list FILE.hwpx [--json]` | list figure image slots (ref, format, px size, caption) |
 | `hwp-agent image replace FILE.hwpx IMG --ref image7 [--fit aspect\|none] [-o OUT]` | swap one figure image in place (`--caption "[그림 …]"` also targets it) |
 | `hwp-agent meta FILE.hwpx [--set K=V]` | read/set document metadata |
+| `hwp-agent verify FILE --bands [--json]` | deterministic section-band check (no vision/API key): groups pages by recurring 쪽날개 background image to reveal 표지·목차·본문·참고문헌 boundaries — catches content landing in the wrong section (issue #10). Facing-page mirrors merge; a page with no distinguishing background shows `—` |
 
 `-o/--output` writes to a new file; omit it to edit in place. Point at a jar
 elsewhere with `--jar` or `$HWP2HWPX_JAR`.

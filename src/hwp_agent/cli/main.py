@@ -371,11 +371,53 @@ def _cmd_docx(args: argparse.Namespace) -> int:
     return _render_cmd(args, fmt="docx", engine="hwp2pdf")
 
 
+def _cmd_verify_bands(args: argparse.Namespace) -> int:
+    """Deterministic section-band view (issue #10) — no vision model / API key."""
+    import json
+
+    from ..ops import detect_document_bands
+
+    try:
+        report = detect_document_bands(args.file, rhwp_bin=args.rhwp)
+    except FileNotFoundError as exc:  # rhwp binary missing (.hwp/.hwpx input)
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except ModuleNotFoundError:
+        print(
+            "error: 밴드 검출에는 PyMuPDF가 필요합니다:\n"
+            '  pip install "hwp-agent[verify]"   (또는: uv pip install pymupdf)',
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.json:
+        print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+        return 0 if report.error is None else 1
+
+    if report.error:
+        print(f"error: {report.error}", file=sys.stderr)
+        return 1
+    print(f"{report.source}  ({report.page_count} pages)")
+    if not report.decidable:
+        print("  판정 불가 — 페이지 배경(쪽날개) 그림 구분이 없어 밴드를 나눌 수 없음")
+        return 0
+    for b in report.bands:
+        span = f"p.{b.start_page}" if b.start_page == b.end_page \
+            else f"p.{b.start_page}-{b.end_page}"
+        print(f"  {span:<12} band {b.band_id}  (배경 이미지 {b.recurring_images}개)")
+    print(f"  → {len(report.bands)} band(s); 내용이 기대한 밴드에 있는지 확인하세요")
+    return 0
+
+
 def _cmd_verify(args: argparse.Namespace) -> int:
     import json
     import os
 
     from ..ops import verify_document
+
+    # --bands is deterministic (recurring-background hashing): no vision, no API key.
+    if getattr(args, "bands", False):
+        return _cmd_verify_bands(args)
 
     # vision verification goes through the Anthropic API; fail fast (before
     # rendering/rasterizing) if the key is missing.
@@ -937,6 +979,13 @@ def build_parser() -> argparse.ArgumentParser:
     vfy.add_argument(
         "--max-pages", type=int, default=None, dest="max_pages",
         help="only check the first N pages",
+    )
+    vfy.add_argument(
+        "--bands",
+        action="store_true",
+        help="deterministic section-band check: group pages by recurring background "
+        "(쪽날개) image to reveal 표지/목차/본문/참고문헌 boundaries — no vision/API key "
+        "needed. Catches content landing in the wrong section (issue #10).",
     )
     vfy.add_argument("--json", action="store_true", help="emit the report as JSON")
     vfy.set_defaults(func=_cmd_verify)

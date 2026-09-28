@@ -27,9 +27,16 @@ See the project memory `hwpx-image-replace-mechanism` for the byte-level evidenc
 1. **Byte-only swap, container preserved.** Only the target `BinData` entry's bytes
    (plus the section XML / `content.hpf` when geometry or format change) are
    rewritten. The ZIP is re-emitted **entry-by-entry with the original `ZipInfo`,
-   order, and compression**, `mimetype` first and `STORED`. A full re-zip (what
-   `HwpxDocument.save_to_path` does) trips Hangul's 보안경고 even if the text is
-   byte-identical — the difference Hangul flags is the *container*, not the content.
+   order, and compression**, `mimetype` first and `STORED`. This is a **fidelity**
+   guarantee: parts we don't touch stay byte-identical.
+
+   > Issue #9 (measured 2026-08-28, macOS Hangul 보안수준 '높음'): a *full* re-zip that
+   > keeps every part and puts `mimetype` first + STORED does **not** by itself trip
+   > 보안경고 — a container-preserved file and a fully re-zipped one both opened cleanly
+   > and rendered pixel-identically. The real tamper trigger is a **dropped part** or a
+   > **DOM re-serialization** (what `HwpxDocument.save_to_path` does), not the re-zip.
+   > A Windows strict verdict is still the last word; we preserve the container for
+   > fidelity regardless.
 
 2. **Slot format = extension, and it must match.** The media-type is often
    `image/unknown`, so Hangul keys off the file extension: a `.png` slot needs PNG

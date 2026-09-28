@@ -11,12 +11,11 @@ The rules below are the ones that make Hangul accept the result:
 * **Additive only, container preserved.** Only the target section's bytes are
   rewritten; the ZIP is re-emitted entry-by-entry with the original ``ZipInfo``,
   order and compression, ``mimetype`` first and ``STORED`` (see :mod:`.container`).
-  A full re-zip — what ``HwpxDocument.save_to_path`` does — trips Hangul's 보안경고.
-  For the same reason the section is edited as **text**, not through the DOM.
-  ⚠ The CLI stamps a provenance fingerprint afterwards (:func:`.guard.stamp_fingerprint`)
-  and *that* step still repacks the whole archive, so today the guarantee holds end to
-  end only on the Python API path — see ``docs/report-kit-review.md`` §3 for the
-  evidence either way and the open question (issue #9).
+  This is a **fidelity** guarantee — parts we don't touch stay byte-identical. For
+  the same reason the section is edited as **text**, not through the DOM: a DOM
+  re-serialization (``HwpxDocument.save_to_path``) or a dropped part is what Hangul
+  flags as tampered — *not* the re-zip itself (issue #9, measured 2026-08-28; the CLI
+  fingerprint step re-zips the whole archive and opens cleanly all the same).
 * **Style comes from a sibling, not from a role.** A hand-edited document's styles
   are whatever the human settled on, so declared ``AI:*`` roles (if any) no longer
   describe it. Each new paragraph clones the ``paraPrIDRef``/``styleIDRef``/

@@ -13,8 +13,10 @@ The replacement rules are verified against a real report (see the project memory
 * **Byte-only swap, container preserved.** Only the target ``BinData`` entry's bytes
   (and, when geometry/format change, the section XML / ``content.hpf`` bytes) are
   rewritten; the ZIP is re-emitted entry-by-entry with the original ``ZipInfo``, order,
-  and compression, ``mimetype`` first and ``STORED``. A full re-zip (what
-  ``HwpxDocument.save_to_path`` does) trips Hangul's 보안경고.
+  and compression, ``mimetype`` first and ``STORED``. This is a **fidelity** guarantee —
+  parts we don't touch stay byte-identical. (Issue #9: a full re-zip alone does not trip
+  Hangul's 보안경고; the trigger is a dropped part or a DOM re-serialization, as in
+  ``HwpxDocument.save_to_path``.)
 * **Slot format = extension.** The media-type is often ``image/unknown``, so Hangul
   keys off the file extension — a PNG slot needs PNG bytes, a BMP slot needs BMP. To
   change format we also rewrite the ``content.hpf`` href + extension and rename the part.

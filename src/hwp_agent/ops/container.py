@@ -1,8 +1,18 @@
 """Container-preserving HWPX zip rewrite.
 
-Hangul (보안수준 '높음') treats a re-zipped HWPX as tampered unless the package
-keeps its original entry order, compression and flags — so edits replace part
-bytes inside the original container instead of re-packing from scratch.
+Edits replace only the bytes of the parts we actually change and re-emit every
+other entry with its original :class:`zipfile.ZipInfo` (order, compression,
+flags) — so parts we don't understand are never disturbed. This is a
+**fidelity** guarantee: the output differs from the input only where we meant it
+to.
+
+Note (issue #9, measured 2026-08-28): a *full* re-zip that keeps every part and
+puts ``mimetype`` first + STORED does **not** by itself trip Hangul's 보안경고 —
+a container-preserved file and a fully re-zipped one both opened cleanly and
+rendered pixel-identically (macOS Hangul, 보안수준 '높음'; a Windows strict
+verdict is still the last word). The real tamper trigger is a **missing part** or
+a **DOM re-serialization** (what ``HwpxDocument.save_to_path`` does), not the
+re-zip itself. We preserve the container for fidelity, not to dodge a warning.
 """
 
 from __future__ import annotations
@@ -21,8 +31,9 @@ def _rewrite_zip_preserving(
     """Copy *src* to *dst* replacing only the named parts, keeping the container intact.
 
     Each entry is re-emitted with its original :class:`zipfile.ZipInfo` (order and
-    compression preserved); ``mimetype`` stays first and ``STORED``. This is what keeps
-    Hangul from treating the edited file as tampered (보안경고).
+    compression preserved); ``mimetype`` stays first and ``STORED``. Parts we don't
+    touch stay byte-identical — the output differs only where we meant it to (a
+    fidelity guarantee; see the module docstring on the 보안경고 question).
     """
     with zipfile.ZipFile(src) as zin:
         infos = zin.infolist()

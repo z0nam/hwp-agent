@@ -99,9 +99,9 @@ def iter_mismatches(path: str | Path) -> list[LinesegMismatch]:
 def drop_stale_linesegarrays(src: str | Path, dst: str | Path) -> int:
     """Remove the ``<hp:linesegarray>`` from every stale paragraph (issue #15).
 
-    Container-preserving (no Hangul 보안경고): only the sections that actually
-    change are rewritten, each with its original ZipInfo. Hangul rebuilds the
-    dropped cache on open. Returns the number of paragraphs fixed.
+    Container-preserving (fidelity): only the sections that actually change are
+    rewritten, each with its original ZipInfo; every other part stays byte-identical.
+    Hangul rebuilds the dropped cache on open. Returns the number of paragraphs fixed.
     """
     import shutil
 

@@ -120,14 +120,16 @@ def stamp_fingerprint(path: str | Path) -> bool:
     No-op (returns False) if *path* isn't a zip package.
 
     This step re-zips the **whole** archive with ``ZIP_DEFLATED``, so it is also a
-    deliberate **size-normalization** pass: a Hangul-saved source often stores its
-    images ``STORED`` (uncompressed), and re-deflating them shrinks the output a lot
-    (measured 5.0MB → 0.73MB) with the render byte-for-byte identical. Issue #9
-    settled that this full re-zip does **not** trip Hangul's 보안경고 (every part is
-    kept and ``mimetype`` stays first + STORED), so the smaller output is a feature,
-    not a hazard. Content fidelity is unaffected — only the compression of each part
-    changes; the container-preserving edit step (:mod:`.container`) still guarantees
-    we never drop or rewrite a part we didn't touch.
+    **size-normalization** pass. When the source stores large images ``STORED``
+    (uncompressed) — as a Hangul-saved file often does — re-deflating them shrinks the
+    output a lot (measured 5.0MB → 0.73MB) with the render byte-for-byte identical.
+    When the input is already deflated there is no such saving and the added
+    fingerprint part makes the file *slightly larger* (e.g. the bundled template,
+    434,431 → 434,676 B); so the output is **potentially smaller, not always**. Issue
+    #9 settled that this full re-zip does **not** trip Hangul's 보안경고 (every part is
+    kept and ``mimetype`` stays first + STORED). Content fidelity is unaffected — only
+    the compression of each part changes; the container-preserving edit step
+    (:mod:`.container`) still guarantees we never drop or rewrite a part we didn't touch.
     """
     p = Path(path)
     parts = _read_parts(p)

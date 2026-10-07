@@ -42,9 +42,11 @@ See the project memory `hwpx-image-replace-mechanism` for the byte-level evidenc
    > (`guard.stamp_fingerprint`) re-deflates the whole archive on purpose — a
    > **size-normalization** feature. Hangul-saved sources store images `STORED`
    > (uncompressed); re-deflating shrank one report 5.0MB → 0.73MB with the render
-   > identical. So CLI output is **not byte-identical** to the input (it's smaller);
-   > the container-preserving edit step still guarantees no part is dropped or
-   > rewritten beyond what was edited.
+   > identical. The win applies only when there are large `STORED` entries — an
+   > already-deflated input instead grows slightly (the fingerprint part adds bytes).
+   > Either way CLI output is **not byte-identical** to the input; the
+   > container-preserving edit step still guarantees no part is dropped or rewritten
+   > beyond what was edited.
 
 2. **Slot format = extension, and it must match.** The media-type is often
    `image/unknown`, so Hangul keys off the file extension: a `.png` slot needs PNG

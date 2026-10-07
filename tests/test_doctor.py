@@ -11,6 +11,7 @@ from hwp_agent.ops import diagnose_template
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APPENDIX = REPO_ROOT / "tests" / "fixtures" / "sample_appendix.hwpx"
 TYPE1 = REPO_ROOT / "tests" / "fixtures" / "sample_hwpx.hwpx"
+DEFAULT_TPL = REPO_ROOT / "src" / "hwp_agent" / "assets" / "default-template.hwpx"
 
 
 @pytest.mark.skipif(not APPENDIX.is_file(), reason="appendix fixture not present")
@@ -88,6 +89,19 @@ def test_marker_audit_flags_duplicate(tmp_path: Path) -> None:
     r = diagnose_template(str(tmpl))
     assert sum(e["count"] for e in r["markers"] if e["token"] == "{{body}}") == 2
     assert any("{{body}}" in w and "ambiguous" in w for w in r["warnings"])
+
+
+@pytest.mark.skipif(not DEFAULT_TPL.is_file(), reason="bundled default template missing")
+def test_marker_audit_skips_instruction_paragraphs() -> None:
+    """An AI:INSTRUCTION paragraph that mentions {{body}} is not counted as a marker.
+
+    The bundled template's instruction says content goes at {{body}}, then has the
+    real {{body}} paragraph — the writer removes the instruction first, so check must
+    report one marker, not an ambiguous two (PR #19 / Codex P2)."""
+    r = diagnose_template(str(DEFAULT_TPL))
+    body = sum(e["count"] for e in r["markers"] if e["token"] == "{{body}}")
+    assert body == 1
+    assert not any("ambiguous" in w for w in r["warnings"])
 
 
 @pytest.mark.skipif(not APPENDIX.is_file(), reason="appendix fixture not present")

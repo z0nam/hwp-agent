@@ -84,7 +84,7 @@ def _ladder(
     return rungs, gaps, violations
 
 
-def _marker_audit(doc) -> list[dict]:
+def _marker_audit(doc, inst_style: str | None = None) -> list[dict]:
     """Locate each insertion marker (``{{body}}`` …) and how many times it occurs.
 
     ``write``/``build`` route content to these markers; a marker that appears twice
@@ -92,6 +92,11 @@ def _marker_audit(doc) -> list[dict]:
     place routes content to the wrong section. Reporting the placement up front makes
     those mistakes visible without a render (the deterministic half of a house-form
     assembly check). Returns ``[{token, section, count}, …]`` in document order.
+
+    ``AI:INSTRUCTION`` paragraphs are skipped, mirroring ``fill_from_markdown``, which
+    removes them before selecting a marker — otherwise an instruction that merely
+    *mentions* a token (e.g. "content is written at ``{{body}}``") is miscounted as a
+    second live marker and falsely flagged ambiguous.
     """
     from .author import INSERTION_MARKERS
 
@@ -99,6 +104,8 @@ def _marker_audit(doc) -> list[dict]:
     for si, section in enumerate(doc.sections):
         counts: dict[str, int] = {}
         for p in section.paragraphs:
+            if inst_style is not None and str(p.style_id_ref) == inst_style:
+                continue  # instruction paragraph — removed before the writer picks a marker
             text = p.text or ""
             for m in INSERTION_MARKERS:
                 if m in text:
@@ -157,7 +164,7 @@ def diagnose_template(path: str) -> dict:
         "unmapped_ladder_siblings": siblings,
         "unmapped_structural": structural,
         "lineseg_mismatches": [m.as_dict() for m in iter_mismatches(path)],
-        "markers": _marker_audit(doc),
+        "markers": _marker_audit(doc, roles.get("INSTRUCTION")),
     }
     report["warnings"] = _warnings(report)
     return report

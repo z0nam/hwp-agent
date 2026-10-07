@@ -549,6 +549,13 @@ def _cmd_check(args: argparse.Namespace) -> int:
             print(f"  {e['section'].split('/')[-1]} p#{e['index']}: "
                   f"lineBreak {e['linebreaks']} / lineseg {e['linesegs']}  {e['text']!r}")
 
+    markers = r.get("markers") or []
+    if markers:
+        print("insertion markers (write/build 삽입 지점):")
+        for e in markers:
+            dup = "  ⚠ 중복" if e["count"] > 1 else ""
+            print(f"  {e['token']:<14} 구역 {e['section']}  ×{e['count']}{dup}")
+
     if r["warnings"]:
         print("\nfindings:")
         for w in r["warnings"]:

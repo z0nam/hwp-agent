@@ -84,6 +84,31 @@ def _ladder(
     return rungs, gaps, violations
 
 
+def _marker_audit(doc) -> list[dict]:
+    """Locate each insertion marker (``{{body}}`` …) and how many times it occurs.
+
+    ``write``/``build`` route content to these markers; a marker that appears twice
+    is ambiguous (which one gets the content?) and one that appears in an unexpected
+    place routes content to the wrong section. Reporting the placement up front makes
+    those mistakes visible without a render (the deterministic half of a house-form
+    assembly check). Returns ``[{token, section, count}, …]`` in document order.
+    """
+    from .author import INSERTION_MARKERS
+
+    out: list[dict] = []
+    for si, section in enumerate(doc.sections):
+        counts: dict[str, int] = {}
+        for p in section.paragraphs:
+            text = p.text or ""
+            for m in INSERTION_MARKERS:
+                if m in text:
+                    counts[m] = counts.get(m, 0) + 1
+        for m in INSERTION_MARKERS:  # stable order
+            if m in counts:
+                out.append({"token": m, "section": si, "count": counts[m]})
+    return out
+
+
 def diagnose_template(path: str) -> dict:
     """Diagnose the style system of a (type-1) template; see module docstring."""
     doc = HwpxDocument.open(path)
@@ -132,6 +157,7 @@ def diagnose_template(path: str) -> dict:
         "unmapped_ladder_siblings": siblings,
         "unmapped_structural": structural,
         "lineseg_mismatches": [m.as_dict() for m in iter_mismatches(path)],
+        "markers": _marker_audit(doc),
     }
     report["warnings"] = _warnings(report)
     return report
@@ -174,4 +200,15 @@ def _warnings(r: dict) -> list[str]:
             "the extra lines onto one. Run `hwp-agent normalize --drop-linesegarray` to clear the "
             "stale caches (Hangul recomputes them on open)."
         )
+    # a marker appearing more than once is ambiguous — write/build can't tell which
+    # paragraph should receive the content (PR #16 P1/P2 class of bug)
+    dup_total: dict[str, int] = {}
+    for e in r.get("markers") or []:
+        dup_total[e["token"]] = dup_total.get(e["token"], 0) + e["count"]
+    for token, total in dup_total.items():
+        if total > 1:
+            out.append(
+                f"marker {token} appears {total}× — ambiguous; write/build can't tell which "
+                "paragraph gets the content. Keep exactly one per template."
+            )
     return out

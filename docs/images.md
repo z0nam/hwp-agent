@@ -37,6 +37,16 @@ See the project memory `hwpx-image-replace-mechanism` for the byte-level evidenc
    > **DOM re-serialization** (what `HwpxDocument.save_to_path` does), not the re-zip.
    > A Windows strict verdict is still the last word; we preserve the container for
    > fidelity regardless.
+   >
+   > Resolved (#9): because the full re-zip is safe, the CLI's final fingerprint step
+   > (`guard.stamp_fingerprint`) re-deflates the whole archive on purpose — a
+   > **size-normalization** feature. Hangul-saved sources store images `STORED`
+   > (uncompressed); re-deflating shrank one report 5.0MB → 0.73MB with the render
+   > identical. The win applies only when there are large `STORED` entries — an
+   > already-deflated input instead grows slightly (the fingerprint part adds bytes).
+   > Either way CLI output is **not byte-identical** to the input; the
+   > container-preserving edit step still guarantees no part is dropped or rewritten
+   > beyond what was edited.
 
 2. **Slot format = extension, and it must match.** The media-type is often
    `image/unknown`, so Hangul keys off the file extension: a `.png` slot needs PNG

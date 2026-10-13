@@ -549,6 +549,12 @@ def _cmd_check(args: argparse.Namespace) -> int:
             print(f"  {e['section'].split('/')[-1]} p#{e['index']}: "
                   f"lineBreak {e['linebreaks']} / lineseg {e['linesegs']}  {e['text']!r}")
 
+    integrity = r.get("integrity") or []
+    if integrity:
+        print(f"package integrity ({len(integrity)}) — header/section 구조 손상:")
+        for e in integrity:
+            print(f"  [{e['kind']}] {e['where']}: {e['detail']}")
+
     markers = r.get("markers") or []
     if markers:
         print("insertion markers (write/build 삽입 지점):")

@@ -262,26 +262,49 @@ def _footnote_style(
     return fn_sid, fn_para, fn_char
 
 
+#: Hangul's default footnote number format (used when the section has no footNotePr)
+_DEFAULT_FN_FORMAT = {
+    "type": "DIGIT", "userChar": "", "prefixChar": "", "suffixChar": ")", "supscript": "0",
+}
+
+
+def _section_footnote_format(section) -> dict[str, str]:
+    """The section's ``<hp:footNotePr><hp:autoNumFormat>`` attributes (numbering
+    type, user char, decorations, superscript), else Hangul's default ``1)``."""
+    fmt = section.element.find(f".//{{{_HP}}}footNotePr/{{{_HP}}}autoNumFormat")
+    return dict(fmt.attrib) if fmt is not None else dict(_DEFAULT_FN_FORMAT)
+
+
 def _build_footnote_run(
     number: int, inst_id: int, text: str,
     fn_sid: str | None, fn_para, fn_char, body_char,
+    num_format: dict[str, str] | None = None,
 ):
     """Build a body ``<hp:run>`` carrying a footnote control with *text* as its note.
 
     The reference mark is a ``<hp:ctrl><hp:footNote>`` whose ``<hp:subList>`` holds one
     note paragraph (footnote style + autoNum); Hangul renumbers continuously on open,
     so the stored *number* is just a seed. No ``<hp:linesegarray>`` is emitted — Hangul
-    (and rhwp) lay the note out from the text."""
+    (and rhwp) lay the note out from the text.
+
+    *num_format* is the section's footnote ``autoNumFormat`` (Roman, circled, user
+    char, decorations, superscript …), copied so the note number matches the
+    template's own footnote settings instead of a hard-coded ``1)``."""
     from lxml import etree
 
     def attr(v):
         return "" if v is None else str(v)
 
+    fmt = num_format or _DEFAULT_FN_FORMAT
+    fmt_attrs = "".join(f' {k}="{_xml_escape(attr(v))}"' for k, v in fmt.items())
+    suffix = fmt.get("suffixChar") or ""
+    # footNote@suffixChar is the decoration's code point (")" → 41), as Hangul writes it
+    fn_suffix = f' suffixChar="{ord(suffix[0])}"' if suffix else ""
     run_char = f' charPrIDRef="{attr(body_char)}"' if body_char is not None else ""
     p_char = f' charPrIDRef="{attr(fn_char)}"' if fn_char is not None else ""
     xml = (
         f'<hp:run xmlns:hp="{_HP}"{run_char}>'
-        f'<hp:ctrl><hp:footNote number="{number}" suffixChar="41" instId="{inst_id}">'
+        f'<hp:ctrl><hp:footNote number="{number}"{fn_suffix} instId="{inst_id}">'
         f'<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" '
         f'linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" '
         f'hasTextRef="0" hasNumRef="0">'
@@ -289,8 +312,7 @@ def _build_footnote_run(
         f'pageBreak="0" columnBreak="0" merged="0">'
         f'<hp:run{p_char}>'
         f'<hp:ctrl><hp:autoNum num="{number}" numType="FOOTNOTE">'
-        f'<hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" '
-        f'supscript="0"/></hp:autoNum></hp:ctrl>'
+        f"<hp:autoNumFormat{fmt_attrs}/></hp:autoNum></hp:ctrl>"
         f"<hp:t>{_xml_escape(text)}</hp:t>"
         f"</hp:run></hp:p></hp:subList></hp:footNote></hp:ctrl></hp:run>"
     )
@@ -1228,6 +1250,7 @@ def fill_from_markdown(
     # number seed (so chained parts keep counting), and a unique instId generator.
     fn_sid, fn_para, fn_char = _footnote_style(doc, infos, body_style, body_para)
     _fn_count = [_count_footnotes(doc)]  # continue numbering past existing footnotes
+    fn_format = _section_footnote_format(target_section)
     if fn_defs and not _section_has_footnote_pr(target_section):
         result.warnings.append(
             "template section has no <hp:footNotePr>; footnotes may not number/format "
@@ -1239,7 +1262,7 @@ def fill_from_markdown(
         # Hangul's own notes start with a space after the auto-number ("1) 기관별로…")
         run_el = _build_footnote_run(
             _fn_count[0], 0xA0000000 + _fn_count[0], " " + note_text.strip(),
-            fn_sid, fn_para, fn_char, body_char,
+            fn_sid, fn_para, fn_char, body_char, fn_format,
         )
         para.element.append(run_el)
 

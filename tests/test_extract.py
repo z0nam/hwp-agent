@@ -235,3 +235,37 @@ def test_extract_real_hangul_footnotes() -> None:
     text = extract_markdown(APPENDIX)
     assert "[^1]" in text
     assert "[^1]: 기관별로 전망치의 편차가 큰 까닭은" in text
+
+
+def test_multiline_note_definition_is_indented() -> None:
+    """PR #25 review: a note's line break is emitted as an indented continuation, so
+    write's definition parser folds it back instead of leaking it into body text."""
+    from hwp_agent.ops.author import extract_footnote_defs
+    from hwp_agent.ops.extract import _note_definitions
+
+    lines = _note_definitions(["첫 줄\n둘째 줄", "단일"])
+    assert lines == ["[^1]: 첫 줄", "    둘째 줄", "[^2]: 단일"]
+    body, defs = extract_footnote_defs("본문[^1]\n\n" + "\n".join(lines) + "\n다음 문단\n")
+    assert defs["1"] == "첫 줄 둘째 줄" and "둘째 줄" not in body
+
+
+def test_deep_cell_text_keeps_nested_objects_and_notes() -> None:
+    """PR #25 review: deep (cell) traversal keeps text of nested objects (a nested
+    table here) and still turns a footnote met inside into a reference."""
+    from lxml import etree
+
+    from hwp_agent.ops.extract import _p_text
+
+    hp = _HP
+    xml = (
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:t>앞</hp:t>'
+        f"<hp:tbl><hp:tr><hp:tc><hp:subList><hp:p><hp:run><hp:t>중첩표</hp:t>"
+        f"<hp:ctrl><hp:footNote><hp:subList><hp:p><hp:run><hp:t>셀각주</hp:t>"
+        f"</hp:run></hp:p></hp:subList></hp:footNote></hp:ctrl>"
+        f"</hp:run></hp:p></hp:subList></hp:tc></hp:tr></hp:tbl>"
+        f"<hp:t>뒤</hp:t></hp:run></hp:p>"
+    )
+    notes: list[str] = []
+    text = _p_text(etree.fromstring(xml), notes, deep=True)
+    assert text == "앞중첩표[^1]뒤"
+    assert notes == ["셀각주"]

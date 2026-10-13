@@ -1298,3 +1298,29 @@ def test_write_footnotes_become_footnote_controls(tmp_path: Path) -> None:
         tbl.find(f".//{_HP}footNote") is not None
         for s in doc.sections for tbl in s.element.iter(f"{_HP}tbl")
     )
+
+
+@pytest.mark.skipif(not _FN_TPL.is_file(), reason="bundled default template missing")
+def test_footnote_number_format_follows_section(tmp_path: Path) -> None:
+    """PR #25 review: the note's autoNumFormat is copied from the section's
+    footNotePr (here switched to circled numbers, superscript), not hard-coded."""
+    from hwpx.document import HwpxDocument
+
+    tpl = tmp_path / "tpl.hwpx"
+    d = HwpxDocument.open(str(_FN_TPL))
+    for s in d.sections:
+        fmt = s.element.find(f".//{_HP}footNotePr/{_HP}autoNumFormat")
+        if fmt is not None:
+            fmt.set("type", "CIRCLED_DIGIT")
+            fmt.set("suffixChar", "")
+            fmt.set("supscript", "1")
+            s.mark_dirty()
+    d.save_to_path(str(tpl))
+
+    out = tmp_path / "fn.hwpx"
+    fill_from_markdown(tpl, "본문[^a]\n\n[^a]: 각주\n", output=out)
+    doc = HwpxDocument.open(str(out))
+    fn = next(f for s in doc.sections for f in s.element.iter(f"{_HP}footNote"))
+    got = fn.find(f".//{_HP}autoNumFormat")
+    assert got.get("type") == "CIRCLED_DIGIT" and got.get("supscript") == "1"
+    assert fn.get("suffixChar") is None  # no decoration → no suffix code point

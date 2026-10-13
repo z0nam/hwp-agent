@@ -61,7 +61,7 @@ def extract_markdown(path: str | Path, *, body_only: bool = False) -> str:
             _emit_paragraph(lines, role, level, text)
     if notes:
         lines.append("")
-        lines.extend(f"[^{i}]: {t}" for i, t in enumerate(notes, 1))
+        lines.extend(_note_definitions(notes))
     return _tidy("\n".join(lines))
 
 
@@ -121,23 +121,55 @@ def _p_text(p_el, notes: list[str], *, deep: bool = False) -> str:
 
     A ``<hp:ctrl><hp:footNote>`` is replaced by ``[^n]`` (n = its 1-based position in
     *notes*) and its note text is appended to *notes* — so the note body isn't glued
-    into the surrounding text. ``deep`` also reads text inside *other* controls
-    (table cells historically did, via ``iter``); body paragraphs read direct runs only.
+    into the surrounding text. ``deep`` (table cells) also reads text inside every
+    *other* object under a run — nested tables, pictures/captions, other controls —
+    as the old ``p.iter(hp:t)`` traversal did, while still turning any footnote met
+    on the way into a reference. Body paragraphs read direct runs only.
     """
     parts: list[str] = []
     for run in p_el.findall(f"{{{_HP}}}run"):
         for child in run:
-            tag = child.tag.rsplit("}", 1)[-1]
-            if tag == "t":
+            if _local(child) == "t":
                 parts.append(_t_text(child))
-            elif tag == "ctrl":
+            elif deep:
+                _walk_deep(child, parts, notes)
+            elif _local(child) == "ctrl":
                 fn = child.find(f"{{{_HP}}}footNote")
                 if fn is not None:
                     notes.append(_note_text(fn))
                     parts.append(f"[^{len(notes)}]")
-                elif deep:
-                    parts.extend(_t_text(t) for t in child.iter(f"{{{_HP}}}t"))
     return "".join(parts)
+
+
+def _local(el) -> str:
+    return el.tag.rsplit("}", 1)[-1] if isinstance(el.tag, str) else ""
+
+
+def _walk_deep(el, parts: list[str], notes: list[str]) -> None:
+    """Collect ``<hp:t>`` text under *el* in document order; a footnote becomes a
+    ``[^n]`` reference (its body goes to *notes*, not into the text)."""
+    tag = _local(el)
+    if tag == "footNote":
+        notes.append(_note_text(el))
+        parts.append(f"[^{len(notes)}]")
+        return
+    if tag == "t":
+        parts.append(_t_text(el))
+        return
+    for child in el:
+        _walk_deep(child, parts, notes)
+
+
+def _note_definitions(notes: list[str]) -> list[str]:
+    """``[^n]: text`` lines for *notes*; a note's line breaks become indented
+    continuation lines so a later ``write`` folds them back into the same definition
+    (an unindented remainder would turn into body text and truncate the note)."""
+    out: list[str] = []
+    for i, note in enumerate(notes, 1):
+        first, *rest = note.split("\n")
+        out.append(f"[^{i}]: {first}")
+        out.extend(f"    {ln.strip()}" for ln in rest if ln.strip())
+    return out
 
 
 def _note_text(footnote_el) -> str:

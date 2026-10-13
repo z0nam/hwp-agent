@@ -34,7 +34,7 @@ from hwpx.document import HwpxDocument
 
 from .form import extract_placeholders
 from .styles import INSTRUCTION, bullet_glyph_name, read_style_system, role_map
-from .tablewidth import compute_column_widths
+from .tablewidth import CHAR_W, compute_column_widths
 
 #: tokens marking where authored content is inserted (each on a paragraph of its
 #: own); the marker paragraph is consumed (removed) on fill. A full report has
@@ -660,14 +660,30 @@ def _table_format(tbl) -> TableFormat:
         # an interior row (neither first nor last) has thin top/bottom; fall back to
         # the first body row when the reference has too few rows to have an interior.
         fmt.body = body_rows[1] if len(body_rows) >= 3 else body_rows[0]
-        # use the interior (tight) row height for all body rows — the reference's
-        # first/last rows can be incidentally tall; borders still vary by band.
-        fmt.first_body.height = fmt.last.height = fmt.body.height
+        # Height for every generated body row = the *tightest* (single-line) row height
+        # in the reference, NOT this template's saved body-row height. A template whose
+        # sample table has a multi-line data row stores a tall cellSz on it (issue #21:
+        # 9935 ≈ 35mm); copying that onto every generated row bloats short rows. Hangul
+        # treats cellSz height as a minimum and grows a cell to fit its content on open,
+        # so a tight seed is safe (a tall one is not — it can't shrink). The minimum
+        # positive height across the header + body rows is the best single-line proxy.
+        tight = _tight_row_height([fmt.header, *body_rows])
+        if tight is not None:
+            fmt.first_body.height = fmt.last.height = fmt.body.height = tight
     else:
         fmt.first_body = fmt.body = fmt.last = fmt.header
     if note_rows:
         fmt.note = note_rows[-1]
     return fmt
+
+
+def _tight_row_height(zones: list[Zone]) -> str | None:
+    """Smallest positive ``cellSz`` height among *zones* — a single-line row proxy."""
+    heights = []
+    for z in zones:
+        if z.height and z.height.isdigit() and int(z.height) > 0:
+            heights.append(int(z.height))
+    return str(min(heights)) if heights else None
 
 
 def _caption_text(tbl_element) -> str:
@@ -860,6 +876,68 @@ def _fit_table_width_by_content(table_el, block: TableBlock, text_width: int) ->
                 csz.set("width", str(text_width))
 
 
+def _grow_rows_for_content(table_el, data_rows, has_note: bool) -> None:
+    """Grow each data row's cell height to the lines its content needs.
+
+    The tight single-line seed (:func:`_tight_row_height`) fixes the single-line bloat
+    of issue #21, but rhwp — unlike Hangul — does **not** auto-grow a cell to fit
+    overflowing text, so a genuinely multi-line cell left at the one-line seed is
+    clipped in the rhwp preview (and in a template whose rows were tall, this would be
+    a visible regression). Estimate the wrapped-line count per cell from its fitted
+    column width (``CHAR_W`` ≈ one CJK glyph) and set the row height to
+    ``seed × max_lines``. Hangul still reconciles the exact height on open; this just
+    keeps the deterministic preview honest and bounds any over-estimate to whole lines.
+    """
+    rows = table_el.findall(f"{{{_HP}}}tr")
+    n_data = len(rows) - (1 if has_note else 0)
+    for r in range(min(n_data, len(data_rows))):
+        cells = rows[r].findall(f"{{{_HP}}}tc")
+        max_lines = 1
+        for c, tc in enumerate(cells):
+            sz = tc.find(f"{{{_HP}}}cellSz")
+            if sz is None:
+                continue
+            width = int(sz.get("width", "0"))
+            mg = tc.find(f"{{{_HP}}}cellMargin")
+            inset = 0
+            if mg is not None:
+                inset = int(mg.get("left", "0")) + int(mg.get("right", "0"))
+            usable = max(width - inset, CHAR_W)
+            cpl = max(1, usable // CHAR_W)  # chars per line (coarse, CJK-width)
+            text = data_rows[r][c] if c < len(data_rows[r]) else ""
+            lines = sum(max(1, -(-len(seg) // cpl)) for seg in text.split("\n")) or 1
+            max_lines = max(max_lines, lines)
+        if max_lines > 1:
+            for tc in cells:
+                sz = tc.find(f"{{{_HP}}}cellSz")
+                if sz is not None and sz.get("height", "0").isdigit():
+                    sz.set("height", str(int(sz.get("height")) * max_lines))
+
+
+def _fit_table_height(table_el) -> None:
+    """Set the table's own ``<hp:sz height>`` to the sum of its row heights.
+
+    ``add_table`` leaves the table box at a loose default (rowCnt × ~3600), unrelated
+    to the tight per-cell heights we style in (issue #21: a 10-row table stayed at
+    36000 while its rows summed to far less). Sum the tallest cell in each row so the
+    box matches the content; Hangul recomputes it on open, but a correct seed keeps
+    rhwp and the first open from reserving dead vertical space.
+    """
+    sz = table_el.find(f"{{{_HP}}}sz")
+    if sz is None:
+        return
+    total = 0
+    for tr in table_el.findall(f"{{{_HP}}}tr"):
+        row_h = [
+            int(c.get("height", "0"))
+            for tc in tr.findall(f"{{{_HP}}}tc")
+            if (c := tc.find(f"{{{_HP}}}cellSz")) is not None
+        ]
+        total += max(row_h, default=0)
+    if total > 0:
+        sz.set("height", str(total))
+
+
 def _build_table(
     doc, section, block: TableBlock, fmt, body_style, body_para, ref_el, chapter=None,
     *, equal_columns: bool = False, text_writer=None,
@@ -942,6 +1020,11 @@ def _build_table(
                 note_tr.remove(extra)
         note_text = block.note.replace("\n", "  ") if block.note else ""
         _style_cell(table.cell(note_r, 0), fmt.note, 0, 1, note_text, text_writer)
+
+    # grow multi-line rows off the tight seed (rhwp doesn't auto-grow), then set the
+    # table box to the sum of the resulting row heights (not add_table's loose default)
+    _grow_rows_for_content(table.element, data_rows, has_note)
+    _fit_table_height(table.element)
 
     # caption "<표 N-M> {title}" cloned from the reference (auto-number + 표제목 style)
     if block.caption and ref_el is not None:

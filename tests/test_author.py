@@ -438,6 +438,55 @@ def test_table_width_fits_text_column(tmp_path: Path) -> None:
             assert sum(widths) == tw  # each row fills the text column exactly
 
 
+def test_tight_row_height_picks_minimum_positive() -> None:
+    """The body-row seed is the smallest positive row height, ignoring 0/blank."""
+    from hwp_agent.ops.author import Zone, _tight_row_height
+
+    zones = [Zone(height="1382"), Zone(height="9935"), Zone(height="0"), Zone(height=None)]
+    assert _tight_row_height(zones) == "1382"
+    assert _tight_row_height([Zone(height=None), Zone(height="0")]) is None
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 fixture not present")
+def test_table_cell_height_is_tight_and_grows(tmp_path: Path) -> None:
+    """Short rows get the single-line seed; a multi-line cell grows (issue #21).
+
+    Regression guard: previously every data row inherited the reference's saved body
+    height, so a template with one tall sample row bloated every generated row. Now a
+    short row is tight and a long-content row grows in whole-line multiples, and the
+    table box = sum of the row heights (not add_table's loose default)."""
+    from hwpx.document import HwpxDocument
+
+    out = tmp_path / "out.hwpx"
+    long_cell = "아주 " * 40  # wraps to several lines in any reasonable column width
+    md = (
+        "표 높이\n"
+        "| 구분 | 설명 |\n|---|---|\n"
+        "| 짧음 | 한 줄 |\n"
+        f"| 긺 | {long_cell} |\n"
+    )
+    fill_from_markdown(TYPE1, md, output=out)
+    doc = HwpxDocument.open(str(out))
+    tbl, _sec = _find_authored_table(doc, "짧음")
+    assert tbl is not None
+
+    def row_h(tr):
+        return max(
+            (int(c.get("height")) for tc in tr.findall(f"{_HP}tc")
+             if (c := tc.find(f"{_HP}cellSz")) is not None),
+            default=0,
+        )
+
+    rows = tbl.findall(f"{_HP}tr")
+    heights = [row_h(tr) for tr in rows]
+    short, long_ = heights[1], heights[2]  # header, short, long
+    assert long_ > short  # the multi-line row grew off the single-line seed
+    assert long_ % short == 0  # grew by a whole number of lines
+
+    tbl_h = int(tbl.find(f"{_HP}sz").get("height"))
+    assert tbl_h == sum(heights)  # table box matches the summed rows, not the default
+
+
 @pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 fixture not present")
 def test_missing_table_token_warns(tmp_path: Path) -> None:
     """Authoring tables without a {{table…}} token (or pattern) warns (item A)."""

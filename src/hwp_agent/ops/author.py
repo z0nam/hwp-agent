@@ -973,7 +973,11 @@ def _grow_rows_for_content(table_el, row_texts: list[list[str]]) -> None:
                 inset = int(mg.get("left", "0")) + int(mg.get("right", "0"))
             usable = max(width - inset, CHAR_W)
             cpl = max(1, usable // CHAR_W)  # chars per line (coarse, CJK-width)
-            text = plain_text(texts[c]) if c < len(texts) else ""
+            # rendered text: emphasis delimiters aren't drawn and a [^id] reference
+            # becomes a one-glyph superscript mark, so neither counts toward wrapping
+            text = (
+                _FOOTNOTE_REF_RE.sub("¹", plain_text(texts[c])) if c < len(texts) else ""
+            )
             lines = sum(max(1, -(-len(seg) // cpl)) for seg in text.split("\n")) or 1
             max_lines = max(max_lines, lines)
         if max_lines > 1:

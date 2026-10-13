@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from hwpx.document import HwpxDocument
 
+from .integrity import audit_package
 from .linesegs import iter_mismatches
 from .styles import classify_document, read_style_system, role_map
 
@@ -165,6 +166,7 @@ def diagnose_template(path: str) -> dict:
         "unmapped_structural": structural,
         "lineseg_mismatches": [m.as_dict() for m in iter_mismatches(path)],
         "markers": _marker_audit(doc, roles.get("INSTRUCTION")),
+        "integrity": [i.as_dict() for i in audit_package(path)],
     }
     report["warnings"] = _warnings(report)
     return report
@@ -207,6 +209,10 @@ def _warnings(r: dict) -> list[str]:
             "the extra lines onto one. Run `hwp-agent normalize --drop-linesegarray` to clear the "
             "stale caches (Hangul recomputes them on open)."
         )
+    # package integrity (issue #22): hand edits that shift/duplicate header ids or
+    # drop a section's secPr break rendering silently — surface each one
+    for e in r.get("integrity") or []:
+        out.append(f"integrity [{e['kind']}] {e['where']}: {e['detail']}")
     # a marker appearing more than once is ambiguous — write/build can't tell which
     # paragraph should receive the content (PR #16 P1/P2 class of bug)
     dup_total: dict[str, int] = {}

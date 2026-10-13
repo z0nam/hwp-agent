@@ -17,6 +17,7 @@ from hwp_agent.ops import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TYPE1 = REPO_ROOT / "tests" / "fixtures" / "sample_hwpx.hwpx"
+DEFAULT_TPL = REPO_ROOT / "src" / "hwp_agent" / "assets" / "default-template.hwpx"
 
 
 def test_parse_markdown_blocks() -> None:
@@ -436,6 +437,110 @@ def test_table_width_fits_text_column(tmp_path: Path) -> None:
         ]
         if widths:
             assert sum(widths) == tw  # each row fills the text column exactly
+
+
+def test_tight_row_height_picks_minimum_positive() -> None:
+    """The body-row seed is the smallest positive row height, ignoring 0/blank."""
+    from hwp_agent.ops.author import Zone, _tight_row_height
+
+    zones = [Zone(height="1382"), Zone(height="9935"), Zone(height="0"), Zone(height=None)]
+    assert _tight_row_height(zones) == "1382"
+    assert _tight_row_height([Zone(height=None), Zone(height="0")]) is None
+    # sub-glyph spacer rows (form-style reference tables) are not text rows
+    spacers = [Zone(height="382"), Zone(height="665"), Zone(height="2131")]
+    assert _tight_row_height(spacers) == "2131"
+
+
+def test_body_row_seed_respects_body_font() -> None:
+    """PR #24 review: the header may seed body rows only if it holds a body line."""
+    from hwp_agent.ops.author import Zone, _body_row_seed
+
+    body_1line = [Zone(height="2183")]
+    # template body row is ~one line of the body font → used as-is
+    assert _body_row_seed(Zone(height="1950"), body_1line, 2440) == "2183"
+    tall = [Zone(height="9935"), Zone(height="9935")]
+    # tall (multi-line) sample rows: header fits a body line → header height
+    assert _body_row_seed(Zone(height="2600"), tall, 2440) == "2600"
+    # header too short for a body line → the line estimate, never the header
+    assert _body_row_seed(Zone(height="1382"), tall, 2440) == "2440"
+    # no font info → previous rule (tightest of header + body)
+    assert _body_row_seed(Zone(height="1382"), tall, None) == "1382"
+
+
+@pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 fixture not present")
+def test_table_cell_height_is_tight_and_grows(tmp_path: Path) -> None:
+    """Short rows get the single-line seed; a multi-line cell grows (issue #21).
+
+    Regression guard: previously every data row inherited the reference's saved body
+    height, so a template with one tall sample row bloated every generated row. Now a
+    short row is tight and a long-content row grows in whole-line multiples, and the
+    table box = sum of the row heights (not add_table's loose default)."""
+    from hwpx.document import HwpxDocument
+
+    out = tmp_path / "out.hwpx"
+    long_cell = "아주 " * 40  # wraps to several lines in any reasonable column width
+    md = (
+        "표 높이\n"
+        "| 구분 | 설명 |\n|---|---|\n"
+        "| 짧음 | 한 줄 |\n"
+        f"| 긺 | {long_cell} |\n"
+    )
+    fill_from_markdown(TYPE1, md, output=out)
+    doc = HwpxDocument.open(str(out))
+    tbl, _sec = _find_authored_table(doc, "짧음")
+    assert tbl is not None
+
+    def row_h(tr):
+        return max(
+            (int(c.get("height")) for tc in tr.findall(f"{_HP}tc")
+             if (c := tc.find(f"{_HP}cellSz")) is not None),
+            default=0,
+        )
+
+    rows = tbl.findall(f"{_HP}tr")
+    heights = [row_h(tr) for tr in rows]
+    short, long_ = heights[1], heights[2]  # header, short, long
+    assert long_ > short  # the multi-line row grew off the single-line seed
+    assert long_ % short == 0  # grew by a whole number of lines
+
+    # table box = summed rows + the top caption's extent (Hangul counts the caption
+    # inside the tbl height), not add_table's loose default (rowCnt × 3600). The
+    # caption's layout cache is dropped on save, so bound the extent, don't recompute.
+    tbl_h = int(tbl.find(f"{_HP}sz").get("height"))
+    assert sum(heights) < tbl_h <= sum(heights) + 4000
+
+
+@pytest.mark.skipif(not DEFAULT_TPL.is_file(), reason="bundled default template missing")
+def test_table_note_row_and_bold_sizing(tmp_path: Path) -> None:
+    """PR #24 review: a populated 출처 row gets real height (the reference's empty note
+    row stores 0), bold delimiters don't add a phantom line, and a captioned table's
+    box includes the caption extent."""
+    from hwpx.document import HwpxDocument
+
+    from hwp_agent.ops.author import _caption_extent
+
+    out = tmp_path / "out.hwpx"
+    md = (
+        "<표 1-1> 캡션\n"
+        "| 구분 | 설명 |\n|---|---|\n"
+        "| **굵음** | 한 줄 |\n"
+        "| 보통 | 한 줄 |\n"
+        "출처: 연구진 작성\n"
+    )
+    fill_from_markdown(DEFAULT_TPL, md, output=out)
+    doc = HwpxDocument.open(str(out))
+    tbl, _sec = _find_authored_table(doc, "굵음")
+    assert tbl is not None
+    rows = tbl.findall(f"{_HP}tr")
+    hs = [
+        max(int(tc.find(f"{_HP}cellSz").get("height")) for tc in tr.findall(f"{_HP}tc"))
+        for tr in rows
+    ]
+    assert hs[1] == hs[2]  # "**굵음**" is one line like "보통" — delimiters not counted
+    assert hs[-1] > 0  # populated note row is not left at zero height
+    assert _caption_extent(tbl) > 0  # the cloned caption is TOP → adds height
+    tbl_h = int(tbl.find(f"{_HP}sz").get("height"))
+    assert sum(hs) < tbl_h <= sum(hs) + 4000  # rows + caption, not the loose default
 
 
 @pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 fixture not present")

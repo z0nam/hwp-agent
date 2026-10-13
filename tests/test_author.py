@@ -17,6 +17,7 @@ from hwp_agent.ops import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TYPE1 = REPO_ROOT / "tests" / "fixtures" / "sample_hwpx.hwpx"
+DEFAULT_TPL = REPO_ROOT / "src" / "hwp_agent" / "assets" / "default-template.hwpx"
 
 
 def test_parse_markdown_blocks() -> None:
@@ -445,6 +446,9 @@ def test_tight_row_height_picks_minimum_positive() -> None:
     zones = [Zone(height="1382"), Zone(height="9935"), Zone(height="0"), Zone(height=None)]
     assert _tight_row_height(zones) == "1382"
     assert _tight_row_height([Zone(height=None), Zone(height="0")]) is None
+    # sub-glyph spacer rows (form-style reference tables) are not text rows
+    spacers = [Zone(height="382"), Zone(height="665"), Zone(height="2131")]
+    assert _tight_row_height(spacers) == "2131"
 
 
 @pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 fixture not present")
@@ -483,8 +487,43 @@ def test_table_cell_height_is_tight_and_grows(tmp_path: Path) -> None:
     assert long_ > short  # the multi-line row grew off the single-line seed
     assert long_ % short == 0  # grew by a whole number of lines
 
+    # table box = summed rows + the top caption's extent (Hangul counts the caption
+    # inside the tbl height), not add_table's loose default (rowCnt × 3600). The
+    # caption's layout cache is dropped on save, so bound the extent, don't recompute.
     tbl_h = int(tbl.find(f"{_HP}sz").get("height"))
-    assert tbl_h == sum(heights)  # table box matches the summed rows, not the default
+    assert sum(heights) < tbl_h <= sum(heights) + 4000
+
+
+@pytest.mark.skipif(not DEFAULT_TPL.is_file(), reason="bundled default template missing")
+def test_table_note_row_and_bold_sizing(tmp_path: Path) -> None:
+    """PR #24 review: a populated 출처 row gets real height (the reference's empty note
+    row stores 0), bold delimiters don't add a phantom line, and a captioned table's
+    box includes the caption extent."""
+    from hwpx.document import HwpxDocument
+
+    from hwp_agent.ops.author import _caption_extent
+
+    out = tmp_path / "out.hwpx"
+    md = (
+        "<표 1-1> 캡션\n"
+        "| 구분 | 설명 |\n|---|---|\n"
+        "| **굵음** | 한 줄 |\n"
+        "출처: 연구진 작성\n"
+    )
+    fill_from_markdown(DEFAULT_TPL, md, output=out)
+    doc = HwpxDocument.open(str(out))
+    tbl, _sec = _find_authored_table(doc, "굵음")
+    assert tbl is not None
+    rows = tbl.findall(f"{_HP}tr")
+    hs = [
+        max(int(tc.find(f"{_HP}cellSz").get("height")) for tc in tr.findall(f"{_HP}tc"))
+        for tr in rows
+    ]
+    assert hs[1] == hs[0]  # "**굵음**" is one line, not pushed to two by the delimiters
+    assert hs[-1] > 0  # populated note row is not left at zero height
+    assert _caption_extent(tbl) > 0  # the cloned caption is TOP → adds height
+    tbl_h = int(tbl.find(f"{_HP}sz").get("height"))
+    assert sum(hs) < tbl_h <= sum(hs) + 4000  # rows + caption, not the loose default
 
 
 @pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 fixture not present")

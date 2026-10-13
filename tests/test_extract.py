@@ -208,3 +208,64 @@ def test_extract_cli_writes_file(tmp_path: Path, capsys) -> None:
     assert out.is_file() and out.read_text(encoding="utf-8").strip()
     err = capsys.readouterr().out
     assert "wrote" in err
+
+
+def test_footnotes_round_trip_write_then_extract(tmp_path: Path) -> None:
+    """extract turns <hp:footNote> back into [^n] + definitions (issue #23), in body
+    paragraphs and table cells, without gluing the note text into the cell."""
+    from hwp_agent.ops import fill_from_markdown
+
+    tpl = REPO_ROOT / "src" / "hwp_agent" / "assets" / "default-template.hwpx"
+    md = (
+        "# 1 장\n\n* 본문 문장[^a]\n\n"
+        "| 구분 | 출처 |\n|---|---|\n| 셀 | 인용[^b] |\n\n"
+        "[^a]: 첫 각주\n[^b]: 셀 각주\n"
+    )
+    out = tmp_path / "fn.hwpx"
+    fill_from_markdown(tpl, md, output=out)
+    text = extract_markdown(out)
+    assert "본문 문장[^1]" in text
+    assert "| 셀 | 인용[^2] |" in text  # note body not glued into the cell
+    assert "[^1]: 첫 각주" in text and "[^2]: 셀 각주" in text
+
+
+@pytest.mark.skipif(not APPENDIX.is_file(), reason="appendix fixture not present")
+def test_extract_real_hangul_footnotes() -> None:
+    """Footnotes authored in Hangul itself come out as references + definitions."""
+    text = extract_markdown(APPENDIX)
+    assert "[^1]" in text
+    assert "[^1]: 기관별로 전망치의 편차가 큰 까닭은" in text
+
+
+def test_multiline_note_definition_is_indented() -> None:
+    """PR #25 review: a note's line break is emitted as an indented continuation, so
+    write's definition parser folds it back instead of leaking it into body text."""
+    from hwp_agent.ops.author import extract_footnote_defs
+    from hwp_agent.ops.extract import _note_definitions
+
+    lines = _note_definitions(["첫 줄\n둘째 줄", "단일"])
+    assert lines == ["[^1]: 첫 줄", "    둘째 줄", "[^2]: 단일"]
+    body, defs = extract_footnote_defs("본문[^1]\n\n" + "\n".join(lines) + "\n다음 문단\n")
+    assert defs["1"] == "첫 줄 둘째 줄" and "둘째 줄" not in body
+
+
+def test_deep_cell_text_keeps_nested_objects_and_notes() -> None:
+    """PR #25 review: deep (cell) traversal keeps text of nested objects (a nested
+    table here) and still turns a footnote met inside into a reference."""
+    from lxml import etree
+
+    from hwp_agent.ops.extract import _p_text
+
+    hp = _HP
+    xml = (
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:t>앞</hp:t>'
+        f"<hp:tbl><hp:tr><hp:tc><hp:subList><hp:p><hp:run><hp:t>중첩표</hp:t>"
+        f"<hp:ctrl><hp:footNote><hp:subList><hp:p><hp:run><hp:t>셀각주</hp:t>"
+        f"</hp:run></hp:p></hp:subList></hp:footNote></hp:ctrl>"
+        f"</hp:run></hp:p></hp:subList></hp:tc></hp:tr></hp:tbl>"
+        f"<hp:t>뒤</hp:t></hp:run></hp:p>"
+    )
+    notes: list[str] = []
+    text = _p_text(etree.fromstring(xml), notes, deep=True)
+    assert text == "앞중첩표[^1]뒤"
+    assert notes == ["셀각주"]

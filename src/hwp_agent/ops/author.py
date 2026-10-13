@@ -187,6 +187,138 @@ def plain_text(text: str) -> str:
     return "".join(s.text for s in inline_segments(text))
 
 
+#: a Markdown footnote reference ``[^id]`` (id = no whitespace/``]``) and its
+#: definition line ``[^id]: text`` (pandoc/GFM). The reference is replaced in place
+#: by a Hangul footnote control; the definition line is removed from the body.
+_FOOTNOTE_REF_RE = re.compile(r"\[\^([^\]\s]+)\]")
+_FOOTNOTE_DEF_RE = re.compile(r"^\[\^([^\]\s]+)\]:[ \t]?(.*)$")
+
+
+def extract_footnote_defs(markdown: str) -> tuple[str, dict[str, str]]:
+    """Split ``[^id]: text`` definition lines out of *markdown*.
+
+    Returns ``(body_markdown_without_definitions, {id: text})``. A definition's
+    continuation lines (indented, non-blank) are folded into one note text, matching
+    pandoc. The ``[^id]`` references stay in the body text — they are turned into
+    footnote controls at run-emit time, each looked up in the returned map."""
+    defs: dict[str, str] = {}
+    out: list[str] = []
+    lines = markdown.split("\n")
+    i = 0
+    while i < len(lines):
+        m = _FOOTNOTE_DEF_RE.match(lines[i])
+        if not m:
+            out.append(lines[i])
+            i += 1
+            continue
+        fid, text = m.group(1), m.group(2).strip()
+        i += 1
+        while i < len(lines) and lines[i].strip() and lines[i][:1] in (" ", "\t"):
+            text = f"{text} {lines[i].strip()}".strip()
+            i += 1
+        defs[fid] = text  # a later redefinition wins (last-one, like pandoc warns)
+    return "\n".join(out), defs
+
+
+def _xml_escape(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _count_footnotes(doc: HwpxDocument) -> int:
+    """How many footnote controls already exist in the document (any section)."""
+    return sum(
+        len(s.element.findall(f".//{{{_HP}}}footNote")) for s in doc.sections
+    )
+
+
+def _section_has_footnote_pr(section) -> bool:
+    return section.element.find(f".//{{{_HP}}}footNotePr") is not None
+
+
+def _footnote_style(
+    doc: HwpxDocument, infos: dict, body_style: str | None, body_para
+) -> tuple[str | None, object, object]:
+    """Resolve (styleIDRef, paraPrIDRef, charPrIDRef) for footnote-note paragraphs.
+
+    Prefer a template style named like 「각주」/footnote (JRI_각주, 각주1, …); fall back
+    to the BODY style when the template has none (issue #23). The char is read off the
+    chosen style so the note text matches the template's footnote font."""
+    fn_sid = body_style
+    for i in infos.values():
+        name = (i.name or "").lower()
+        if "각주" in (i.name or "") or "footnote" in name:
+            fn_sid = i.style_id
+            break
+    fn_para = body_para
+    fn_char = None
+    if fn_sid is not None:
+        info = infos.get(fn_sid)
+        if info is not None and info.para_pr_id is not None:
+            fn_para = info.para_pr_id
+        try:
+            fn_char = doc.style(fn_sid).char_pr_id_ref
+        except Exception:
+            fn_char = None
+    return fn_sid, fn_para, fn_char
+
+
+#: Hangul's default footnote number format (used when the section has no footNotePr)
+_DEFAULT_FN_FORMAT = {
+    "type": "DIGIT", "userChar": "", "prefixChar": "", "suffixChar": ")", "supscript": "0",
+}
+
+
+def _section_footnote_format(section) -> dict[str, str]:
+    """The section's ``<hp:footNotePr><hp:autoNumFormat>`` attributes (numbering
+    type, user char, decorations, superscript), else Hangul's default ``1)``."""
+    fmt = section.element.find(f".//{{{_HP}}}footNotePr/{{{_HP}}}autoNumFormat")
+    return dict(fmt.attrib) if fmt is not None else dict(_DEFAULT_FN_FORMAT)
+
+
+def _build_footnote_run(
+    number: int, inst_id: int, text: str,
+    fn_sid: str | None, fn_para, fn_char, body_char,
+    num_format: dict[str, str] | None = None,
+):
+    """Build a body ``<hp:run>`` carrying a footnote control with *text* as its note.
+
+    The reference mark is a ``<hp:ctrl><hp:footNote>`` whose ``<hp:subList>`` holds one
+    note paragraph (footnote style + autoNum); Hangul renumbers continuously on open,
+    so the stored *number* is just a seed. No ``<hp:linesegarray>`` is emitted — Hangul
+    (and rhwp) lay the note out from the text.
+
+    *num_format* is the section's footnote ``autoNumFormat`` (Roman, circled, user
+    char, decorations, superscript …), copied so the note number matches the
+    template's own footnote settings instead of a hard-coded ``1)``."""
+    from lxml import etree
+
+    def attr(v):
+        return "" if v is None else str(v)
+
+    fmt = num_format or _DEFAULT_FN_FORMAT
+    fmt_attrs = "".join(f' {k}="{_xml_escape(attr(v))}"' for k, v in fmt.items())
+    suffix = fmt.get("suffixChar") or ""
+    # footNote@suffixChar is the decoration's code point (")" → 41), as Hangul writes it
+    fn_suffix = f' suffixChar="{ord(suffix[0])}"' if suffix else ""
+    run_char = f' charPrIDRef="{attr(body_char)}"' if body_char is not None else ""
+    p_char = f' charPrIDRef="{attr(fn_char)}"' if fn_char is not None else ""
+    xml = (
+        f'<hp:run xmlns:hp="{_HP}"{run_char}>'
+        f'<hp:ctrl><hp:footNote number="{number}"{fn_suffix} instId="{inst_id}">'
+        f'<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" '
+        f'linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" '
+        f'hasTextRef="0" hasNumRef="0">'
+        f'<hp:p id="0" paraPrIDRef="{attr(fn_para)}" styleIDRef="{attr(fn_sid)}" '
+        f'pageBreak="0" columnBreak="0" merged="0">'
+        f'<hp:run{p_char}>'
+        f'<hp:ctrl><hp:autoNum num="{number}" numType="FOOTNOTE">'
+        f"<hp:autoNumFormat{fmt_attrs}/></hp:autoNum></hp:ctrl>"
+        f"<hp:t>{_xml_escape(text)}</hp:t>"
+        f"</hp:run></hp:p></hp:subList></hp:footNote></hp:ctrl></hp:run>"
+    )
+    return etree.fromstring(xml)
+
+
 def _split_table_row(line: str) -> list[str]:
     """Split a pipe-table row into trimmed cells (outer pipes optional)."""
     s = line.strip()
@@ -627,7 +759,9 @@ def _clone_caption(ref_el, title: str, chapter: str | None):
     return clone
 
 
-def _style_cell(cell, zone: Zone, col: int, ncols: int, text: str) -> None:
+def _style_cell(
+    cell, zone: Zone, col: int, ncols: int, text: str, text_writer=None
+) -> None:
     tc = cell.element
     if (bf := zone.border(col, ncols)) is not None:
         tc.set("borderFillIDRef", bf)
@@ -649,7 +783,10 @@ def _style_cell(cell, zone: Zone, col: int, ncols: int, text: str) -> None:
     cp.clear_text()
     # cell text is plain (no inline-bold variant): ensure_run_style ignores the cell
     # base size and would blow up the font, so cells keep their content char style.
-    cp.add_run(plain_text(text), char_pr_id_ref=zone.char)
+    if text_writer is not None:  # resolves [^id] footnote references in the cell
+        text_writer(cp, plain_text(text), zone.char, zone.char)
+    else:
+        cp.add_run(plain_text(text), char_pr_id_ref=zone.char)
 
 
 def _text_width(section) -> int | None:
@@ -725,7 +862,7 @@ def _fit_table_width_by_content(table_el, block: TableBlock, text_width: int) ->
 
 def _build_table(
     doc, section, block: TableBlock, fmt, body_style, body_para, ref_el, chapter=None,
-    *, equal_columns: bool = False,
+    *, equal_columns: bool = False, text_writer=None,
 ):
     """Create a table sized to *block*, styled by *fmt*'s zones, and fill its cells.
 
@@ -784,7 +921,9 @@ def _build_table(
             cell = table.cell(r, c)
             if is_header:
                 cell.element.set("header", "1")  # repeat across page breaks
-            _style_cell(cell, zone, c, ncols, row[c] if c < len(row) else "")
+            _style_cell(
+                cell, zone, c, ncols, row[c] if c < len(row) else "", text_writer
+            )
 
     if has_note:  # note/source row: one merged, hidden-bordered cell (kept if empty)
         note_r = total_rows - 1
@@ -802,7 +941,7 @@ def _build_table(
             for extra in tcs[1:]:
                 note_tr.remove(extra)
         note_text = block.note.replace("\n", "  ") if block.note else ""
-        _style_cell(table.cell(note_r, 0), fmt.note, 0, 1, note_text)
+        _style_cell(table.cell(note_r, 0), fmt.note, 0, 1, note_text, text_writer)
 
     # caption "<표 N-M> {title}" cloned from the reference (auto-number + 표제목 style)
     if block.caption and ref_el is not None:
@@ -1017,6 +1156,10 @@ def fill_from_markdown(
     doc = HwpxDocument.open(str(template))
     result = AuthorResult()
 
+    # pull Markdown footnote definitions ([^id]: …) out of the body; the [^id]
+    # references stay in the text and become Hangul footnote controls at emit time.
+    markdown, fn_defs = extract_footnote_defs(markdown)
+
     # strip AI:INSTRUCTION paragraphs (directions, not content)
     inst_style = roles.get(INSTRUCTION)
     if inst_style is not None:
@@ -1073,10 +1216,55 @@ def fill_from_markdown(
                 if seg.bold or seg.italic
                 else base_char
             )
-            para.add_run(seg.text, char_pr_id_ref=char)
+            write_text(para, seg.text, char, base_char)
+
+    fn_used: set[str] = set()
+    fn_missing: list[str] = []
+
+    def write_text(para, text: str, char, ref_char) -> None:
+        """Add *text* as runs, turning each ``[^id]`` into a footnote control in place.
+
+        Text before/after a reference stays a normal run (in *char*); the reference
+        run uses *ref_char* (the paragraph's base char, so the mark isn't bold just
+        because it sits in a bold span). A reference with no definition is left as
+        literal text and reported. Shared by body paragraphs and table cells."""
+        last = 0
+        for m in _FOOTNOTE_REF_RE.finditer(text):
+            fid = m.group(1)
+            if fid not in fn_defs:
+                if fid not in fn_missing:
+                    fn_missing.append(fid)
+                continue  # leave the literal [^id]
+            if m.start() > last:
+                para.add_run(text[last : m.start()], char_pr_id_ref=char)
+            _emit_footnote(para, fn_defs[fid], ref_char)
+            fn_used.add(fid)
+            last = m.end()
+        if last < len(text) or last == 0:
+            para.add_run(text[last:], char_pr_id_ref=char)
 
     body_style = roles.get("BODY")
     body_para = infos[body_style].para_pr_id if body_style in infos else None
+
+    # footnote wiring (issue #23): the note paragraph's style/char, a continuous
+    # number seed (so chained parts keep counting), and a unique instId generator.
+    fn_sid, fn_para, fn_char = _footnote_style(doc, infos, body_style, body_para)
+    _fn_count = [_count_footnotes(doc)]  # continue numbering past existing footnotes
+    fn_format = _section_footnote_format(target_section)
+    if fn_defs and not _section_has_footnote_pr(target_section):
+        result.warnings.append(
+            "template section has no <hp:footNotePr>; footnotes may not number/format "
+            "as expected — add footnote settings to the section (한글: 입력>각주)."
+        )
+
+    def _emit_footnote(para, note_text: str, body_char) -> None:
+        _fn_count[0] += 1
+        # Hangul's own notes start with a space after the auto-number ("1) 기관별로…")
+        run_el = _build_footnote_run(
+            _fn_count[0], 0xA0000000 + _fn_count[0], " " + note_text.strip(),
+            fn_sid, fn_para, fn_char, body_char, fn_format,
+        )
+        para.element.append(run_el)
 
     # chapter label for table captions ({{chapter_number}}). Prefer the explicit
     # value (the AI knows the chapter); else best-effort count of outline level-0
@@ -1150,6 +1338,7 @@ def fill_from_markdown(
             table = _build_table(
                 doc, target_section, block, table_fmt, body_style, body_para,
                 ref_element, chapter_label(), equal_columns=equal_columns,
+                text_writer=write_text,
             )
             place(table.paragraph.element)
             result.placed += 1
@@ -1229,6 +1418,20 @@ def fill_from_markdown(
             para.element.append(lsa)
         place(para.element)
         result.placed += 1
+
+    # footnote bookkeeping: a [^id] without a definition stays literal text, and a
+    # definition nothing references is dropped — both are almost always typos
+    if fn_missing:
+        result.warnings.append(
+            "footnote reference(s) without a definition left as text: "
+            + ", ".join(f"[^{f}]" for f in fn_missing)
+        )
+    unused = [f for f in fn_defs if f not in fn_used]
+    if unused:
+        result.warnings.append(
+            "footnote definition(s) never referenced (dropped): "
+            + ", ".join(f"[^{f}]" for f in unused)
+        )
 
     # clean the {{table…}} designation token out of the reference table's caption
     if designated and ref_element is not None:

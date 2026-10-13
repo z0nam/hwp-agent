@@ -451,6 +451,22 @@ def test_tight_row_height_picks_minimum_positive() -> None:
     assert _tight_row_height(spacers) == "2131"
 
 
+def test_body_row_seed_respects_body_font() -> None:
+    """PR #24 review: the header may seed body rows only if it holds a body line."""
+    from hwp_agent.ops.author import Zone, _body_row_seed
+
+    body_1line = [Zone(height="2183")]
+    # template body row is ~one line of the body font → used as-is
+    assert _body_row_seed(Zone(height="1950"), body_1line, 2440) == "2183"
+    tall = [Zone(height="9935"), Zone(height="9935")]
+    # tall (multi-line) sample rows: header fits a body line → header height
+    assert _body_row_seed(Zone(height="2600"), tall, 2440) == "2600"
+    # header too short for a body line → the line estimate, never the header
+    assert _body_row_seed(Zone(height="1382"), tall, 2440) == "2440"
+    # no font info → previous rule (tightest of header + body)
+    assert _body_row_seed(Zone(height="1382"), tall, None) == "1382"
+
+
 @pytest.mark.skipif(not TYPE1.is_file(), reason="type-1 fixture not present")
 def test_table_cell_height_is_tight_and_grows(tmp_path: Path) -> None:
     """Short rows get the single-line seed; a multi-line cell grows (issue #21).
@@ -508,6 +524,7 @@ def test_table_note_row_and_bold_sizing(tmp_path: Path) -> None:
         "<표 1-1> 캡션\n"
         "| 구분 | 설명 |\n|---|---|\n"
         "| **굵음** | 한 줄 |\n"
+        "| 보통 | 한 줄 |\n"
         "출처: 연구진 작성\n"
     )
     fill_from_markdown(DEFAULT_TPL, md, output=out)
@@ -519,7 +536,7 @@ def test_table_note_row_and_bold_sizing(tmp_path: Path) -> None:
         max(int(tc.find(f"{_HP}cellSz").get("height")) for tc in tr.findall(f"{_HP}tc"))
         for tr in rows
     ]
-    assert hs[1] == hs[0]  # "**굵음**" is one line, not pushed to two by the delimiters
+    assert hs[1] == hs[2]  # "**굵음**" is one line like "보통" — delimiters not counted
     assert hs[-1] > 0  # populated note row is not left at zero height
     assert _caption_extent(tbl) > 0  # the cloned caption is TOP → adds height
     tbl_h = int(tbl.find(f"{_HP}sz").get("height"))

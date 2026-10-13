@@ -81,6 +81,14 @@ def audit_package(path: str | Path) -> list[IntegrityIssue]:
             key=lambda n: int(re.search(r"(\d+)", n.rsplit("/", 1)[-1]).group(1)),
         )
         section_xml = {n: zf.read(n).decode("utf-8") for n in sections}
+        # every other content part that can reference header ids — master pages
+        # (page headers/footers/backgrounds), histories, … — not just the sections
+        other_xml = {
+            n: zf.read(n).decode("utf-8", "replace")
+            for n in names
+            if n.startswith("Contents/") and n.endswith(".xml")
+            and n != "Contents/header.xml" and n not in section_xml
+        }
 
     defined: dict[str, set[str]] = {}
     for container, item, ref_attr in _LISTS:
@@ -108,9 +116,9 @@ def audit_package(path: str | Path) -> list[IntegrityIssue]:
         if ref_attr:
             defined[ref_attr] = set(ids)
 
-    # references to undefined ids, in the sections and in the header's own styles
-    scan = dict(section_xml)
-    scan["Contents/header.xml"] = header
+    # references to undefined ids, in every content part (sections, master pages, …)
+    # and in the header's own styles
+    scan = {**section_xml, **other_xml, "Contents/header.xml": header}
     for ref_attr, ids in defined.items():
         missing: dict[str, int] = {}
         for text in scan.values():

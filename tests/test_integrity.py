@@ -91,3 +91,19 @@ def test_check_surfaces_integrity_findings(tmp_path: Path) -> None:
     r = diagnose_template(str(p))
     assert any(e["kind"] == "no-secPr" for e in r["integrity"])
     assert any(w.startswith("integrity [no-secPr]") for w in r["warnings"])
+
+
+def test_dangling_reference_in_master_page(tmp_path: Path) -> None:
+    """PR #26 review: master pages (page headers/footers) are scanned too."""
+    with zipfile.ZipFile(TPL) as z:
+        mps = [n for n in z.namelist() if n.startswith("Contents/masterpage")]
+        mp = next((n for n in mps if b"charPrIDRef" in z.read(n)), None)
+    if mp is None:
+        pytest.skip("template has no master page with charPr references")
+
+    def edit(s: str) -> str:
+        return re.sub(r'charPrIDRef="\d+"', 'charPrIDRef="888"', s, count=1)
+
+    p = _rewrite(tmp_path / "t.hwpx", {mp: edit})
+    issues = [i for i in audit_package(p) if i.kind == "dangling"]
+    assert issues and "888" in issues[0].detail

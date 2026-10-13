@@ -208,3 +208,30 @@ def test_extract_cli_writes_file(tmp_path: Path, capsys) -> None:
     assert out.is_file() and out.read_text(encoding="utf-8").strip()
     err = capsys.readouterr().out
     assert "wrote" in err
+
+
+def test_footnotes_round_trip_write_then_extract(tmp_path: Path) -> None:
+    """extract turns <hp:footNote> back into [^n] + definitions (issue #23), in body
+    paragraphs and table cells, without gluing the note text into the cell."""
+    from hwp_agent.ops import fill_from_markdown
+
+    tpl = REPO_ROOT / "src" / "hwp_agent" / "assets" / "default-template.hwpx"
+    md = (
+        "# 1 장\n\n* 본문 문장[^a]\n\n"
+        "| 구분 | 출처 |\n|---|---|\n| 셀 | 인용[^b] |\n\n"
+        "[^a]: 첫 각주\n[^b]: 셀 각주\n"
+    )
+    out = tmp_path / "fn.hwpx"
+    fill_from_markdown(tpl, md, output=out)
+    text = extract_markdown(out)
+    assert "본문 문장[^1]" in text
+    assert "| 셀 | 인용[^2] |" in text  # note body not glued into the cell
+    assert "[^1]: 첫 각주" in text and "[^2]: 셀 각주" in text
+
+
+@pytest.mark.skipif(not APPENDIX.is_file(), reason="appendix fixture not present")
+def test_extract_real_hangul_footnotes() -> None:
+    """Footnotes authored in Hangul itself come out as references + definitions."""
+    text = extract_markdown(APPENDIX)
+    assert "[^1]" in text
+    assert "[^1]: 기관별로 전망치의 편차가 큰 까닭은" in text

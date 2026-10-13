@@ -1231,3 +1231,70 @@ def test_build_report_assembles_from_manifest(tmp_path: Path) -> None:
     slast = " ".join(p.text or "" for p in d2.sections[-1].paragraphs)
     assert "AAA" in s0 and "요약장" in s0
     assert "BBB" in slast and "CCC" in slast  # both body files concatenated
+
+
+# --------------------------------------------------------------------------- #
+# Markdown footnotes → Hangul <hp:footNote> (issue #23)
+# --------------------------------------------------------------------------- #
+_FN_TPL = REPO_ROOT / "src" / "hwp_agent" / "assets" / "default-template.hwpx"
+
+
+def test_extract_footnote_defs_strips_definitions() -> None:
+    from hwp_agent.ops.author import extract_footnote_defs
+
+    md = (
+        "본문[^a] 문장[^b]\n\n"
+        "[^a]: 첫 각주\n"
+        "[^b]: 둘째 각주\n"
+        "    이어지는 줄\n"
+        "다음 문단\n"
+    )
+    body, defs = extract_footnote_defs(md)
+    assert defs == {"a": "첫 각주", "b": "둘째 각주 이어지는 줄"}
+    assert "[^a]:" not in body and "이어지는 줄" not in body
+    assert "본문[^a] 문장[^b]" in body and "다음 문단" in body  # refs stay in text
+
+
+@pytest.mark.skipif(not _FN_TPL.is_file(), reason="bundled default template missing")
+def test_write_footnotes_become_footnote_controls(tmp_path: Path) -> None:
+    """[^id] → <hp:footNote> in place (body + table cell); definitions removed;
+    re-reference adds a new note; missing/unused ids are reported."""
+    from hwpx.document import HwpxDocument
+
+    md = (
+        "* 본문 문장[^a] 재참조[^a] 없는것[^zz]\n\n"
+        "| 구분 | 출처 |\n|---|---|\n| 셀 | 인용[^b] |\n\n"
+        "[^a]: 노컷뉴스 기사 <제목> & 부제\n"
+        "[^b]: 표 셀 각주\n"
+        "[^unused]: 안 씀\n"
+    )
+    out = tmp_path / "fn.hwpx"
+    res = fill_from_markdown(_FN_TPL, md, output=out)
+    assert any("[^zz]" in w for w in res.warnings)
+    assert any("[^unused]" in w for w in res.warnings)
+
+    from lxml import etree
+
+    doc = HwpxDocument.open(str(out))
+    root_xml = "".join(
+        etree.tostring(s.element, encoding="unicode") for s in doc.sections
+    )
+    fns = [
+        fn for s in doc.sections for fn in s.element.iter(f"{_HP}footNote")
+    ]
+    assert len(fns) == 3  # a, a again, b (in the table cell)
+    notes = [
+        "".join(t.text or "" for t in fn.iter(f"{_HP}t")).strip() for fn in fns
+    ]
+    assert notes == ["노컷뉴스 기사 <제목> & 부제"] * 2 + ["표 셀 각주"]
+    # every note carries the FOOTNOTE auto-number; numbers are sequential
+    assert [fn.get("number") for fn in fns] == ["1", "2", "3"]
+    assert all(fn.find(f".//{_HP}autoNum").get("numType") == "FOOTNOTE" for fn in fns)
+    assert "[^a]" not in root_xml and "[^b]" not in root_xml  # consumed
+    assert "[^zz]" in root_xml  # undefined ref left literal
+    assert "[^unused]" not in root_xml and "안 씀" not in root_xml  # def dropped
+    # the table-cell footnote lives inside the generated table
+    assert any(
+        tbl.find(f".//{_HP}footNote") is not None
+        for s in doc.sections for tbl in s.element.iter(f"{_HP}tbl")
+    )

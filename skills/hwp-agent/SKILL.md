@@ -105,6 +105,32 @@ The AI writes Markdown; the tool maps it onto the template's styles:
 - `| a | b |` + `|---|` + rows → an HWPX **table** (see below).
 - `---` (or `***` / `___`) on its own line → a full-width **horizontal line**
   (가로선), as its own paragraph.
+- `[^id]` + a `[^id]: 내용` definition line (pandoc/GFM footnotes) → a real
+  Hangul **footnote** (각주) — see below.
+
+### Footnotes (각주)
+
+Use Markdown footnotes for 신문기사·보도자료·온라인 자료 출처 (JRI 인용 지침: 각주
+원칙). The reference becomes a Hangul footnote control in place; the note text
+uses the template's 「각주」 style (body style if none) and the section's
+`footNotePr` numbering (`1)`, `2)`, … continuous).
+
+```markdown
+* 도민 인식이 개선됨[^nocut]
+
+[^nocut]: 노컷뉴스, 「제목」(입력: 2026.10.7. 13:52)
+    들여쓴 다음 줄은 같은 각주로 이어짐.
+```
+
+- Definitions may sit anywhere (usually at the end); they are removed from the
+  body. References work in body text **and table cells**.
+- Referencing the same id twice makes two notes (Hangul has no re-reference).
+- A `[^id]` with no definition stays literal and a definition nobody references
+  is dropped — both are reported as warnings; fix the typo and re-run.
+- `extract` does the inverse (`<hp:footNote>` → `[^n]` + definitions at the end),
+  so an HWPX ↔ Markdown round trip keeps footnotes.
+- Preview caveat: rhwp draws the notes but may stack multi-note lines tightly
+  (no layout cache); Hangul / `hwp-agent pdf --engine hwp2pdf` is authoritative.
 
 ### Cross-references — **optional**, ask the writer first
 

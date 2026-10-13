@@ -20,6 +20,8 @@ v1 scope is deliberately small:
   image bytes aren't extracted (use ``hwp-agent image list`` for that).
 * body-only mode (``body_only=True``) skips the front matter (cover, TOC, …) by
   dropping everything before the first level-1 heading.
+* footnotes: each ``<hp:footNote>`` becomes a ``[^n]`` reference at its position and
+  a ``[^n]: text`` definition at the end — the inverse of ``write`` (issue #23).
 """
 
 from __future__ import annotations
@@ -40,22 +42,26 @@ def extract_markdown(path: str | Path, *, body_only: bool = False) -> str:
     role_of = {str(sid): role for role, sid in role_map(path).items()}
 
     lines: list[str] = []
+    notes: list[str] = []  # footnote texts, in reference order → [^1], [^2], …
     started = not body_only  # if body_only, skip until first H1
     for section in doc.sections:
         for paragraph in section.paragraphs:
             tbl = paragraph.element.find(f".//{{{_HP}}}tbl")
             if tbl is not None:
                 if started:
-                    _emit_table(lines, tbl)
+                    _emit_table(lines, tbl, notes)
                 continue
             role, level = _classify(paragraph, doc, role_of)
-            text = _paragraph_text(paragraph)
             if body_only and not started:
                 if role == "HEADING" and level == 1:
                     started = True
                 else:
                     continue
+            text = _paragraph_text(paragraph, notes)
             _emit_paragraph(lines, role, level, text)
+    if notes:
+        lines.append("")
+        lines.extend(f"[^{i}]: {t}" for i, t in enumerate(notes, 1))
     return _tidy("\n".join(lines))
 
 
@@ -110,13 +116,42 @@ def _t_text(t_el) -> str:
     return "".join(out)
 
 
-def _paragraph_text(paragraph) -> str:
-    """All text content of *paragraph*, runs concatenated. v1 = no emphasis."""
+def _p_text(p_el, notes: list[str], *, deep: bool = False) -> str:
+    """Text of one ``<hp:p>`` in run order, footnotes as ``[^n]`` references.
+
+    A ``<hp:ctrl><hp:footNote>`` is replaced by ``[^n]`` (n = its 1-based position in
+    *notes*) and its note text is appended to *notes* — so the note body isn't glued
+    into the surrounding text. ``deep`` also reads text inside *other* controls
+    (table cells historically did, via ``iter``); body paragraphs read direct runs only.
+    """
     parts: list[str] = []
-    for run in paragraph.element.findall(f"{{{_HP}}}run"):
-        for t in run.findall(f"{{{_HP}}}t"):
-            parts.append(_t_text(t))
-    return "".join(parts).strip()
+    for run in p_el.findall(f"{{{_HP}}}run"):
+        for child in run:
+            tag = child.tag.rsplit("}", 1)[-1]
+            if tag == "t":
+                parts.append(_t_text(child))
+            elif tag == "ctrl":
+                fn = child.find(f"{{{_HP}}}footNote")
+                if fn is not None:
+                    notes.append(_note_text(fn))
+                    parts.append(f"[^{len(notes)}]")
+                elif deep:
+                    parts.extend(_t_text(t) for t in child.iter(f"{{{_HP}}}t"))
+    return "".join(parts)
+
+
+def _note_text(footnote_el) -> str:
+    """A footnote's note text (its subList paragraphs, auto-number excluded)."""
+    sub = footnote_el.find(f"{{{_HP}}}subList")
+    if sub is None:
+        return ""
+    paras = [_p_text(p, []).strip() for p in sub.findall(f"{{{_HP}}}p")]
+    return " ".join(t for t in paras if t)
+
+
+def _paragraph_text(paragraph, notes: list[str] | None = None) -> str:
+    """All text content of *paragraph*, runs concatenated. v1 = no emphasis."""
+    return _p_text(paragraph.element, notes if notes is not None else []).strip()
 
 
 # --------------------------------------------------------------------------- #
@@ -136,13 +171,14 @@ def _emit_paragraph(lines: list[str], role: str, level: int, text: str) -> None:
     lines.append("")  # blank between blocks
 
 
-def _emit_table(lines: list[str], tbl) -> None:
+def _emit_table(lines: list[str], tbl, notes: list[str] | None = None) -> None:
     """Render an HWPX table as a rectangular Markdown pipe table.
 
     Merged cells are flattened — every position covered by a ``<hp:cellSpan>`` is
     filled with the same value, so the resulting grid is strictly rectangular.
     The first row becomes the Markdown header (Markdown requires one).
     """
+    notes = notes if notes is not None else []
     row_cnt = int(tbl.get("rowCnt") or 0)
     col_cnt = int(tbl.get("colCnt") or 0)
     if row_cnt == 0 or col_cnt == 0:
@@ -172,9 +208,7 @@ def _emit_table(lines: list[str], tbl) -> None:
             if sub is not None:
                 cell_paras: list[str] = []
                 for p in sub.findall(f"{{{_HP}}}p"):
-                    paragraph_text = "".join(
-                        _t_text(t) for t in p.iter(f"{{{_HP}}}t")
-                    ).strip()
+                    paragraph_text = _p_text(p, notes, deep=True).strip()
                     if paragraph_text:
                         cell_paras.append(paragraph_text)
                 # Markdown pipe cells are single-line; preserve paragraph breaks

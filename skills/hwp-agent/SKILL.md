@@ -107,6 +107,8 @@ The AI writes Markdown; the tool maps it onto the template's styles:
   (가로선), as its own paragraph.
 - `[^id]` + a `[^id]: 내용` definition line (pandoc/GFM footnotes) → a real
   Hangul **footnote** (각주) — see below.
+- `[표시](https://…)` and bare `https://…` URLs → Hangul **hyperlinks**
+  (Ctrl+click opens) — see below.
 
 ### Footnotes (각주)
 
@@ -131,6 +133,31 @@ uses the template's 「각주」 style (body style if none) and the section's
   so an HWPX ↔ Markdown round trip keeps footnotes.
 - Preview caveat: rhwp draws the notes but may stack multi-note lines tightly
   (no layout cache); Hangul / `hwp-agent pdf --engine hwp2pdf` is authoritative.
+
+### Links (하이퍼링크)
+
+`[표시](url)`, `<url>` and bare `http(s)://` URLs become Hangul hyperlink fields —
+in body text, table cells **and footnote notes** (so 각주 출처 URL is clickable).
+
+```markdown
+[^law]: 법제처, 「개인정보 보호법」, https://www.law.go.kr/법령/개인정보보호법 (2026.10.15. 접속)
+자세한 내용은 [제주연구원](https://www.jri.re.kr) 참조.
+```
+
+- A bare URL ends at whitespace / CJK brackets; trailing `.,;:` and a Korean
+  particle glued to it (`https://x.kr에서`) are left out; a Korean path segment
+  (`/법령/…`) stays in.
+- The target needs a scheme — `[x](./a.md)` stays literal. Images `![…](…)` are
+  not links.
+- Look: the template's 「하이퍼링크」 style if it has one, else the surrounding
+  text's look (Hangul does **not** colour links on its own). `--blue-links` draws
+  them blue + underlined. `--no-links` keeps URLs as plain text.
+- `extract` writes links back as `[표시](url)` (bare URL when text = URL);
+  `check` reports `hyperlinks: N field(s), M URL text(s) not linked` and an
+  `integrity [field]` finding for a fieldBegin/fieldEnd pair cut by an edit.
+- `build` manifests take `"links": false` / `"blue_links": true`.
+- Preview caveat: rhwp can draw a footnote mark that follows links in the same
+  paragraph at the wrong spot; Hangul places it correctly.
 
 ### Cross-references — **optional**, ask the writer first
 

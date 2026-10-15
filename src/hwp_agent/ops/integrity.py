@@ -17,7 +17,9 @@ Both are cheap to detect statically, so ``check`` reports them:
 * **count** — ``itemCnt`` differs from the number of elements;
 * **dangling** — a ``charPrIDRef`` / ``paraPrIDRef`` / ``styleIDRef`` /
   ``borderFillIDRef`` naming an id the header doesn't define;
-* **no-secPr** — a section part without ``<hp:secPr>`` (no page size/margins).
+* **no-secPr** — a section part without ``<hp:secPr>`` (no page size/margins);
+* **field** — a ``<hp:fieldBegin>`` with no matching ``<hp:fieldEnd>`` (or the
+  reverse): a hyperlink/누름틀 whose pair was cut by an edit (issue #27).
 
 Read-only; works on the raw package parts so it sees exactly what's on disk.
 """
@@ -48,7 +50,7 @@ _NONE_REF = "4294967295"
 
 @dataclass
 class IntegrityIssue:
-    kind: str  # order | duplicate | count | dangling | no-secPr
+    kind: str  # order | duplicate | count | dangling | no-secPr | field
     where: str  # e.g. "header charPr" or "Contents/section4.xml"
     detail: str
 
@@ -137,6 +139,11 @@ def audit_package(path: str | Path) -> list[IntegrityIssue]:
                 "no-secPr", name,
                 "section has no <hp:secPr> (page size/margins) — renderers lay out a "
                 "zero-size page; restore the template section's first paragraph"))
+
+    from .links import audit_package_links
+
+    for name, detail in audit_package_links(path)["broken"]:
+        issues.append(IntegrityIssue("field", name, detail))
     return issues
 
 

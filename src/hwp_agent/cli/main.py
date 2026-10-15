@@ -555,6 +555,16 @@ def _cmd_check(args: argparse.Namespace) -> int:
         for e in integrity:
             print(f"  [{e['kind']}] {e['where']}: {e['detail']}")
 
+    links = r.get("links") or {}
+    if links.get("hyperlinks") or links.get("bare_urls"):
+        bare = links.get("bare_urls") or []
+        print(f"hyperlinks: {links.get('hyperlinks', 0)} field(s), "
+              f"{len(bare)} URL text(s) not linked")
+        for u in bare[:5]:
+            print(f"  · {u}")
+        if len(bare) > 5:
+            print(f"  … +{len(bare) - 5}")
+
     markers = r.get("markers") or []
     if markers:
         print("insertion markers (write/build 삽입 지점):")
@@ -798,9 +808,13 @@ def _cmd_write(args: argparse.Namespace) -> int:
         marker_token=marker_token,
         equal_columns=getattr(args, "equal_columns", False),
         strip_other_markers=True,
+        links=getattr(args, "links", True),
+        blue_links=getattr(args, "blue_links", False),
     )
     _guard_finalize(gr)
     print(f"placed {result.placed} block(s) -> {gr.target}")
+    if result.links:
+        print(f"  linked {result.links} URL(s) as hyperlink fields")
     if result.instructions_removed:
         print(f"  removed {result.instructions_removed} instruction paragraph(s)")
     if result.unmapped_roles:
@@ -831,17 +845,46 @@ def _cmd_build(args: argparse.Namespace) -> int:
 
     gr = _guard_output(out)
     try:
-        result = build_report(args.manifest, output=gr.target)
+        result = build_report(
+            args.manifest, output=gr.target,
+            links=getattr(args, "links", None),
+            blue_links=getattr(args, "blue_links", None),
+        )
     except (OSError, ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     _guard_finalize(gr)
     print(f"assembled {result.placed} block(s) -> {gr.target}")
+    if result.links:
+        print(f"  linked {result.links} URL(s) as hyperlink fields")
     if result.unmapped_roles:
         print(f"  unmapped (fell back to BODY): {', '.join(result.unmapped_roles)}")
     for warning in result.warnings:
         print(f"  warning: {warning}", file=sys.stderr)
     return 0
+
+
+def _add_link_args(p: argparse.ArgumentParser, *, default_links) -> None:
+    """``--no-links`` / ``--blue-links`` (issue #27), shared by write and build.
+
+    build passes ``None`` defaults so the manifest's own keys apply unless a flag
+    is given."""
+    p.add_argument(
+        "--no-links",
+        dest="links",
+        action="store_false",
+        default=default_links,
+        help="keep [text](url) and bare URLs as plain text "
+        "(default: Hangul hyperlink fields, Ctrl+click to open)",
+    )
+    p.add_argument(
+        "--blue-links",
+        dest="blue_links",
+        action="store_true",
+        default=None if default_links is None else False,
+        help="draw link text blue + underlined (default: the template's 하이퍼링크 "
+        "style if it has one, else the surrounding text's look)",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1205,6 +1248,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="which marker to fill in a multi-marker template "
         "(default: {{body}} if present, else the first marker)",
     )
+    _add_link_args(wr, default_links=True)
     wr.add_argument("-o", "--output", type=Path, default=None, help="output file")
     wr.set_defaults(func=_cmd_write)
 
@@ -1218,6 +1262,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-o", "--output", type=Path, default=None,
         help="output file (overrides the manifest's 'output')",
     )
+    _add_link_args(bd, default_links=None)
     bd.set_defaults(func=_cmd_build)
 
     return parser

@@ -42,25 +42,28 @@ _MD_LINK_RE = re.compile(
 )
 #: a bare ``http(s)://`` URL (greedy up to whitespace / CJK punctuation, then
 #: trimmed by :func:`_trim_url`; not the target of an image ``![…](url)``) or a
-#: ``<url>`` autolink (group 1)
+#: ``<url>`` autolink (group 1) — neither form as an image destination ``![…](…)``
 _BARE_URL_RE = re.compile(
-    r"<(https?://[^\s<>]+)>"
-    r"|(?<![\w/@.\-])(?<!\]\()https?://[^\s<>\"「」『』（）〈〉《》，。、·“”‘’]+"
+    r"(?<!\]\()<(https?://[^\s<>]+)>"
+    r"|(?<![\w/@.\-])(?<!\]\()(?<!\]\(<)https?://[^\s<>\"「」『』（）〈〉《》，。、·“”‘’]+"
 )
 #: punctuation that ends a sentence rather than the URL
 _TRAILING = ".,;:!?'\"*"
 #: the host part (scheme://host[:port]) — ASCII only, so ``https://x.kr에서`` stops
 _HOST_RE = re.compile(r"https?://[A-Za-z0-9\-._~%:@\[\]]+")
 #: a trailing non-ASCII run glued to an ASCII character (``…/page에서``) is a Korean
-#: particle, not path; one that starts a segment (``…/법령/개인정보보호법``) is path
-_GLUED_TAIL_RE = re.compile(r"(?<=[A-Za-z0-9\-._~%=&?#)\]])[^\x00-\x7f]+$")
+#: particle, not path; one that starts a segment (``…/법령/개인정보보호법``) is path.
+#: Only applied to host/path URLs — in a query or fragment (``?q=제주``, ``#섹션``) a
+#: Korean value is real data, so it's kept (PR #28 review)
+_GLUED_TAIL_RE = re.compile(r"(?<=[A-Za-z0-9\-._~%)\]])[^\x00-\x7f]+$")
 
 
 def _trim_url(url: str) -> str:
     """Cut a greedy bare-URL match back to the URL itself.
 
     Non-ASCII may appear in the path (law.go.kr's ``/법령/…``) but not in the host;
-    a trailing Korean run glued to ASCII is a particle; sentence punctuation is
+    a trailing Korean run glued to ASCII in the host/path is a particle (not in a
+    query/fragment, where it's a value); sentence punctuation is
     dropped; ``)``/``]`` are kept only when balanced."""
     host = _HOST_RE.match(url)
     if host is None:
@@ -68,7 +71,8 @@ def _trim_url(url: str) -> str:
     if host.end() < len(url) and url[host.end()] not in "/?#":
         url = url[: host.end()]
     while url:
-        url = _GLUED_TAIL_RE.sub("", url)
+        if "?" not in url and "#" not in url:
+            url = _GLUED_TAIL_RE.sub("", url)
         last = url[-1]
         if last in _TRAILING:
             url = url[:-1]

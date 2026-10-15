@@ -54,6 +54,11 @@ _HH = "{http://www.hancom.co.kr/hwpml/2011/head}"
         # not links: footnote refs, images, schemeless targets
         ("각주[^a] 이미지 ![x](https://i.png)", [("각주[^a] 이미지 ![x](https://i.png)", None)]),
         ("[상대](./a.md)", [("[상대](./a.md)", None)]),
+        ("![x](<https://i.png>)", [("![x](<https://i.png>)", None)]),
+        # a Korean query / fragment value is part of the URL (PR #28 review)
+        ("https://e.com/search?q=제주 검색",
+         [("https://e.com/search?q=제주", "https://e.com/search?q=제주"), (" 검색", None)]),
+        ("https://e.com/#섹션", [("https://e.com/#섹션", "https://e.com/#섹션")]),
     ],
 )
 def test_link_pieces(text, expected) -> None:

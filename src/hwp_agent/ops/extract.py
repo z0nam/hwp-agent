@@ -22,6 +22,9 @@ v1 scope is deliberately small:
   dropping everything before the first level-1 heading.
 * footnotes: each ``<hp:footNote>`` becomes a ``[^n]`` reference at its position and
   a ``[^n]: text`` definition at the end — the inverse of ``write`` (issue #23).
+* hyperlinks: a URL ``HYPERLINK`` field becomes ``[text](url)`` (bare ``url`` when the
+  text is the URL itself) — the inverse of ``write`` (issue #27). In-document links
+  (목차 → 본문) keep their text only.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from pathlib import Path
 
 from hwpx.document import HwpxDocument
 
+from .links import hyperlink_url
 from .styles import role_map
 
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
@@ -127,28 +131,59 @@ def _p_text(p_el, notes: list[str], *, deep: bool = False) -> str:
     on the way into a reference. Body paragraphs read direct runs only.
     """
     parts: list[str] = []
+    links: list[tuple[int, str | None]] = []  # open hyperlink fields: (parts idx, url)
     for run in p_el.findall(f"{{{_HP}}}run"):
         for child in run:
             if _local(child) == "t":
                 parts.append(_t_text(child))
             elif deep:
-                _walk_deep(child, parts, notes)
+                _walk_deep(child, parts, notes, links)
             elif _local(child) == "ctrl":
-                fn = child.find(f"{{{_HP}}}footNote")
-                if fn is not None:
-                    notes.append(_note_text(fn))
-                    parts.append(f"[^{len(notes)}]")
+                for c in child:
+                    if _local(c) == "footNote":
+                        notes.append(_note_text(c))
+                        parts.append(f"[^{len(notes)}]")
+                    elif _local(c) in ("fieldBegin", "fieldEnd"):
+                        _link_field(c, parts, links)
     return "".join(parts)
+
+
+def _link_field(el, parts: list[str], links: list[tuple[int, str | None]]) -> None:
+    """Open/close a hyperlink field: on its end, the text collected since its begin
+    is rewritten as ``[text](url)`` (or the bare URL when the text is the URL)."""
+    if _local(el) == "fieldBegin":
+        if el.get("type") == "HYPERLINK":
+            links.append((len(parts), hyperlink_url(el)))
+        return
+    if not links:
+        return
+    start, url = links.pop()
+    if url is None:  # in-document target (목차 링크): keep the text
+        return
+    text = "".join(parts[start:])
+    del parts[start:]
+    if not text.strip() or text.strip() == url:
+        parts.append(url if not text.strip() else text)
+    else:
+        parts.append(f"[{text}]({url})")
 
 
 def _local(el) -> str:
     return el.tag.rsplit("}", 1)[-1] if isinstance(el.tag, str) else ""
 
 
-def _walk_deep(el, parts: list[str], notes: list[str]) -> None:
+def _walk_deep(
+    el, parts: list[str], notes: list[str], links: list | None = None
+) -> None:
     """Collect ``<hp:t>`` text under *el* in document order; a footnote becomes a
-    ``[^n]`` reference (its body goes to *notes*, not into the text)."""
+    ``[^n]`` reference (its body goes to *notes*, not into the text), a hyperlink
+    field ``[text](url)``."""
+    if links is None:
+        links = []
     tag = _local(el)
+    if tag in ("fieldBegin", "fieldEnd"):
+        _link_field(el, parts, links)
+        return
     if tag == "footNote":
         notes.append(_note_text(el))
         parts.append(f"[^{len(notes)}]")
@@ -157,7 +192,7 @@ def _walk_deep(el, parts: list[str], notes: list[str]) -> None:
         parts.append(_t_text(el))
         return
     for child in el:
-        _walk_deep(child, parts, notes)
+        _walk_deep(child, parts, notes, links)
 
 
 def _note_definitions(notes: list[str]) -> list[str]:

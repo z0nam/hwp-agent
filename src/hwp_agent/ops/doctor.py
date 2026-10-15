@@ -167,9 +167,18 @@ def diagnose_template(path: str) -> dict:
         "lineseg_mismatches": [m.as_dict() for m in iter_mismatches(path)],
         "markers": _marker_audit(doc, roles.get("INSTRUCTION")),
         "integrity": [i.as_dict() for i in audit_package(path)],
+        "links": _link_summary(path),
     }
     report["warnings"] = _warnings(report)
     return report
+
+
+def _link_summary(path) -> dict:
+    """Hyperlink fields vs URL text left unlinked (issue #27) — informational."""
+    from .links import audit_package_links
+
+    a = audit_package_links(path)
+    return {"hyperlinks": a["hyperlinks"], "bare_urls": a["bare_urls"]}
 
 
 def _warnings(r: dict) -> list[str]:

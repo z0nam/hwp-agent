@@ -33,6 +33,7 @@ from pathlib import Path
 from hwpx.document import HwpxDocument
 
 from .form import extract_placeholders
+from .links import link_inner_xml, link_pieces, link_run_xml, rendered_text
 from .styles import INSTRUCTION, bullet_glyph_name, read_style_system, role_map
 from .tablewidth import CHAR_W, compute_column_widths
 
@@ -152,6 +153,7 @@ class AuthorResult:
     instructions_removed: int = 0
     inserted_at_marker: bool = False  # False = appended (no {{body}} marker found)
     target_section: int = -1  # index of the section the content went into
+    links: int = 0  # hyperlink fields created ([text](url) / bare URLs)
     warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -161,6 +163,7 @@ class AuthorResult:
             "instructions_removed": self.instructions_removed,
             "inserted_at_marker": self.inserted_at_marker,
             "target_section": self.target_section,
+            "links": self.links,
             "warnings": self.warnings,
         }
 
@@ -279,6 +282,9 @@ def _build_footnote_run(
     number: int, inst_id: int, text: str,
     fn_sid: str | None, fn_para, fn_char, body_char,
     num_format: dict[str, str] | None = None,
+    *,
+    links: bool = False,
+    link_char=None,
 ):
     """Build a body ``<hp:run>`` carrying a footnote control with *text* as its note.
 
@@ -289,7 +295,11 @@ def _build_footnote_run(
 
     *num_format* is the section's footnote ``autoNumFormat`` (Roman, circled, user
     char, decorations, superscript …), copied so the note number matches the
-    template's own footnote settings instead of a hard-coded ``1)``."""
+    template's own footnote settings instead of a hard-coded ``1)``.
+
+    With *links*, ``[표시](url)`` / bare URLs in the note become hyperlink fields
+    (issue #27), each in its own run (in *link_char*, else the note char); text
+    without links yields the same single run as before."""
     from lxml import etree
 
     def attr(v):
@@ -302,6 +312,17 @@ def _build_footnote_run(
     fn_suffix = f' suffixChar="{ord(suffix[0])}"' if suffix else ""
     run_char = f' charPrIDRef="{attr(body_char)}"' if body_char is not None else ""
     p_char = f' charPrIDRef="{attr(fn_char)}"' if fn_char is not None else ""
+    pieces = link_pieces(text) if links else [(text, None)]
+    first = ""
+    if pieces and pieces[0][1] is None:
+        first, pieces = pieces[0][0], pieces[1:]
+    l_char = link_char if link_char is not None else fn_char
+    l_attr = f' charPrIDRef="{attr(l_char)}"' if l_char is not None else ""
+    rest = "".join(
+        f"<hp:run{l_attr}>{link_inner_xml(t, u)}</hp:run>" if u is not None
+        else f"<hp:run{p_char}><hp:t>{_xml_escape(t)}</hp:t></hp:run>"
+        for t, u in pieces
+    )
     xml = (
         f'<hp:run xmlns:hp="{_HP}"{run_char}>'
         f'<hp:ctrl><hp:footNote number="{number}"{fn_suffix} instId="{inst_id}">'
@@ -313,8 +334,8 @@ def _build_footnote_run(
         f'<hp:run{p_char}>'
         f'<hp:ctrl><hp:autoNum num="{number}" numType="FOOTNOTE">'
         f"<hp:autoNumFormat{fmt_attrs}/></hp:autoNum></hp:ctrl>"
-        f"<hp:t>{_xml_escape(text)}</hp:t>"
-        f"</hp:run></hp:p></hp:subList></hp:footNote></hp:ctrl></hp:run>"
+        f"<hp:t>{_xml_escape(first)}</hp:t></hp:run>{rest}"
+        f"</hp:p></hp:subList></hp:footNote></hp:ctrl></hp:run>"
     )
     return etree.fromstring(xml)
 
@@ -976,7 +997,8 @@ def _grow_rows_for_content(table_el, row_texts: list[list[str]]) -> None:
             # rendered text: emphasis delimiters aren't drawn and a [^id] reference
             # becomes a one-glyph superscript mark, so neither counts toward wrapping
             text = (
-                _FOOTNOTE_REF_RE.sub("¹", plain_text(texts[c])) if c < len(texts) else ""
+                _FOOTNOTE_REF_RE.sub("¹", rendered_text(plain_text(texts[c])))
+                if c < len(texts) else ""
             )
             lines = sum(max(1, -(-len(seg) // cpl)) for seg in text.split("\n")) or 1
             max_lines = max(max_lines, lines)
@@ -1216,6 +1238,66 @@ def _emphasis_char(doc: HwpxDocument, base_char: str | None, *, bold: bool, ital
         return base_char  # never inflate the font; worst case the run stays plain-styled
 
 
+#: link look forced by ``--blue-links`` (Hangul's own hyperlink colour)
+_LINK_COLOR = "#0000FF"
+
+
+def _blue_link_char(doc: HwpxDocument, base_char):
+    """A blue, underlined variant of *base_char* for hyperlink text (``--blue-links``).
+
+    Same font/size/emphasis as the surrounding text — only ``textColor`` and the
+    ``<hh:underline>`` differ — so an existing identical variant is reused. Falls back
+    to the base char on any problem (the link still works, it just isn't coloured)."""
+    from lxml import etree
+
+    def norm(el) -> bytes:
+        c = copy.deepcopy(el)
+        c.attrib.pop("id", None)
+        c.set("textColor", _LINK_COLOR)
+        for u in c.findall(f"{{{_HH}}}underline"):
+            c.remove(u)
+        return etree.tostring(c)
+
+    try:
+        header = doc._root._headers[0]
+        cps = header._char_properties_element(create=False)
+        base_el = cps.find(f"{{{_HH}}}charPr[@id='{base_char}']") if base_char is not None else None
+        if base_el is None:
+            base_el = cps.find(f"{{{_HH}}}charPr")
+        base_norm = norm(base_el)
+
+        def predicate(el) -> bool:
+            u = el.find(f"{{{_HH}}}underline")
+            return (
+                el.get("textColor") == _LINK_COLOR
+                and u is not None and u.get("type") == "BOTTOM"
+                and norm(el) == base_norm
+            )
+
+        def modifier(el) -> None:
+            el.set("textColor", _LINK_COLOR)
+            for u in el.findall(f"{{{_HH}}}underline"):
+                el.remove(u)
+            u = el.makeelement(
+                f"{{{_HH}}}underline",
+                {"type": "BOTTOM", "shape": "SOLID", "color": _LINK_COLOR},
+            )
+            # schema order: … italic, bold, underline, strikeout, …
+            strike = el.find(f"{{{_HH}}}strikeout")
+            if strike is not None:
+                strike.addprevious(u)
+            else:
+                el.append(u)
+
+        el = header.ensure_char_property(
+            predicate=predicate, modifier=modifier,
+            base_char_pr_id=base_el.get("id"),
+        )
+        return el.get("id") or base_char
+    except Exception:
+        return base_char
+
+
 def _find_insertion_marker(doc: HwpxDocument, marker_token: str | None = None):
     """Locate the paragraph holding an insertion marker, if any.
 
@@ -1320,6 +1402,8 @@ def fill_from_markdown(
     marker_token: str | None = None,
     equal_columns: bool = False,
     strip_other_markers: bool = False,
+    links: bool = True,
+    blue_links: bool = False,
 ) -> AuthorResult:
     """Fill a template from Markdown, styled with its own outline styles.
 
@@ -1333,6 +1417,12 @@ def fill_from_markdown(
     generated tables copy — use it when the ``{{table…}}`` token was already
     consumed by a prior ``author`` run (the token is removed on fill). When neither
     a token nor this pattern matches and the Markdown has tables, a warning is added.
+
+    ``links`` (default on) turns ``[표시](url)`` and bare ``http(s)://`` URLs — in
+    body text, table cells and footnote notes — into Hangul hyperlink fields
+    (issue #27); off keeps them as plain text. Link text takes the template's
+    「하이퍼링크」 style char when it has one; ``blue_links`` forces a blue-underlined
+    variant of the surrounding char instead.
     """
     roles = role_map(template)
     infos = {i.style_id: i for i in read_style_system(template)}
@@ -1429,6 +1519,45 @@ def fill_from_markdown(
     fn_used: set[str] = set()
     fn_missing: list[str] = []
 
+    # hyperlinks (issue #27): a template 「하이퍼링크」 character style, if any
+    hl_char = None
+    for i in infos.values():
+        if "하이퍼링크" in (i.name or "") or "hyperlink" in (i.name or "").lower():
+            try:
+                hl_char = doc.style(i.style_id).char_pr_id_ref
+            except Exception:
+                hl_char = None
+            break
+    blue_cache: dict = {}
+
+    def link_char(char):
+        if blue_links:
+            if char not in blue_cache:
+                blue_cache[char] = _blue_link_char(doc, char)
+            return blue_cache[char]
+        return hl_char if hl_char is not None else char
+
+    def emit_text(para, s: str, char) -> None:
+        """Add *s* as a run, with each link in it as a hyperlink-field run."""
+        pieces = link_pieces(s) if links else [(s, None)]
+        if all(u is None for _, u in pieces):
+            para.add_run(s, char_pr_id_ref=char)
+            return
+        from lxml import etree
+
+        for t, u in pieces:
+            if u is None:
+                if t:
+                    para.add_run(t, char_pr_id_ref=char)
+            else:
+                para.element.append(etree.fromstring(link_run_xml(t, u, link_char(char))))
+                result.links += 1
+        if pieces[-1][1] is not None:
+            # Hangul draws the paragraph's bullet/number in the *last* run's char, so
+            # a paragraph ending in a (blue) link would get a blue bullet — close it
+            # with an empty run in the surrounding char
+            para.add_run("", char_pr_id_ref=char)
+
     def write_text(para, text: str, char, ref_char) -> None:
         """Add *text* as runs, turning each ``[^id]`` into a footnote control in place.
 
@@ -1444,12 +1573,12 @@ def fill_from_markdown(
                     fn_missing.append(fid)
                 continue  # leave the literal [^id]
             if m.start() > last:
-                para.add_run(text[last : m.start()], char_pr_id_ref=char)
+                emit_text(para, text[last : m.start()], char)
             _emit_footnote(para, fn_defs[fid], ref_char)
             fn_used.add(fid)
             last = m.end()
         if last < len(text) or last == 0:
-            para.add_run(text[last:], char_pr_id_ref=char)
+            emit_text(para, text[last:], char)
 
     body_style = roles.get("BODY")
     body_para = infos[body_style].para_pr_id if body_style in infos else None
@@ -1468,9 +1597,13 @@ def fill_from_markdown(
     def _emit_footnote(para, note_text: str, body_char) -> None:
         _fn_count[0] += 1
         # Hangul's own notes start with a space after the auto-number ("1) 기관별로…")
+        note = " " + note_text.strip()
+        if links:
+            result.links += sum(1 for _, u in link_pieces(note) if u is not None)
         run_el = _build_footnote_run(
-            _fn_count[0], 0xA0000000 + _fn_count[0], " " + note_text.strip(),
+            _fn_count[0], 0xA0000000 + _fn_count[0], note,
             fn_sid, fn_para, fn_char, body_char, fn_format,
+            links=links, link_char=link_char(fn_char) if links else None,
         )
         para.element.append(run_el)
 
@@ -1685,6 +1818,8 @@ def fill_sections(
     chapter: str | int | None = None,
     table_template: str | None = None,
     equal_columns: bool = False,
+    links: bool = True,
+    blue_links: bool = False,
 ) -> AuthorResult:
     """Fill several named markers, each from its own Markdown part.
 
@@ -1715,8 +1850,11 @@ def fill_sections(
                 table_template=table_template,
                 marker_token=token,
                 equal_columns=equal_columns,
+                links=links,
+                blue_links=blue_links,
             )
             agg.placed += res.placed
+            agg.links += res.links
             agg.instructions_removed += res.instructions_removed
             agg.unmapped_roles += [
                 r for r in res.unmapped_roles if r not in agg.unmapped_roles
@@ -1735,7 +1873,11 @@ def fill_sections(
 
 
 def build_report(
-    manifest: Path | str, *, output: Path | str | None = None
+    manifest: Path | str,
+    *,
+    output: Path | str | None = None,
+    links: bool | None = None,
+    blue_links: bool | None = None,
 ) -> AuthorResult:
     """Assemble a multi-section report from a JSON manifest into one template.
 
@@ -1758,6 +1900,9 @@ def build_report(
 
     A part whose marker isn't in the template falls back (append to last section)
     with a warning — surfaced in the result, prefixed by the marker.
+
+    Optional manifest keys ``"links"`` (default true) / ``"blue_links"`` mirror the
+    ``write`` options; the *links* / *blue_links* arguments override them.
     """
     import json
 
@@ -1795,4 +1940,6 @@ def build_report(
         chapter=data.get("chapter"),
         table_template=data.get("table_template"),
         equal_columns=data.get("equal_columns", False),
+        links=data.get("links", True) if links is None else links,
+        blue_links=data.get("blue_links", False) if blue_links is None else blue_links,
     )

@@ -1597,3 +1597,34 @@ def test_neutralize_reference_table_handles_merged_cells() -> None:
     assert note_addr.get("colAddr") == "0"
 
 
+def test_pick_reference_table_rejects_undersized() -> None:
+    """_pick_reference_table rejects layout/form tables that have < 2 rows or < 2 logical cols (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    # p1: 1 row, 2 cols (undersized by row)
+    # p2: 3 rows, 1 col (undersized by col)
+    # p3: 2 rows, 2 cols (valid)
+    p1 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2"><hp:tr><hp:tc/><hp:tc/></hp:tr></hp:tbl></hp:run></hp:p>'
+    )
+    p2 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="1"><hp:tr><hp:tc/></hp:tr><hp:tr><hp:tc/></hp:tr><hp:tr><hp:tc/></hp:tr></hp:tbl></hp:run></hp:p>'
+    )
+    p3 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2"><hp:tr><hp:tc/><hp:tc/></hp:tr><hp:tr><hp:tc/><hp:tc/></hp:tr></hp:tbl></hp:run></hp:p>'
+    )
+    picked = mod._pick_reference_table([p1, p2, p3])
+    assert picked is not None
+    assert picked[0] is p3
+    assert mod._pick_reference_table([p1, p2]) is None
+
+
+

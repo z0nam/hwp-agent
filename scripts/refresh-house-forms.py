@@ -257,7 +257,24 @@ def _pick_reference_table(paras: list, header_root=None):
         if tbl is None or tbl.find(".//" + _hp("pic")) is not None:
             continue
         rows = tbl.findall(_hp("tr"))
-        ncols = max((len(tr.findall(_hp("tc"))) for tr in rows), default=0)
+        if len(rows) < 2:
+            continue
+        logical_cols = int(tbl.get("colCnt", "0") or 0)
+        if not logical_cols:
+            logical_cols = max(
+                (
+                    sum(
+                        int(span.get("colSpan", "1") or 1)
+                        if (span := tc.find(_hp("cellSpan"))) is not None
+                        else 1
+                        for tc in tr.findall(_hp("tc"))
+                    )
+                    for tr in rows
+                ),
+                default=0,
+            )
+        if len(rows) < 2 or logical_cols < 2:
+            continue
         has_vmerge = any(
             int(span.get("rowSpan", "1") or 1) > 1
             for tc in tbl.findall(".//" + _hp("tc"))

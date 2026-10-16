@@ -812,6 +812,30 @@ def _strip_table_token(tbl_element) -> None:
             t.text = _TABLE_TOKEN_RE.sub("", t.text).rstrip()
 
 
+def _is_neutralized_reference_table(tbl_element) -> bool:
+    """Return True if *tbl_element* is a neutralized format reference table.
+
+    Such a table was created solely to preserve house styles in stripped templates:
+      - Header row cells are either blank or standard placeholders ('구분', '항목', '내용').
+      - All non-header (data and note) cells are completely empty.
+    """
+    trs = tbl_element.findall(f"{{{_HP}}}tr")
+    if not trs:
+        return False
+    generic_headers = {"", "구분", "항목", "내용"}
+    for ri, tr in enumerate(trs):
+        for tc in tr.findall(f"{{{_HP}}}tc"):
+            text = "".join(t.text or "" for t in tc.iter(f"{{{_HP}}}t")).strip()
+            is_header = tc.get("header") == "1" or ri == 0
+            if is_header:
+                if text not in generic_headers:
+                    return False
+            else:
+                if text:
+                    return False
+    return True
+
+
 def _clone_caption(ref_el, title: str, chapter: str | None):
     """Clone the reference table's caption (auto-number + 표제목 style) with *title*.
 
@@ -1775,12 +1799,27 @@ def fill_from_markdown(
             + ", ".join(f"[^{f}]" for f in unused)
         )
 
-    # clean the {{table…}} designation token out of the reference table's caption
-    # (fill_sections defers this to the final part so earlier parts like intro don't
-    # consume the token before body/appendix run)
+    # clean the {{table…}} designation token out of the reference table's caption,
+    # or drop the reference table entirely if it is a neutralized dummy table created
+    # solely as a format reference (so it doesn't leave an empty table and stray auto-number).
     if strip_table_token and designated and ref_element is not None:
-        _strip_table_token(ref_element)
-        ref_section.mark_dirty()  # so the edited section is re-serialized on save
+        if _is_neutralized_reference_table(ref_element):
+            p = ref_element.getparent()
+            while p is not None and p.tag != f"{{{_HP}}}p":
+                p = p.getparent()
+            if p is not None:
+                if p.find(f".//{{{_HP}}}secPr") is not None:
+                    tbl_parent = ref_element.getparent()
+                    if tbl_parent is not None:
+                        tbl_parent.remove(ref_element)
+                else:
+                    parent = p.getparent()
+                    if parent is not None:
+                        parent.remove(p)
+                ref_section.mark_dirty()
+        else:
+            _strip_table_token(ref_element)
+            ref_section.mark_dirty()
 
     if marker is not None:
         # if the marker paragraph opens its 구역 (carries <hp:secPr>), move that

@@ -1489,9 +1489,35 @@ def test_fill_sections_preserves_table_template_across_parts(tmp_path: Path) -> 
     # {{table_template}} token was stripped after the final part completed
     all_text = "".join(t.text or "" for s in doc.sections for t in s.element.iter(f"{_HP}t"))
     assert "{{table_template}}" not in all_text
-    # Section 4 contains the authored table and the retained reference table (with token stripped)
+    # Section 4 contains only the authored table; the neutralized reference table was dropped
     s4_tbls = list(doc.sections[4].element.iter(f"{_HP}tbl"))
-    assert len(s4_tbls) == 2
+    assert len(s4_tbls) == 1
+
+
+@pytest.mark.skipif(not _HOUSE_POLICY.is_file(), reason="baked house form not present")
+def test_fill_sections_without_tables_drops_neutralized_reference_table(tmp_path: Path) -> None:
+    """Building content with no tables must drop the neutralized reference table so no stray empty table remains (#30)."""
+    from hwpx.document import HwpxDocument
+
+    from hwp_agent.ops import fill_sections
+
+    out = tmp_path / "built_no_tables.hwpx"
+    res = fill_sections(
+        _HOUSE_POLICY,
+        [
+            ("{{intro}}", "# 들어가며\n\n- 서문 문단\n"),
+            ("{{body}}", "# Ⅰ. 서론\n\n본문 문단만 있고 표는 없음.\n"),
+            ("{{references}}", "- 참고문헌 항목\n"),
+        ],
+        output=out,
+    )
+    assert not any("{{table" in w for w in res.warnings), res.warnings
+
+    doc = HwpxDocument.open(str(out))
+    # Section 4 has no tables left at all
+    s4_tbls = list(doc.sections[4].element.iter(f"{_HP}tbl"))
+    assert len(s4_tbls) == 0
+
 
 
 def test_refresh_strip_keeps_neutralized_table_template(tmp_path: Path) -> None:
@@ -2038,6 +2064,50 @@ def test_insert_body_marker_preserves_secpr_when_table_in_opener(tmp_path: Path)
     assert paras[2].find(f".//{{{hp}}}tbl") is not None
     assert paras[2].get("paraPrIDRef") == "10"
     assert paras[2].find(f".//{{{hp}}}secPr") is None  # no duplicated secPr
+
+
+def test_is_neutralized_reference_table() -> None:
+    """_is_neutralized_reference_table recognizes neutralized house format tables and distinguishes them from user tables (#30)."""
+    from lxml import etree
+
+    from hwp_agent.ops.author import _is_neutralized_reference_table
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # Neutralized house format table: header with 구분/항목/내용 and empty body
+    xml_neutral = (
+        f'<hp:tbl xmlns:hp="{hp}">'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'<hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>항목</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'<hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>내용</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'<hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'<hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl>'
+    )
+    tbl_neutral = etree.fromstring(xml_neutral.encode("utf-8"))
+    assert _is_neutralized_reference_table(tbl_neutral) is True
+
+    # User table with real content in data row: not neutralized
+    xml_user_data = (
+        f'<hp:tbl xmlns:hp="{hp}">'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t>실제데이터</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl>'
+    )
+    tbl_user_data = etree.fromstring(xml_user_data.encode("utf-8"))
+    assert _is_neutralized_reference_table(tbl_user_data) is False
+
+    # User table with custom headers: not neutralized
+    xml_user_header = (
+        f'<hp:tbl xmlns:hp="{hp}">'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>연도</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl>'
+    )
+    tbl_user_header = etree.fromstring(xml_user_header.encode("utf-8"))
+    assert _is_neutralized_reference_table(tbl_user_header) is False
+
 
 
 

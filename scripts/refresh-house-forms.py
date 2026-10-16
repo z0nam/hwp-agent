@@ -264,6 +264,8 @@ def _pick_reference_table(paras: list, header_root=None):
             if (span := tc.find(_hp("cellSpan"))) is not None
         )
         designated = bool(_TABLE_TOKEN_RE.search(_caption_text(tbl)))
+        if has_vmerge and not designated:
+            continue
         sib_note = _sibling_note_style(p, header_root)
         has_note = (_table_format(tbl).note is not None) or (sib_note is not None)
         full_bands = len(rows) >= 4
@@ -301,6 +303,76 @@ def _build_template_caption(
     return etree.fromstring(xml.encode("utf-8"))
 
 
+def _expand_vertical_merges(tbl) -> None:
+    """수직 병합 셀(rowSpan > 1)을 풀고, 누락된 행별 셀들을 복제 삽입하여 완전한 그리드로 전개한다."""
+    from hwp_agent.ops.form import _set_cell_text_overwrite
+
+    trs = tbl.findall(_hp("tr"))
+    if not trs:
+        return
+    logical_cols = int(tbl.get("colCnt", "0") or 0)
+    if not logical_cols:
+        for tr in trs:
+            r_cols = sum(
+                int(span.get("colSpan", "1") or 1)
+                if (span := tc.find(_hp("cellSpan"))) is not None
+                else 1
+                for tc in tr.findall(_hp("tc"))
+            )
+            logical_cols = max(logical_cols, r_cols)
+    logical_cols = max(logical_cols, 1)
+
+    grid = [[None] * logical_cols for _ in range(len(trs))]
+    for r, tr in enumerate(trs):
+        c = 0
+        for tc in tr.findall(_hp("tc")):
+            while c < logical_cols and grid[r][c] is not None:
+                c += 1
+            if c >= logical_cols:
+                break
+            span = tc.find(_hp("cellSpan"))
+            cs = int(span.get("colSpan", "1") or 1) if span is not None else 1
+            rs = int(span.get("rowSpan", "1") or 1) if span is not None else 1
+            for dr in range(rs):
+                if r + dr < len(trs):
+                    for dc in range(cs):
+                        if c + dc < logical_cols:
+                            grid[r + dr][c + dc] = (tc, dr == 0 and dc == 0)
+            c += cs
+
+    for r, tr in enumerate(trs):
+        existing_tcs = set(tr.findall(_hp("tc")))
+        row_cells = []
+        c = 0
+        while c < logical_cols:
+            entry = grid[r][c]
+            if entry is None:
+                c += 1
+                continue
+            tc, is_origin = entry
+            span = tc.find(_hp("cellSpan"))
+            cs = int(span.get("colSpan", "1") or 1) if span is not None else 1
+            if tc in existing_tcs and is_origin:
+                if span is not None:
+                    span.set("rowSpan", "1")
+                row_cells.append(tc)
+            else:
+                clone = copy.deepcopy(tc)
+                clone.set("header", "0")
+                _set_cell_text_overwrite(clone, "")
+                cl_span = clone.find(_hp("cellSpan"))
+                if cl_span is not None:
+                    cl_span.set("rowSpan", "1")
+                    cl_span.set("colSpan", str(cs))
+                row_cells.append(clone)
+            c += cs
+
+        for child in list(tr.findall(_hp("tc"))):
+            tr.remove(child)
+        for cell in row_cells:
+            tr.append(cell)
+
+
 def _neutralize_reference_table(
     table_p, tbl, header_root=None, sibling_note_style=None
 ) -> None:
@@ -320,6 +392,9 @@ def _neutralize_reference_table(
         _table_format,
     )
     from hwp_agent.ops.form import _set_cell_text_overwrite
+
+    # 수직 병합 셀이 있으면 행별 독립 셀로 전개하여 삭제 후 누락/열 밀림 방지
+    _expand_vertical_merges(tbl)
 
     caption_style = _find_style(header_root, ("표제목", "표/그림 제목"))
     body_cell_style = _find_style(header_root, ("표내용", "JRI_표내용"))

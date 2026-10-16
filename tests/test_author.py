@@ -1579,6 +1579,11 @@ def test_neutralize_reference_table_handles_merged_cells() -> None:
             if span is not None:
                 assert span.get("rowSpan") == "1"
 
+    # Row 2 (which was covered by r1's vertical merge) now has full 3 cells with colAddr 0, 1, 2
+    r2_tcs = trs[2].findall(f"{{{hp}}}tc")
+    assert len(r2_tcs) == 3
+    assert [tc.find(f"{{{hp}}}cellAddr").get("colAddr") for tc in r2_tcs] == ["0", "1", "2"]
+
     # Synthesized note row (last tr) spans all 3 logical columns, not physical 2
     note_tr = trs[-1]
     assert len(note_tr.findall(f"{{{hp}}}tc")) == 1

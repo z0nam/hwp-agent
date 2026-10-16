@@ -1489,6 +1489,9 @@ def test_fill_sections_preserves_table_template_across_parts(tmp_path: Path) -> 
     # {{table_template}} token was stripped after the final part completed
     all_text = "".join(t.text or "" for s in doc.sections for t in s.element.iter(f"{_HP}t"))
     assert "{{table_template}}" not in all_text
+    # Section 4 contains the authored table and the retained reference table (with token stripped)
+    s4_tbls = list(doc.sections[4].element.iter(f"{_HP}tbl"))
+    assert len(s4_tbls) == 2
 
 
 def test_refresh_strip_keeps_neutralized_table_template(tmp_path: Path) -> None:
@@ -1942,6 +1945,100 @@ def test_neutralize_reference_table_isolates_table_run() -> None:
     assert len(runs[0]) == 1
     assert runs[0][0].tag == f"{{{hp}}}tbl"
     assert "예시 텍스트" not in "".join(t.text or "" for t in p.iter(f"{{{hp}}}t"))
+
+
+def test_neutralize_reference_table_synthesizes_cellspan_if_missing() -> None:
+    """_neutralize_reference_table inserts <hp:cellSpan> when synthesizing a note row from a cell without cellSpan (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # A table where tc elements do not have any <hp:cellSpan> child element
+    xml = (
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="3">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    p = etree.fromstring(xml.encode("utf-8"))
+    tbl = p.find(f".//{{{hp}}}tbl")
+    mod._neutralize_reference_table(p, tbl, sibling_note_style=("10", "20", "30"))
+
+    trs = tbl.findall(f"{{{hp}}}tr")
+    note_tr = trs[-1]
+    tc0 = note_tr.find(f"{{{hp}}}tc")
+    span = tc0.find(f"{{{hp}}}cellSpan")
+    assert span is not None
+    assert span.get("colSpan") == "3"
+    assert span.get("rowSpan") == "1"
+
+
+def test_insert_body_marker_preserves_secpr_when_table_in_opener(tmp_path: Path) -> None:
+    """insert_body_marker preserves secPr in opener and isolates the table cleanly when the table is in the opener paragraph (#30)."""
+    import importlib.util
+    import zipfile
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    hh = "http://www.hancom.co.kr/hwpml/2011/head"
+
+    section_xml = (
+        f'<hp:sec xmlns:hp="{hp}">'
+        f'<hp:p id="1" paraPrIDRef="10">'
+        f'<hp:run charPrIDRef="5">'
+        f'<hp:secPr id="999"/>'
+        f'<hp:tbl colCnt="2">'
+        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt;</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl>'
+        f'</hp:run>'
+        f'</hp:p>'
+        f'</hp:sec>'
+    )
+    header_xml = f'<hh:head xmlns:hh="{hh}"></hh:head>'
+
+    fake_hwpx = tmp_path / "test.hwpx"
+    with zipfile.ZipFile(fake_hwpx, "w") as z:
+        z.writestr("Contents/section0.xml", section_xml)
+        z.writestr("Contents/header.xml", header_xml)
+
+    kept = mod.insert_body_marker(fake_hwpx, 0, strip=True, marker="body", keep_table=True)
+    assert kept is True
+
+    with zipfile.ZipFile(fake_hwpx, "r") as z:
+        res_xml = z.read("Contents/section0.xml")
+    res_root = etree.fromstring(res_xml)
+    paras = res_root.findall(f"{{{hp}}}p")
+
+    # Paras: opener (with secPr), marker paragraph ({{body}}), and table_p (with tbl)
+    assert len(paras) == 3
+
+    # 1. Opener preserves secPr and paraPrIDRef
+    assert paras[0].find(f".//{{{hp}}}secPr") is not None
+    assert paras[0].find(f".//{{{hp}}}tbl") is None  # table was removed from opener
+
+    # 2. Marker paragraph has the {{body}} marker
+    assert "{{body}}" in "".join(t.text or "" for t in paras[1].iter(f"{{{hp}}}t"))
+
+    # 3. Table paragraph has the neutralized table and carries valid paraPrIDRef
+    assert paras[2].find(f".//{{{hp}}}tbl") is not None
+    assert paras[2].get("paraPrIDRef") == "10"
+    assert paras[2].find(f".//{{{hp}}}secPr") is None  # no duplicated secPr
+
 
 
 

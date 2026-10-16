@@ -407,6 +407,8 @@ def _neutralize_reference_table(
     주/출처 행이 없으면 서식의 ``자료``/``각주`` 스타일과 무테두리 ``borderFill`` 로
     하단 병합행을 추가한다.
     """
+    from lxml import etree
+
     from hwp_agent.ops.author import (
         _TABLE_TOKEN_RE,
         _caption_text,
@@ -552,9 +554,15 @@ def _neutralize_reference_table(
         if borderless_bf:
             tc0.set("borderFillIDRef", borderless_bf)
         span = tc0.find(_hp("cellSpan"))
-        if span is not None:
-            span.set("colSpan", str(logical_cols))
-            span.set("rowSpan", "1")
+        if span is None:
+            span = etree.Element(_hp("cellSpan"))
+            addr = tc0.find(_hp("cellAddr"))
+            if addr is not None:
+                addr.addnext(span)
+            else:
+                tc0.insert(0, span)
+        span.set("colSpan", str(logical_cols))
+        span.set("rowSpan", "1")
         sz = tc0.find(_hp("cellSz"))
         if sz is not None:
             if total_w:
@@ -691,18 +699,20 @@ def insert_body_marker(
         table_p = None
         if picked is not None:
             cand_p, cand_tbl, sib_note = picked
-            tbl_run = cand_tbl.getparent()
             if cand_p is opener:
-                if tbl_run is not None:
-                    opener.remove(tbl_run)
+                tbl_parent = cand_tbl.getparent()
+                if tbl_parent is not None:
+                    tbl_parent.remove(cand_tbl)
                 table_p = etree.Element(_hp("p"))
                 table_p.set("id", "0")
+                table_p.set("paraPrIDRef", opener.get("paraPrIDRef") or "0")
                 table_p.set("styleIDRef", "0")
                 table_p.set("pageBreak", "0")
                 table_p.set("columnBreak", "0")
                 table_p.set("merged", "0")
-                if tbl_run is not None:
-                    table_p.append(tbl_run)
+                new_run = etree.SubElement(table_p, _hp("run"))
+                new_run.set("charPrIDRef", "0")
+                new_run.append(cand_tbl)
             else:
                 table_p = cand_p
             _neutralize_reference_table(table_p, cand_tbl, header_root, sib_note)

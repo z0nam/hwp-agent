@@ -276,6 +276,34 @@ def test_detect_and_guide_output_only_includes_selected_clients(tmp_path: Path) 
     assert "https://hwp.namun.net" in report
 
 
+def test_cli_dry_run_reports_preview_not_done(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / ".codex"))
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path / ".gemini"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+
+    rc = cli_main(
+        ["setup", "--register", "codex", "--command", "/usr/bin/hwp-agent", "--dry-run"]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "미리보기" in out
+    assert "등록 예정" in out
+    assert "등록됨" not in out
+    assert not (tmp_path / ".codex" / "config.toml").exists()
+
+    rc = cli_main(
+        [
+            "setup", "--register", "codex", "--command", "/usr/bin/hwp-agent",
+            "--dry-run", "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert payload["dry_run"] is True
+
+
 def test_cli_setup_register_and_guide_out_utf8_bom(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -1014,7 +1042,8 @@ def test_codex_quoted_toml_path_segments(tmp_path: Path) -> None:
     # Unregistration removes quoted table cleanly
     unreg = unregister_clients(("codex",), home=tmp_path, env={}, platform="darwin")
     assert unreg[0].status == "removed"
-    parsed_after = tomllib.loads(codex_cfg.read_text(encoding="utf-8")) if codex_cfg.read_text(encoding="utf-8").strip() else {}
+    after_text = codex_cfg.read_text(encoding="utf-8")
+    parsed_after = tomllib.loads(after_text) if after_text.strip() else {}
     assert "hwp-agent" not in parsed_after.get("mcp_servers", {})
 
 
@@ -1023,7 +1052,8 @@ def test_codex_inline_table_with_braces_in_comment(tmp_path: Path) -> None:
     codex_cfg.parent.mkdir(parents=True, exist_ok=True)
     content = (
         "[mcp_servers]\n"
-        'hwp-agent = { command = "/old/hwp-agent", args = ["mcp"] } # note: { some_template_key } and { extra }\n'
+        'hwp-agent = { command = "/old/hwp-agent", args = ["mcp"] }'
+        " # note: { some_template_key } and { extra }\n"
         'other = { command = "/bin/other" }\n'
     )
     codex_cfg.write_text(content, encoding="utf-8")

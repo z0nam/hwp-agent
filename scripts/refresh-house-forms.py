@@ -390,7 +390,7 @@ def _build_template_caption(
         '<hp:autoNumFormat type="DIGIT" userChar="" prefixChar=""'
         ' suffixChar="" supscript="0"/>'
         "</hp:autoNum></hp:ctrl>"
-        "<hp:t>&gt; {{table_template}}</hp:t>"
+        "<hp:t>&gt; {{table_template:sample}}</hp:t>"
         "</hp:run></hp:p></hp:subList></hp:caption>"
     )
     return etree.fromstring(xml.encode("utf-8"))
@@ -557,10 +557,16 @@ def _neutralize_reference_table(
         if span is None:
             span = etree.Element(_hp("cellSpan"))
             addr = tc0.find(_hp("cellAddr"))
+            sz_el = tc0.find(_hp("cellSz"))
+            sub_el = tc0.find(_hp("subList"))
             if addr is not None:
                 addr.addnext(span)
+            elif sz_el is not None:
+                sz_el.addprevious(span)
+            elif sub_el is not None:
+                sub_el.addprevious(span)
             else:
-                tc0.insert(0, span)
+                tc0.append(span)
         span.set("colSpan", str(logical_cols))
         span.set("rowSpan", "1")
         sz = tc0.find(_hp("cellSz"))
@@ -613,20 +619,30 @@ def _neutralize_reference_table(
                         framing = m.group(1)
                         break
                 if target_idx is not None:
-                    ts[target_idx].text = f"{framing} {{{{table_template}}}}".strip()
+                    ts[target_idx].text = f"{framing} {{{{table_template:sample}}}}".strip()
                     for t in ts[target_idx + 1:]:
                         t.text = ""
                 else:
                     last = ts[-1].text or ""
-                    ts[-1].text = f"{last.rstrip()} {{{{table_template}}}}".strip()
+                    ts[-1].text = f"{last.rstrip()} {{{{table_template:sample}}}}".strip()
         for lsa in cap.findall(".//" + _hp("linesegarray")):
             lsa.getparent().remove(lsa)
     else:
         tbl_sz = tbl.find(_hp("sz"))
         width = tbl_sz.get("width", "36805") if tbl_sz is not None else "36805"
         cap = _build_template_caption(width, caption_style)
-        if final_rows:
-            final_rows[0].addprevious(cap)
+        following_tags = (
+            _hp("shapeComment"),
+            _hp("inMargin"),
+            _hp("cellzoneList"),
+            _hp("tr"),
+        )
+        anchor = next(
+            (tbl.find(tag) for tag in following_tags if tbl.find(tag) is not None),
+            None,
+        )
+        if anchor is not None:
+            anchor.addprevious(cap)
         else:
             tbl.append(cap)
 

@@ -57,6 +57,9 @@ INSERTION_MARKERS = (
 #: a table whose caption carries a ``{{table…}}`` token (e.g. ``{{table}}``,
 #: ``{{table_template}}``) is the format reference for generated tables.
 _TABLE_TOKEN_RE = re.compile(r"\{\{\s*table[\w:-]*\s*\}\}", re.IGNORECASE)
+#: a table designated with an explicit sample modifier (e.g. ``{{table_template:sample}}``)
+#: is a dummy format placeholder and is dropped after fill completes.
+_TABLE_SAMPLE_RE = re.compile(r"\{\{\s*table[\w:-]*:(?:sample|drop|placeholder)\s*\}\}", re.IGNORECASE)
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 _HH = "http://www.hancom.co.kr/hwpml/2011/head"
 _HC = "http://www.hancom.co.kr/hwpml/2011/core"
@@ -834,6 +837,19 @@ def _is_neutralized_reference_table(tbl_element) -> bool:
                 if text:
                     return False
     return True
+
+
+def _is_sample_reference_table(tbl_element) -> bool:
+    """Return True if *tbl_element* is a dummy format-reference table marked for dropping.
+
+    To protect user-defined reference tables (e.g. empty form tables with {{table_template}}),
+    a table is dropped on fill completion only when BOTH:
+      1. Its caption carries an explicit sample modifier (e.g. ``{{table_template:sample}}``).
+      2. Its cells contain only generic placeholders ('구분', '항목', '내용') and blank body cells.
+    """
+    if not _TABLE_SAMPLE_RE.search(_caption_text(tbl_element)):
+        return False
+    return _is_neutralized_reference_table(tbl_element)
 
 
 def _clone_caption(ref_el, title: str, chapter: str | None):
@@ -1803,7 +1819,7 @@ def fill_from_markdown(
     # or drop the reference table entirely if it is a neutralized dummy table created
     # solely as a format reference (so it doesn't leave an empty table and stray auto-number).
     if strip_table_token and designated and ref_element is not None:
-        if _is_neutralized_reference_table(ref_element):
+        if _is_sample_reference_table(ref_element):
             p = ref_element.getparent()
             while p is not None and p.tag != f"{{{_HP}}}p":
                 p = p.getparent()

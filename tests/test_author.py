@@ -1547,7 +1547,7 @@ def test_refresh_strip_keeps_neutralized_table_template(tmp_path: Path) -> None:
     doc = HwpxDocument.open(str(work))
     tbls = list(doc.sections[4].element.iter(f"{_HP}tbl"))
     assert len(tbls) == 1
-    assert "{{table_template}}" in _caption_text(tbls[0])
+    assert "{{table_template:sample}}" in _caption_text(tbls[0])
     fmt = _table_format(tbls[0])
     assert fmt.header.left_bf == "5"
     assert fmt.first_body.left_bf == "8" and fmt.first_body.style == "8"
@@ -1933,7 +1933,7 @@ def test_neutralize_reference_table_caption_multi_t_strips_title() -> None:
     mod._neutralize_reference_table(p, tbl)
 
     cap_txt = _caption_text(tbl)
-    assert "<표 1> {{table_template}}" == cap_txt
+    assert "<표 1> {{table_template:sample}}" == cap_txt
     assert "제주 인구" not in cap_txt
     assert "추이" not in cap_txt
 
@@ -2107,6 +2107,97 @@ def test_is_neutralized_reference_table() -> None:
     )
     tbl_user_header = etree.fromstring(xml_user_header.encode("utf-8"))
     assert _is_neutralized_reference_table(tbl_user_header) is False
+
+
+def test_is_sample_reference_table() -> None:
+    """_is_sample_reference_table requires both :sample modifier and neutralized structure to drop (#30)."""
+    from lxml import etree
+
+    from hwp_agent.ops.author import _is_sample_reference_table
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # 1. Neutralized table with explicit :sample modifier -> True (drop on completion)
+    xml_sample = (
+        f'<hp:tbl xmlns:hp="{hp}">'
+        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template:sample}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl>'
+    )
+    tbl_sample = etree.fromstring(xml_sample.encode("utf-8"))
+    assert _is_sample_reference_table(tbl_sample) is True
+
+    # 2. Neutralized table with plain {{table_template}} (no modifier) -> False (keep table, protect user forms)
+    xml_user_plain = (
+        f'<hp:tbl xmlns:hp="{hp}">'
+        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl>'
+    )
+    tbl_user_plain = etree.fromstring(xml_user_plain.encode("utf-8"))
+    assert _is_sample_reference_table(tbl_user_plain) is False
+
+    # 3. Table with real content even if tagged with :sample -> False (protect user data)
+    xml_sample_with_data = (
+        f'<hp:tbl xmlns:hp="{hp}">'
+        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template:sample}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t>실제내용</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl>'
+    )
+    tbl_sample_with_data = etree.fromstring(xml_sample_with_data.encode("utf-8"))
+    assert _is_sample_reference_table(tbl_sample_with_data) is False
+
+
+def test_neutralize_reference_table_caption_and_span_schema_order() -> None:
+    """_neutralize_reference_table places new caption before inMargin/tr and cellSpan before cellSz (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # Table with sz, pos, inMargin, tr — but NO caption initially
+    xml = (
+        f'<hp:p xmlns:hp="{hp}">'
+        f'<hp:run>'
+        f'<hp:tbl colCnt="2">'
+        f'<hp:sz width="30000" height="10000"/>'
+        f'<hp:pos/>'
+        f'<hp:inMargin left="100" right="100" top="100" bottom="100"/>'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl>'
+        f'</hp:run>'
+        f'</hp:p>'
+    )
+    p = etree.fromstring(xml.encode("utf-8"))
+    tbl = p.find(f".//{{{hp}}}tbl")
+    mod._neutralize_reference_table(p, tbl, sibling_note_style=("10", "20", "30"))
+
+    # Verify caption is placed BEFORE inMargin and tr (HWPX schema order)
+    tags = [c.tag.split("}")[-1] for c in tbl]
+    assert "caption" in tags
+    cap_idx = tags.index("caption")
+    in_margin_idx = tags.index("inMargin")
+    tr_idx = tags.index("tr")
+    assert cap_idx < in_margin_idx < tr_idx
+
+    # Verify synthesized note row's cellSpan is placed BEFORE cellSz
+    note_tr = tbl.findall(f"{{{hp}}}tr")[-1]
+    tc0 = note_tr.find(f"{{{hp}}}tc")
+    tc_tags = [c.tag.split("}")[-1] for c in tc0]
+    assert "cellSpan" in tc_tags
+    if "cellSz" in tc_tags:
+        assert tc_tags.index("cellSpan") < tc_tags.index("cellSz")
+
 
 
 

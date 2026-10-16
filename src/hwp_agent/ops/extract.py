@@ -25,6 +25,9 @@ v1 scope is deliberately small:
 * hyperlinks: a URL ``HYPERLINK`` field becomes ``[text](url)`` (bare ``url`` when the
   text is the URL itself) — the inverse of ``write`` (issue #27). In-document links
   (목차 → 본문) keep their text only.
+* equations: an ``<hp:equation>`` becomes ``$\\hwp{script}$`` — its Hangul script
+  verbatim, which ``write`` passes straight back (issue #5). A paragraph holding
+  only an equation comes out as a ``$$…$$`` display block.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from pathlib import Path
 
 from hwpx.document import HwpxDocument
 
+from .equation import math_pieces
 from .links import hyperlink_url
 from .styles import role_map
 
@@ -136,6 +140,8 @@ def _p_text(p_el, notes: list[str], *, deep: bool = False) -> str:
         for child in run:
             if _local(child) == "t":
                 parts.append(_t_text(child))
+            elif _local(child) == "equation":
+                parts.append(_equation_md(child))
             elif deep:
                 _walk_deep(child, parts, notes, links)
             elif _local(child) == "ctrl":
@@ -168,6 +174,12 @@ def _link_field(el, parts: list[str], links: list[tuple[int, str | None]]) -> No
         parts.append(f"[{text}]({url})")
 
 
+def _equation_md(eq_el) -> str:
+    """An equation as inline math carrying its Hangul script (``$\\hwp{…}$``)."""
+    script = (eq_el.findtext(f"{{{_HP}}}script") or "").strip()
+    return f"$\\hwp{{{script}}}$" if script else ""
+
+
 def _local(el) -> str:
     return el.tag.rsplit("}", 1)[-1] if isinstance(el.tag, str) else ""
 
@@ -190,6 +202,9 @@ def _walk_deep(
         return
     if tag == "t":
         parts.append(_t_text(el))
+        return
+    if tag == "equation":
+        parts.append(_equation_md(el))
         return
     for child in el:
         _walk_deep(child, parts, notes, links)
@@ -218,7 +233,10 @@ def _note_text(footnote_el) -> str:
 
 def _paragraph_text(paragraph, notes: list[str] | None = None) -> str:
     """All text content of *paragraph*, runs concatenated. v1 = no emphasis."""
-    return _p_text(paragraph.element, notes if notes is not None else []).strip()
+    text = _p_text(paragraph.element, notes if notes is not None else []).strip()
+    if text.startswith("$\\hwp{") and text.endswith("}$") and text.count("$\\hwp{") == 1:
+        return f"${text}$"  # a paragraph that is only an equation → display block
+    return text
 
 
 # --------------------------------------------------------------------------- #
@@ -283,7 +301,12 @@ def _emit_table(lines: list[str], tbl, notes: list[str] | None = None) -> None:
                 text = "<br>".join(cell_paras)
             # pipe-table cells can't carry literal `|` or newlines; an inline
             # <hp:lineBreak/> within a cell also becomes a soft `<br>`
-            text = text.replace("|", r"\|").replace("\n", "<br>")
+            # (`|` inside $…$ math stays: write reads math spans before splitting)
+            text = "".join(
+                t.replace("|", r"\|") if kind is None
+                else (f"$${t}$$" if kind == "display" else f"${t}$")
+                for t, kind in math_pieces(text)
+            ).replace("\n", "<br>")
             for dr in range(rs):
                 for dc in range(cs):
                     if row + dr < row_cnt and col + dc < col_cnt:

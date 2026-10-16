@@ -370,6 +370,10 @@ def insert_markdown(
     dst = Path(output) if output else src.with_suffix(".edited.hwpx")
 
     blocks = parse_markdown(markdown)
+    if any(isinstance(b, Block) and b.kind == "math" for b in blocks):
+        raise TextEditError(
+            "수식 블록($$…$$)은 이 명령이 수식 개체로 만들지 못함 — write 로 재조판할 것"
+        )
     bad = [b for b in blocks if isinstance(b, TableBlock) or b.kind in ("heading", "rule")]
     if bad:
         raise TextEditError(

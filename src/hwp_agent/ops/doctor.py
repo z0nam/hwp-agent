@@ -168,9 +168,31 @@ def diagnose_template(path: str) -> dict:
         "markers": _marker_audit(doc, roles.get("INSTRUCTION")),
         "integrity": [i.as_dict() for i in audit_package(path)],
         "links": _link_summary(path),
+        "equations": _equation_summary(doc),
     }
     report["warnings"] = _warnings(report)
     return report
+
+
+def _equation_summary(doc: HwpxDocument) -> dict:
+    """Equation objects vs LaTeX math left as text (issue #5) — informational.
+
+    A ``$…$`` span counts as unconverted LaTeX only when it looks like math
+    (a backslash command or ``^``/``_``), so prices like "$5 and $10" don't."""
+    from .equation import math_pieces
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    count, leftover = 0, []
+    for sec in doc.sections:
+        count += len(sec.element.findall(f".//{{{hp}}}equation"))
+        for p in sec.element.iter(f"{{{hp}}}p"):
+            text = "".join(t.text or "" for t in p.findall(f"{{{hp}}}run/{{{hp}}}t"))
+            if "$" not in text:
+                continue
+            for latex, kind in math_pieces(text):
+                if kind and any(c in latex for c in "\\^_"):
+                    leftover.append(latex.strip()[:60])
+    return {"count": count, "latex_text": leftover}
 
 
 def _link_summary(path) -> dict:

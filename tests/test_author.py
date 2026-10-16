@@ -1874,6 +1874,77 @@ def test_neutralize_reference_table_preserves_note_styling_on_existing_note() ->
     assert fmt.note.style == "99"
 
 
+def test_neutralize_reference_table_caption_multi_t_strips_title() -> None:
+    """_neutralize_reference_table replaces title with {{table_template}} even when split across multiple <hp:t> (#30)."""
+    import importlib.util
+    from lxml import etree
+    from hwp_agent.ops.author import _caption_text
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    xml = (
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:caption><hp:subList><hp:p>'
+        f'<hp:run><hp:t>&lt;표 1</hp:t></hp:run>'
+        f'<hp:run><hp:t>&gt; 제주 인구</hp:t></hp:run>'
+        f'<hp:run><hp:t> 추이 및 전망</hp:t></hp:run>'
+        f'</hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    p = etree.fromstring(xml.encode("utf-8"))
+    tbl = p.find(f".//{{{hp}}}tbl")
+    mod._neutralize_reference_table(p, tbl)
+
+    cap_txt = _caption_text(tbl)
+    assert "<표 1> {{table_template}}" == cap_txt
+    assert "제주 인구" not in cap_txt
+    assert "추이" not in cap_txt
+
+
+def test_neutralize_reference_table_isolates_table_run() -> None:
+    """_neutralize_reference_table strips all sibling runs and non-tbl children from the table paragraph (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    xml = (
+        f'<hp:p xmlns:hp="{hp}">'
+        f'<hp:run><hp:t>앞선 예시 텍스트</hp:t></hp:run>'
+        f'<hp:run><hp:t>표 앞 텍스트</hp:t><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run>'
+        f'<hp:run><hp:t>뒤따르는 예시 텍스트</hp:t></hp:run>'
+        f'</hp:p>'
+    )
+    p = etree.fromstring(xml.encode("utf-8"))
+    tbl = p.find(f".//{{{hp}}}tbl")
+    mod._neutralize_reference_table(p, tbl)
+
+    runs = p.findall(f"{{{hp}}}run")
+    assert len(runs) == 1
+    # The single run contains only the tbl, no residual <hp:t>
+    assert len(runs[0]) == 1
+    assert runs[0][0].tag == f"{{{hp}}}tbl"
+    assert "예시 텍스트" not in "".join(t.text or "" for t in p.iter(f"{{{hp}}}t"))
+
+
+
 
 
 

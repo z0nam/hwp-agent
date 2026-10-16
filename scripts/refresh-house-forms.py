@@ -595,10 +595,22 @@ def _neutralize_reference_table(
         if not _TABLE_TOKEN_RE.search(_caption_text(tbl)):
             ts = cap.findall(".//" + _hp("t"))
             if ts:
-                last = ts[-1].text or ""
-                m = re.match(r"^([^\]>]*[>\]])", last)
-                framing = m.group(1) if m else last.rstrip()
-                ts[-1].text = f"{framing} {{{{table_template}}}}".strip()
+                target_idx = None
+                framing = None
+                for idx, t in enumerate(ts):
+                    txt = t.text or ""
+                    m = re.search(r"^(.*?[>\]])", txt)
+                    if m:
+                        target_idx = idx
+                        framing = m.group(1)
+                        break
+                if target_idx is not None:
+                    ts[target_idx].text = f"{framing} {{{{table_template}}}}".strip()
+                    for t in ts[target_idx + 1:]:
+                        t.text = ""
+                else:
+                    last = ts[-1].text or ""
+                    ts[-1].text = f"{last.rstrip()} {{{{table_template}}}}".strip()
         for lsa in cap.findall(".//" + _hp("linesegarray")):
             lsa.getparent().remove(lsa)
     else:
@@ -612,12 +624,16 @@ def _neutralize_reference_table(
 
     _fit_table_height(tbl)
     table_p.set("styleIDRef", "0")
-    for run in table_p.findall(_hp("run")):
-        if run.find(_hp("tbl")) is None:
-            for t in run.findall(_hp("t")):
-                t.text = ""
-    for lsa in table_p.findall(_hp("linesegarray")):
-         table_p.remove(lsa)
+    tbl_run = tbl.getparent()
+    if tbl_run is not None:
+        for child in list(tbl_run):
+            if child is not tbl:
+                tbl_run.remove(child)
+        for run in list(table_p.findall(_hp("run"))):
+            if run is not tbl_run:
+                table_p.remove(run)
+    for lsa in list(table_p.findall(_hp("linesegarray"))):
+        table_p.remove(lsa)
 
 
 def insert_body_marker(
@@ -675,15 +691,18 @@ def insert_body_marker(
         table_p = None
         if picked is not None:
             cand_p, cand_tbl, sib_note = picked
+            tbl_run = cand_tbl.getparent()
             if cand_p is opener:
-                table_p = copy.deepcopy(cand_p)
-                for run in list(table_p.findall(_hp("run"))):
-                    if run.find(_hp("secPr")) is not None:
-                        table_p.remove(run)
-                for run in list(opener.findall(_hp("run"))):
-                    if run.find(_hp("tbl")) is not None:
-                        opener.remove(run)
-                cand_tbl = table_p.find(".//" + _hp("tbl"))
+                if tbl_run is not None:
+                    opener.remove(tbl_run)
+                table_p = etree.Element(_hp("p"))
+                table_p.set("id", "0")
+                table_p.set("styleIDRef", "0")
+                table_p.set("pageBreak", "0")
+                table_p.set("columnBreak", "0")
+                table_p.set("merged", "0")
+                if tbl_run is not None:
+                    table_p.append(tbl_run)
             else:
                 table_p = cand_p
             _neutralize_reference_table(table_p, cand_tbl, header_root, sib_note)
@@ -851,7 +870,7 @@ def bake_one(src: Path, out: Path, workdir: Path, config: dict | None = None) ->
             strip=bool(spec.get("strip")),
             marker=mk,
             keep_heading=bool(spec.get("keep_heading")),
-            keep_table=bool(spec.get("keep_table", mk == "body")),
+            keep_table=bool(spec.get("keep_table", False)),
         )
         tag = ("·strip" if spec.get("strip") else "") + ("·tbl" if preserved else "")
         placed_markers.append(f"s{spec['section']}:{{{{{mk}}}}}{tag}")

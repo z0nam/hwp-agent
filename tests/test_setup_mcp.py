@@ -482,6 +482,21 @@ def test_register_updates_inline_and_dotted_codex_toml(tmp_path: Path) -> None:
     assert "hwp-agent" not in parsed_after_standalone["mcp_servers"]
     assert "other" in parsed_after_standalone["mcp_servers"]
 
+    # 1-e. Nested table containing its own 'command' key before the top-level command key
+    codex_cfg.write_text(
+        '[mcp_servers]\n'
+        'hwp-agent = { env = { command = "value" }, command = "/old/hwp", args = ["mcp"] }\n',
+        encoding="utf-8",
+    )
+    actions_nested_cmd = register_clients(
+        ("codex",), command=new_cmd, home=tmp_path, env={}, platform="darwin"
+    )
+    assert actions_nested_cmd[0].status == "updated"
+    parsed_nested_cmd = tomllib.loads(codex_cfg.read_text(encoding="utf-8"))
+    assert parsed_nested_cmd["mcp_servers"]["hwp-agent"]["env"]["command"] == "value"
+    assert parsed_nested_cmd["mcp_servers"]["hwp-agent"]["command"] == new_cmd
+    assert parsed_nested_cmd["mcp_servers"]["hwp-agent"]["args"] == ["mcp"]
+
     # 2. Table-scoped dotted keys under [mcp_servers]: hwp-agent.command = ...
     codex_cfg.write_text(
         '[mcp_servers]\n'

@@ -456,6 +456,98 @@ def _clean_codex_dotted_keys(raw: str) -> str:
     return cleaned
 
 
+def _find_top_level_inline_key_span(inner: str, key: str) -> tuple[int, int] | None:
+    """Find (start, end) span of 'key = <val>' at the top level (depth 0) of an inline table."""
+    i = 0
+    n = len(inner)
+    brace_depth = 0
+    bracket_depth = 0
+    in_quote = None
+    escape = False
+
+    while i < n:
+        ch = inner[i]
+        if in_quote:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == in_quote:
+                in_quote = None
+            i += 1
+            continue
+
+        if ch in ('"', "'"):
+            in_quote = ch
+            i += 1
+            continue
+
+        if ch == "{":
+            brace_depth += 1
+            i += 1
+            continue
+        elif ch == "}":
+            brace_depth -= 1
+            i += 1
+            continue
+        elif ch == "[":
+            bracket_depth += 1
+            i += 1
+            continue
+        elif ch == "]":
+            bracket_depth -= 1
+            i += 1
+            continue
+
+        if brace_depth == 0 and bracket_depth == 0:
+            if inner[i : i + len(key)] == key:
+                prev_char = inner[i - 1] if i > 0 else " "
+                after_char = inner[i + len(key)] if i + len(key) < n else " "
+                if not (prev_char.isalnum() or prev_char in "_-") and not (
+                    after_char.isalnum() or after_char in "_-"
+                ):
+                    j = i + len(key)
+                    while j < n and inner[j] in " \t":
+                        j += 1
+                    if j < n and inner[j] == "=":
+                        val_start = j + 1
+                        v = val_start
+                        v_brace = 0
+                        v_bracket = 0
+                        v_quote = None
+                        v_esc = False
+                        while v < n:
+                            vch = inner[v]
+                            if v_quote:
+                                if v_esc:
+                                    v_esc = False
+                                elif vch == "\\":
+                                    v_esc = True
+                                elif vch == v_quote:
+                                    v_quote = None
+                                v += 1
+                                continue
+                            if vch in ('"', "'"):
+                                v_quote = vch
+                                v += 1
+                                continue
+                            if vch == "{":
+                                v_brace += 1
+                            elif vch == "}":
+                                v_brace -= 1
+                            elif vch == "[":
+                                v_bracket += 1
+                            elif vch == "]":
+                                v_bracket -= 1
+                            elif v_brace == 0 and v_bracket == 0:
+                                if vch == ",":
+                                    break
+                            v += 1
+                        return (i, v)
+        i += 1
+    return None
+
+
 def _update_inline_table(line: str, command: str) -> str:
     cmd_str = f"command = {_toml_string(command)}"
     args_str = 'args = ["mcp"]'
@@ -463,19 +555,19 @@ def _update_inline_table(line: str, command: str) -> str:
     if not m:
         return line
     prefix, inner, suffix = m.groups()
-    if re.search(r"\bcommand\s*=", inner):
-        inner = re.sub(
-            r"\bcommand\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s,}]+)",
-            lambda _: cmd_str,
-            inner,
-            count=1,
-        )
+
+    cmd_span = _find_top_level_inline_key_span(inner, "command")
+    if cmd_span is not None:
+        inner = inner[: cmd_span[0]] + cmd_str + inner[cmd_span[1] :]
     else:
         inner = f" {cmd_str}," + inner
-    if re.search(r"\bargs\s*=", inner):
-        inner = re.sub(r"\bargs\s*=\s*\[[^\]]*\]", lambda _: args_str, inner, count=1)
+
+    args_span = _find_top_level_inline_key_span(inner, "args")
+    if args_span is not None:
+        inner = inner[: args_span[0]] + args_str + inner[args_span[1] :]
     else:
         inner = inner.rstrip() + f", {args_str} "
+
     return f"{prefix}{inner}{suffix}"
 
 

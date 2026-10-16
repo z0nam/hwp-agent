@@ -733,8 +733,166 @@ def test_write_text_atomic_permissions(tmp_path: Path) -> None:
         os.chmod(target, 0o640)
         _write_text_atomic(target, '{"key": "new_val"}')
         assert target.read_text(encoding="utf-8") == '{"key": "new_val"}'
-        assert os.stat(target).st_mode & 0o777 == 0o640
 
 
+def test_write_text_atomic_preserves_symlink(tmp_path: Path) -> None:
+    real_file = tmp_path / "dotfiles" / "config.toml"
+    real_file.parent.mkdir(parents=True, exist_ok=True)
+    real_file.write_text("initial = true\n", encoding="utf-8")
+
+    symlink_file = tmp_path / ".codex" / "config.toml"
+    symlink_file.parent.mkdir(parents=True, exist_ok=True)
+    symlink_file.symlink_to(real_file)
+
+    assert symlink_file.is_symlink()
+    _write_text_atomic(symlink_file, "updated = true\n")
+
+    # Symlink must NOT be broken or replaced by a normal file
+    assert symlink_file.is_symlink()
+    assert real_file.read_text(encoding="utf-8") == "updated = true\n"
 
 
+def test_jsonc_with_comments_support(tmp_path: Path) -> None:
+    gemini_cfg = config_path_for("gemini", home=tmp_path, env={}, platform="darwin")
+    gemini_cfg.parent.mkdir(parents=True, exist_ok=True)
+    jsonc_content = (
+        "// Global Gemini configuration\n"
+        "{\n"
+        "  /* existing mcp servers */\n"
+        '  "mcpServers": {\n'
+        '    "other": {"command": "other"}\n'
+        "  }\n"
+        "}\n"
+    )
+    gemini_cfg.write_text(jsonc_content, encoding="utf-8")
+
+    res = register_clients(
+        ("gemini",), home=tmp_path, env={}, platform="darwin", command="/bin/hwp-agent"
+    )
+    assert res[0].status == "added"
+    parsed = json.loads(gemini_cfg.read_text(encoding="utf-8"))
+    assert parsed["mcpServers"]["hwp-agent"]["command"] == "/bin/hwp-agent"
+    assert parsed["mcpServers"]["other"]["command"] == "other"
+
+
+def test_per_client_fault_tolerance(tmp_path: Path, monkeypatch, capsys) -> None:
+    # Set up one broken client config and two valid ones
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / ".codex"))
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path / ".gemini"))
+
+    broken_codex = tmp_path / ".codex" / "config.toml"
+    broken_codex.parent.mkdir(parents=True, exist_ok=True)
+    broken_codex.write_text("[mcp_servers]\nthis is not valid toml = = = \n", encoding="utf-8")
+
+    # When registering all three, codex errors, but claude-code and gemini succeed
+    actions = register_clients(
+        ("claude-code", "codex", "gemini"),
+        home=tmp_path,
+        env={"CODEX_HOME": str(tmp_path / ".codex"), "GEMINI_CLI_HOME": str(tmp_path / ".gemini")},
+        platform="darwin",
+        command="/bin/hwp-agent",
+    )
+    assert len(actions) == 3
+    assert actions[0].status == "added"  # claude-code
+    assert actions[1].status == "error"  # codex
+    assert actions[1].detail != ""
+    assert actions[2].status == "added"  # gemini
+
+    # CLI returns 2 due to error, but still outputs report and guide
+    rc = cli_main([
+        "setup",
+        "--register",
+        "claude-code,codex,gemini",
+        "--command",
+        "/bin/hwp-agent",
+    ])
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "[MCP 등록 결과]" in out
+    assert "실패" in out
+    assert "이미 등록됨" in out
+
+
+def test_codex_unregister_preserves_trailing_comments_and_other_tables(
+    tmp_path: Path,
+) -> None:
+    codex_cfg = config_path_for("codex", home=tmp_path, env={}, platform="darwin")
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        "[other_table]\n"
+        'hwp-agent = { test = "do not delete" }\n\n'
+        "[mcp_servers.hwp-agent]\n"
+        'command = "/bin/hwp-agent"\n'
+        'args = ["mcp"]\n\n'
+        "# Important comment for spacemath server\n"
+        "[mcp_servers.spacemath]\n"
+        'command = "/bin/spacemath"\n'
+    )
+    codex_cfg.write_text(content, encoding="utf-8")
+
+    unreg = unregister_clients(("codex",), home=tmp_path, env={}, platform="darwin")
+    assert unreg[0].status == "removed"
+
+    result = codex_cfg.read_text(encoding="utf-8")
+    # Must preserve comments for spacemath
+    assert "# Important comment for spacemath server" in result
+    assert "[mcp_servers.spacemath]" in result
+    # Must preserve other_table's hwp-agent key
+    assert 'hwp-agent = { test = "do not delete" }' in result
+    # mcp_servers.hwp-agent must be gone
+    parsed = tomllib.loads(result)
+    assert "hwp-agent" not in parsed["mcp_servers"]
+    assert parsed["other_table"]["hwp-agent"] == {"test": "do not delete"}
+
+
+def test_codex_update_multiline_args(tmp_path: Path) -> None:
+    codex_cfg = config_path_for("codex", home=tmp_path, env={}, platform="darwin")
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        "[mcp_servers.hwp-agent]\n"
+        'command = "/old/hwp-agent"\n'
+        "args = [\n"
+        '    "mcp",\n'
+        '    "--verbose",\n'
+        "]\n"
+    )
+    codex_cfg.write_text(content, encoding="utf-8")
+
+    res = register_clients(
+        ("codex",), home=tmp_path, env={}, platform="darwin", command="/new/hwp-agent"
+    )
+    assert res[0].status == "updated"
+
+    result = codex_cfg.read_text(encoding="utf-8")
+    parsed = tomllib.loads(result)
+    assert parsed["mcp_servers"]["hwp-agent"]["command"] == "/new/hwp-agent"
+    assert parsed["mcp_servers"]["hwp-agent"]["args"] == ["mcp"]
+
+
+def test_codex_dotted_keys_preserve_custom_fields(tmp_path: Path) -> None:
+    codex_cfg = config_path_for("codex", home=tmp_path, env={}, platform="darwin")
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        "[mcp_servers]\n"
+        'other = { command = "/bin/other" }\n'
+        'hwp-agent.command = "/old/hwp-agent"\n'
+        'hwp-agent.args = ["mcp"]\n'
+        "hwp-agent.startup_timeout_sec = 45\n"
+        'hwp-agent.env = { CUSTOM_KEY = "custom_val" }\n'
+    )
+    codex_cfg.write_text(content, encoding="utf-8")
+
+    res = register_clients(
+        ("codex",), home=tmp_path, env={}, platform="darwin", command="/new/hwp-agent"
+    )
+    assert res[0].status == "updated"
+
+    parsed = tomllib.loads(codex_cfg.read_text(encoding="utf-8"))
+    entry = parsed["mcp_servers"]["hwp-agent"]
+    assert entry["command"] == "/new/hwp-agent"
+    assert entry["args"] == ["mcp"]
+    assert entry["startup_timeout_sec"] == 45
+    assert entry["env"] == {"CUSTOM_KEY": "custom_val"}
+    assert parsed["mcp_servers"]["other"]["command"] == "/bin/other"

@@ -267,7 +267,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     elif report_text:
         print(report_text)
 
-    return 0
+    has_error = any(a.status == "error" for a in reg_actions + unreg_actions)
+    return 2 if has_error else 0
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:

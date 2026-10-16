@@ -81,13 +81,8 @@ _STATUS_KO: dict[str, str] = {
     "unchanged": "이미 등록됨 (건너뜀)",
     "removed": "등록 해제됨",
     "noop": "등록 항목 없음 (건너뜀)",
+    "error": "실패",
 }
-
-# Matches [mcp_servers.hwp-agent] or [mcp_servers."hwp-agent"] (and any sub-tables)
-# up to the next top-level table header or end of file.
-_CODEX_SECTION_RE = re.compile(
-    r"(?ms)^\[mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')(?:\.[^\]]+)?\][ \t]*(?:#[^\r\n]*)?\r?\n.*?(?=^\[|\Z)"
-)
 
 
 @dataclass(frozen=True)
@@ -95,12 +90,13 @@ class RegistrationAction:
     client: str
     label: str
     config_path: Path
-    status: str  # "added" | "updated" | "unchanged" | "removed" | "noop"
+    status: str  # "added" | "updated" | "unchanged" | "removed" | "noop" | "error"
     command: str = ""
     args: tuple[str, ...] = ("mcp",)
+    detail: str = ""
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        d: dict[str, object] = {
             "client": self.client,
             "label": self.label,
             "config_path": str(self.config_path),
@@ -108,6 +104,9 @@ class RegistrationAction:
             "command": self.command,
             "args": list(self.args),
         }
+        if self.detail:
+            d["detail"] = self.detail
+        return d
 
 
 def resolve_mcp_command(explicit: str | Path | None = None) -> str:
@@ -324,15 +323,17 @@ def _desired_json_entry(client: str, command: str) -> dict[str, object]:
 
 
 def _write_text_atomic(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # If path is a symlink or exists, resolve it so symlinks in dotfiles aren't replaced
+    target_path = path.resolve() if path.exists() else path
+    target_path.parent.mkdir(parents=True, exist_ok=True)
     mode = 0o600
-    if path.exists():
+    if target_path.exists():
         try:
-            mode = os.stat(path).st_mode & 0o777
+            mode = os.stat(target_path).st_mode & 0o777
         except OSError:
             pass
     fd, tmp_path_str = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        prefix=f".{target_path.name}.", suffix=".tmp", dir=target_path.parent
     )
     tmp_path = Path(tmp_path_str)
     try:
@@ -342,7 +343,7 @@ def _write_text_atomic(path: Path, content: str) -> None:
             os.chmod(tmp_path, mode)
         except OSError:
             pass
-        tmp_path.replace(path)
+        tmp_path.replace(target_path)
     except BaseException:
         try:
             tmp_path.unlink(missing_ok=True)
@@ -366,6 +367,50 @@ def _is_same_command(actual: object, expected: str | None) -> bool:
         return False
 
 
+def _strip_json_comments(text: str) -> str:
+    """Strip // and /* */ comments from JSON string while preserving strings."""
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_str = False
+    escape = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_str = False
+            i += 1
+        elif c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "/":
+            i += 2
+            while i < n and text[i] not in "\r\n":
+                i += 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _load_json_c(raw: str) -> object:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return json.loads(_strip_json_comments(raw))
+
+
 def _register_json_client(
     client: str, path: Path, command: str, *, dry_run: bool = False
 ) -> str:
@@ -377,7 +422,7 @@ def _register_json_client(
         if not raw:
             data = {}
         else:
-            loaded = json.loads(raw)
+            loaded = _load_json_c(raw)
             if not isinstance(loaded, dict):
                 raise ValueError(f"{path}: JSON 최상위 구조가 객체(dict)가 아닙니다")
             data = loaded
@@ -414,7 +459,7 @@ def _unregister_json_client(
     raw = path.read_text(encoding="utf-8-sig").strip()
     if not raw:
         return "noop"
-    loaded = json.loads(raw)
+    loaded = _load_json_c(raw)
     if not isinstance(loaded, dict):
         raise ValueError(f"{path}: JSON 최상위 구조가 객체(dict)가 아닙니다")
     servers = loaded.get("mcpServers")
@@ -440,16 +485,50 @@ def _toml_string(val: str) -> str:
     return json.dumps(val, ensure_ascii=False)
 
 
-def _codex_section_text(command: str) -> str:
-    return (
-        f"[mcp_servers.{SERVER_NAME}]\n"
-        f"command = {_toml_string(command)}\n"
-        f'args = ["mcp"]\n'
-    )
+def _codex_section_text(command: str, extra: dict[str, object] | None = None) -> str:
+    lines = [
+        f"[mcp_servers.{SERVER_NAME}]",
+        f"command = {_toml_string(command)}",
+        'args = ["mcp"]',
+    ]
+    if extra:
+        for k, v in extra.items():
+            if k in ("command", "args"):
+                continue
+            if isinstance(v, str):
+                lines.append(f"{k} = {_toml_string(v)}")
+            elif isinstance(v, bool):
+                lines.append(f"{k} = {'true' if v else 'false'}")
+            elif isinstance(v, (int, float)):
+                lines.append(f"{k} = {v}")
+            elif isinstance(v, dict):
+                pairs = []
+                for sub_k, sub_v in v.items():
+                    if isinstance(sub_v, str):
+                        pairs.append(f"{sub_k} = {_toml_string(sub_v)}")
+                    elif isinstance(sub_v, bool):
+                        pairs.append(f"{sub_k} = {'true' if sub_v else 'false'}")
+                    elif isinstance(sub_v, (int, float)):
+                        pairs.append(f"{sub_k} = {sub_v}")
+                lines.append(f"{k} = {{ {', '.join(pairs)} }}")
+            elif isinstance(v, list):
+                items = []
+                for item in v:
+                    if isinstance(item, str):
+                        items.append(_toml_string(item))
+                    elif isinstance(item, bool):
+                        items.append("true" if item else "false")
+                    elif isinstance(item, (int, float)):
+                        items.append(str(item))
+                lines.append(f"{k} = [{', '.join(items)}]")
+    return "\n".join(lines) + "\n"
 
 
 _CODEX_MAIN_TABLE_RE = re.compile(
     r"(?m)^\[mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')\][ \t]*(?:#[^\r\n]*)?\r?$"
+)
+_CODEX_SECTION_HEADER_RE = re.compile(
+    r"(?m)^\[mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')(?:\.[^\]]+)?\][ \t]*(?:#[^\r\n]*)?\r?\n"
 )
 _CODEX_INLINE_RE = re.compile(
     r"(?m)^([ \t]*(?:hwp-agent|\"hwp-agent\"|'hwp-agent')[ \t]*=[ \t]*\{)(.*)(\}[ \t]*(?:#[^\r\n]*)?)\r?$"
@@ -470,7 +549,8 @@ _CODEX_SCOPED_DOTTED_RE = re.compile(
 )
 
 
-def _clean_codex_dotted_keys(raw: str) -> str:
+def _clean_codex_mcp_servers_table(raw: str) -> str:
+    """Remove scoped dotted keys and inline table entries for hwp-agent ONLY within [mcp_servers]."""
     cleaned = _CODEX_GLOBAL_DOTTED_RE.sub("", raw)
     m = _CODEX_MCP_TABLE_RE.search(cleaned)
     if m:
@@ -479,8 +559,36 @@ def _clean_codex_dotted_keys(raw: str) -> str:
         sec_end = header_end + next_m.start() if next_m else len(cleaned)
         sec_body = cleaned[header_end:sec_end]
         cleaned_sec = _CODEX_SCOPED_DOTTED_RE.sub("", sec_body)
+        cleaned_sec = _CODEX_INLINE_LINE_RE.sub("", cleaned_sec)
         cleaned = cleaned[:header_end] + cleaned_sec + cleaned[sec_end:]
     return cleaned
+
+
+def _remove_codex_sections(raw: str) -> str:
+    """Remove [mcp_servers.hwp-agent] sections while preserving comments that precede next section."""
+    while True:
+        m = _CODEX_SECTION_HEADER_RE.search(raw)
+        if not m:
+            break
+        start = m.start()
+        header_end = m.end()
+        next_m = re.search(r"(?m)^\[", raw[header_end:])
+        if next_m:
+            sec_end = header_end + next_m.start()
+            sec_chunk = raw[header_end:sec_end]
+            trailing_m = re.search(
+                r"((?:^[ \t]*#[^\r\n]*\r?\n[ \t]*)+)$", sec_chunk, re.MULTILINE
+            )
+            keep_len = len(trailing_m.group(1)) if trailing_m else 0
+            del_end = sec_end - keep_len
+        else:
+            del_end = len(raw)
+        raw = raw[:start] + raw[del_end:]
+    return raw
+
+
+def _clean_codex_dotted_keys(raw: str) -> str:
+    return _clean_codex_mcp_servers_table(raw)
 
 
 def _find_top_level_inline_key_span(inner: str, key: str) -> tuple[int, int] | None:
@@ -598,7 +706,99 @@ def _update_inline_table(line: str, command: str) -> str:
     return f"{prefix}{inner}{suffix}"
 
 
-def _update_codex_main_section(raw: str, command: str) -> str:
+def _replace_top_level_section_key(
+    sec_body: str, key: str, replacement: str
+) -> tuple[str, bool]:
+    pattern = re.compile(rf"(?m)^[ \t]*{re.escape(key)}[ \t]*=")
+    m = pattern.search(sec_body)
+    if not m:
+        return sec_body, False
+
+    key_line_start = m.start()
+    eq_pos = m.end() - 1
+    n = len(sec_body)
+
+    # Find start of value after '='
+    val_start = eq_pos + 1
+    while val_start < n and sec_body[val_start] in " \t":
+        val_start += 1
+
+    if val_start < n and sec_body[val_start] == "[":
+        # Array (can be multiline)
+        i = val_start + 1
+        bracket_depth = 1
+        in_quote = None
+        escape = False
+        while i < n and bracket_depth > 0:
+            ch = sec_body[i]
+            if in_quote:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == in_quote:
+                    in_quote = None
+            elif ch in ('"', "'"):
+                in_quote = ch
+            elif ch == "#":
+                # comment inside array: ignore until end of line
+                while i < n and sec_body[i] not in "\r\n":
+                    i += 1
+                continue
+            elif ch == "[":
+                bracket_depth += 1
+            elif ch == "]":
+                bracket_depth -= 1
+            i += 1
+        # Consume trailing whitespace/comment until end of line
+        while i < n and sec_body[i] not in "\r\n":
+            i += 1
+        if i < n and sec_body[i] == "\r":
+            i += 1
+        if i < n and sec_body[i] == "\n":
+            i += 1
+        end = i
+    elif val_start < n and sec_body[val_start] == "{":
+        # Inline table
+        i = val_start + 1
+        brace_depth = 1
+        in_quote = None
+        escape = False
+        while i < n and brace_depth > 0:
+            ch = sec_body[i]
+            if in_quote:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == in_quote:
+                    in_quote = None
+            elif ch in ('"', "'"):
+                in_quote = ch
+            elif ch == "{":
+                brace_depth += 1
+            elif ch == "}":
+                brace_depth -= 1
+            i += 1
+        while i < n and sec_body[i] not in "\r\n":
+            i += 1
+        if i < n and sec_body[i] == "\r":
+            i += 1
+        if i < n and sec_body[i] == "\n":
+            i += 1
+        end = i
+    else:
+        # Single line or simple value
+        eol = sec_body.find("\n", eq_pos)
+        end = eol + 1 if eol != -1 else n
+
+    new_sec = sec_body[:key_line_start] + replacement + "\n" + sec_body[end:]
+    return new_sec, True
+
+
+def _update_codex_main_section(
+    raw: str, command: str, extra: dict[str, object] | None = None
+) -> str:
     match = _CODEX_MAIN_TABLE_RE.search(raw)
     if match:
         header_end = match.end()
@@ -609,22 +809,20 @@ def _update_codex_main_section(raw: str, command: str) -> str:
         cmd_str = f"command = {_toml_string(command)}"
         args_str = 'args = ["mcp"]'
 
-        if re.search(r"(?m)^[ \t]*command[ \t]*=.*$", sec_body):
-            sec_body = re.sub(
-                r"(?m)^[ \t]*command[ \t]*=.*$", lambda _: cmd_str, sec_body, count=1
-            )
-        else:
-            sec_body = f"\n{cmd_str}" + sec_body
+        sec_body, cmd_replaced = _replace_top_level_section_key(
+            sec_body, "command", cmd_str
+        )
+        if not cmd_replaced:
+            sec_body = f"\n{cmd_str}\n" + sec_body
 
-        if re.search(r"(?m)^[ \t]*args[ \t]*=.*$", sec_body):
-            sec_body = re.sub(
-                r"(?m)^[ \t]*args[ \t]*=.*$", lambda _: args_str, sec_body, count=1
-            )
-        else:
+        sec_body, args_replaced = _replace_top_level_section_key(
+            sec_body, "args", args_str
+        )
+        if not args_replaced:
             if cmd_str in sec_body:
                 sec_body = sec_body.replace(cmd_str, f"{cmd_str}\n{args_str}", 1)
             else:
-                sec_body = f"\n{args_str}" + sec_body
+                sec_body = f"\n{args_str}\n" + sec_body
 
         return raw[:header_end] + sec_body + raw[sec_end:]
 
@@ -633,9 +831,9 @@ def _update_codex_main_section(raw: str, command: str) -> str:
         updated_line = _update_inline_table(inline_match.group(0), command)
         return raw[: inline_match.start()] + updated_line + raw[inline_match.end() :]
 
-    cleaned = _clean_codex_dotted_keys(raw)
+    cleaned = _clean_codex_mcp_servers_table(raw)
     sep = "" if cleaned.endswith("\n\n") else ("\n" if cleaned.endswith("\n") else "\n\n")
-    return cleaned + sep + _codex_section_text(command)
+    return cleaned + sep + _codex_section_text(command, extra=extra)
 
 
 def _register_codex_toml(path: Path, command: str, *, dry_run: bool = False) -> str:
@@ -670,7 +868,9 @@ def _register_codex_toml(path: Path, command: str, *, dry_run: bool = False) -> 
         return "unchanged"
 
     status = "updated" if isinstance(existing, dict) else "added"
-    rebuilt = _update_codex_main_section(raw, command)
+    rebuilt = _update_codex_main_section(
+        raw, command, extra=existing if isinstance(existing, dict) else None
+    )
 
     # Verify the resulting TOML parses cleanly and has the expected entry.
     check = tomllib.loads(rebuilt)
@@ -706,9 +906,8 @@ def _unregister_codex_toml(
         if not _is_same_command(entry_cmd, matching_command):
             return "noop"
 
-    rebuilt = _CODEX_SECTION_RE.sub("", raw)
-    rebuilt = _CODEX_INLINE_LINE_RE.sub("", rebuilt)
-    rebuilt = _clean_codex_dotted_keys(rebuilt)
+    rebuilt = _remove_codex_sections(raw)
+    rebuilt = _clean_codex_mcp_servers_table(rebuilt)
     rebuilt = re.sub(r"\n{3,}", "\n\n", rebuilt)
     if rebuilt and not rebuilt.endswith("\n"):
         rebuilt += "\n"
@@ -736,10 +935,15 @@ def register_clients(
     actions: list[RegistrationAction] = []
     for client in clients:
         cfg = config_path_for(client, home=home, env=env, platform=platform)
-        if client == "codex":
-            status = _register_codex_toml(cfg, resolved_cmd, dry_run=dry_run)
-        else:
-            status = _register_json_client(client, cfg, resolved_cmd, dry_run=dry_run)
+        try:
+            if client == "codex":
+                status = _register_codex_toml(cfg, resolved_cmd, dry_run=dry_run)
+            else:
+                status = _register_json_client(client, cfg, resolved_cmd, dry_run=dry_run)
+            detail = ""
+        except Exception as exc:
+            status = "error"
+            detail = str(exc)
         actions.append(
             RegistrationAction(
                 client=client,
@@ -747,6 +951,7 @@ def register_clients(
                 config_path=cfg,
                 status=status,
                 command=resolved_cmd,
+                detail=detail,
             )
         )
     return actions
@@ -772,20 +977,26 @@ def unregister_clients(
     actions: list[RegistrationAction] = []
     for client in clients:
         cfg = config_path_for(client, home=home, env=env, platform=platform)
-        if client == "codex":
-            status = _unregister_codex_toml(
-                cfg, matching_command=resolved_matching, dry_run=dry_run
-            )
-        else:
-            status = _unregister_json_client(
-                cfg, matching_command=resolved_matching, dry_run=dry_run
-            )
+        try:
+            if client == "codex":
+                status = _unregister_codex_toml(
+                    cfg, matching_command=resolved_matching, dry_run=dry_run
+                )
+            else:
+                status = _unregister_json_client(
+                    cfg, matching_command=resolved_matching, dry_run=dry_run
+                )
+            detail = ""
+        except Exception as exc:
+            status = "error"
+            detail = str(exc)
         actions.append(
             RegistrationAction(
                 client=client,
                 label=CLIENT_LABELS[client],
                 config_path=cfg,
                 status=status,
+                detail=detail,
             )
         )
     return actions
@@ -800,11 +1011,16 @@ def format_registration_report(actions: Sequence[RegistrationAction]) -> str:
     lines: list[str] = ["[MCP 등록 결과]"]
     for act in actions:
         status_ko = _STATUS_KO.get(act.status, act.status)
-        lines.append(f"  - {act.label}: {status_ko} ({act.config_path})")
+        if act.status == "error" and act.detail:
+            lines.append(f"  - {act.label}: {status_ko} — {act.detail} ({act.config_path})")
+        else:
+            lines.append(f"  - {act.label}: {status_ko} ({act.config_path})")
 
     lines.append("")
     lines.append("[이렇게 쓰세요]")
     for act in actions:
+        if act.status == "error":
+            continue
         lines.append(f"  • {act.label}")
         for hint in CLIENT_USAGE_GUIDES.get(act.client, ()):
             lines.append(f"    {hint}")
@@ -821,5 +1037,8 @@ def format_unregistration_report(actions: Sequence[RegistrationAction]) -> str:
     lines: list[str] = ["[MCP 등록 해제 결과]"]
     for act in actions:
         status_ko = _STATUS_KO.get(act.status, act.status)
-        lines.append(f"  - {act.label}: {status_ko} ({act.config_path})")
+        if act.status == "error" and act.detail:
+            lines.append(f"  - {act.label}: {status_ko} — {act.detail} ({act.config_path})")
+        else:
+            lines.append(f"  - {act.label}: {status_ko} ({act.config_path})")
     return "\n".join(lines)

@@ -415,12 +415,12 @@ def test_unregister_matching_command_only(tmp_path: Path) -> None:
 
 
 def test_register_updates_inline_and_dotted_codex_toml(tmp_path: Path) -> None:
-    # 1. Inline table: hwp-agent = { command = "/old", args = ["mcp"] }
+    # 1. Inline table with trailing comment: hwp-agent = { ... } # installed manually
     codex_cfg = config_path_for("codex", home=tmp_path, env={}, platform="darwin")
     codex_cfg.parent.mkdir(parents=True, exist_ok=True)
     codex_cfg.write_text(
         '[mcp_servers]\n'
-        'hwp-agent = { command = "/old/hwp-agent", args = ["mcp"] }\n'
+        'hwp-agent = { command = "/old/hwp-agent", args = ["mcp"] } # installed manually\n'
         'other = { command = "/bin/other" }\n',
         encoding="utf-8",
     )
@@ -430,15 +430,19 @@ def test_register_updates_inline_and_dotted_codex_toml(tmp_path: Path) -> None:
         ("codex",), command=new_cmd, home=tmp_path, env={}, platform="darwin"
     )
     assert actions[0].status == "updated"
-    parsed = tomllib.loads(codex_cfg.read_text(encoding="utf-8"))
+    raw_updated = codex_cfg.read_text(encoding="utf-8")
+    assert "# installed manually" in raw_updated
+    parsed = tomllib.loads(raw_updated)
     assert parsed["mcp_servers"]["hwp-agent"]["command"] == new_cmd
     assert parsed["mcp_servers"]["hwp-agent"]["args"] == ["mcp"]
     assert parsed["mcp_servers"]["other"]["command"] == "/bin/other"
 
-    # Unregister removes the inline table cleanly
+    # Unregister removes the inline table and comment cleanly
     unreg = unregister_clients(("codex",), home=tmp_path, env={}, platform="darwin")
     assert unreg[0].status == "removed"
-    parsed_after = tomllib.loads(codex_cfg.read_text(encoding="utf-8"))
+    raw_after = codex_cfg.read_text(encoding="utf-8")
+    assert "# installed manually" not in raw_after
+    parsed_after = tomllib.loads(raw_after)
     assert "hwp-agent" not in parsed_after["mcp_servers"]
     assert "other" in parsed_after["mcp_servers"]
 

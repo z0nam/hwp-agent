@@ -425,7 +425,10 @@ _CODEX_MAIN_TABLE_RE = re.compile(
     r"(?m)^\[mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')\][ \t]*\r?$"
 )
 _CODEX_INLINE_RE = re.compile(
-    r"(?m)^([ \t]*(?:hwp-agent|\"hwp-agent\"|'hwp-agent')[ \t]*=[ \t]*\{)(.*?)(\}[ \t]*)$"
+    r"(?m)^([ \t]*(?:hwp-agent|\"hwp-agent\"|'hwp-agent')[ \t]*=[ \t]*\{)(.*?)(\}[ \t]*(?:#.*)?)\r?$"
+)
+_CODEX_INLINE_LINE_RE = re.compile(
+    r"(?m)^[ \t]*(?:hwp-agent|\"hwp-agent\"|'hwp-agent')[ \t]*=[ \t]*\{.*?\}[ \t]*(?:#.*)?\r?\n?"
 )
 _CODEX_DOTTED_RE = re.compile(
     r"(?m)^[ \t]*mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')"
@@ -565,7 +568,7 @@ def _unregister_codex_toml(
             return "noop"
 
     rebuilt = _CODEX_SECTION_RE.sub("", raw)
-    rebuilt = _CODEX_INLINE_RE.sub("", rebuilt)
+    rebuilt = _CODEX_INLINE_LINE_RE.sub("", rebuilt)
     rebuilt = _CODEX_DOTTED_RE.sub("", rebuilt)
     rebuilt = re.sub(r"\n{3,}", "\n\n", rebuilt)
     if rebuilt and not rebuilt.endswith("\n"):

@@ -248,7 +248,12 @@ def _pick_reference_table(paras: list, header_root=None):
       3. 머리·본문·끝행 대역이 모두 갖춰진 표(행 4개 이상)
       4. 문서 순서상 첫 번째 데이터 표(2행×2열 이상, 그림 포함 표 제외)
     """
-    from hwp_agent.ops.author import _TABLE_TOKEN_RE, _caption_text, _table_format
+    from hwp_agent.ops.author import (
+        _TABLE_TOKEN_RE,
+        _caption_text,
+        _is_header_row,
+        _table_format,
+    )
 
     best = None
     best_rank = None
@@ -273,20 +278,39 @@ def _pick_reference_table(paras: list, header_root=None):
                 ),
                 default=0,
             )
-        if len(rows) < 2 or logical_cols < 2:
+        if logical_cols < 2:
             continue
+
+        h = 0
+        while h < len(rows) and _is_header_row(rows[h]):
+            h += 1
+        h = h or 1
+        # 헤더 행만 있고 본문 행이 없는 표(예: 2행 모두 헤더)는 기준 표에서 배제
+        if len(rows) <= h:
+            continue
+
+        sib_note = _sibling_note_style(p, header_root)
+        has_note = (_table_format(tbl).note is not None) or (sib_note is not None)
+        has_existing_note = _table_format(tbl).note is not None and len(rows[h:]) > 1
+        data_rows = rows[:-1] if has_existing_note else rows
+
         has_vmerge = any(
             int(span.get("rowSpan", "1") or 1) > 1
             for tc in tbl.findall(".//" + _hp("tc"))
             if (span := tc.find(_hp("cellSpan"))) is not None
         )
+        has_hmerge = any(
+            int(span.get("colSpan", "1") or 1) > 1
+            for tr in data_rows
+            for tc in tr.findall(_hp("tc"))
+            if (span := tc.find(_hp("cellSpan"))) is not None
+        )
         designated = bool(_TABLE_TOKEN_RE.search(_caption_text(tbl)))
-        if has_vmerge and not designated:
+        if (has_vmerge or has_hmerge) and not designated:
             continue
-        sib_note = _sibling_note_style(p, header_root)
-        has_note = (_table_format(tbl).note is not None) or (sib_note is not None)
+
         full_bands = len(rows) >= 4
-        rank = (designated, not has_vmerge, has_note, full_bands, -idx)
+        rank = (designated, not has_vmerge, not has_hmerge, has_note, full_bands, -idx)
         if best_rank is None or rank > best_rank:
             best_rank = rank
             best = (p, tbl, sib_note)
@@ -391,6 +415,53 @@ def _expand_vertical_merges(tbl) -> None:
             tr.append(cell)
 
 
+def _expand_horizontal_merges(tr) -> None:
+    """수평 병합 셀(colSpan > 1)을 colSpan=1인 개별 셀들로 분할하여 사각형 그리드로 전개한다."""
+    from hwp_agent.ops.form import _set_cell_text_overwrite
+
+    tcs = tr.findall(_hp("tc"))
+    if not any(
+        int(span.get("colSpan", "1") or 1) > 1
+        for tc in tcs
+        if (span := tc.find(_hp("cellSpan"))) is not None
+    ):
+        return
+
+    new_tcs = []
+    for tc in tcs:
+        span = tc.find(_hp("cellSpan"))
+        cs = int(span.get("colSpan", "1") or 1) if span is not None else 1
+        if cs <= 1:
+            new_tcs.append(tc)
+            continue
+        sz = tc.find(_hp("cellSz"))
+        w = int(sz.get("width")) if sz is not None and (sz.get("width") or "").isdigit() else None
+        split_w = (w // cs) if w is not None else None
+
+        if span is not None:
+            span.set("colSpan", "1")
+        if sz is not None and split_w is not None:
+            sz.set("width", str(split_w))
+        new_tcs.append(tc)
+
+        for _ in range(cs - 1):
+            clone = copy.deepcopy(tc)
+            _set_cell_text_overwrite(clone, "")
+            cl_span = clone.find(_hp("cellSpan"))
+            if cl_span is not None:
+                cl_span.set("colSpan", "1")
+            if sz is not None and split_w is not None:
+                cl_sz = clone.find(_hp("cellSz"))
+                if cl_sz is not None:
+                    cl_sz.set("width", str(split_w))
+            new_tcs.append(clone)
+
+    for child in list(tr.findall(_hp("tc"))):
+        tr.remove(child)
+    for cell in new_tcs:
+        tr.append(cell)
+
+
 def _neutralize_reference_table(
     table_p, tbl, header_root=None, sibling_note_style=None
 ) -> None:
@@ -429,6 +500,14 @@ def _neutralize_reference_table(
     header_rows = rows[:h]
     rest = rows[h:]
 
+    has_existing_note = _table_format(tbl).note is not None and len(rest) > 1
+    existing_note = [rest[-1]] if has_existing_note else []
+    data_body = rest[:-1] if has_existing_note else rest
+
+    # 지정 기준표라도 수평 병합 셀이 데이터 행에 남아있으면 분할하여 1열 1셀 그리드로 전개
+    for tr in (*header_rows, *data_body):
+        _expand_horizontal_merges(tr)
+
     # 논리 열 수: 테이블의 colCnt 속성 또는 각 행의 colSpan 합산 최댓값
     logical_cols = int(tbl.get("colCnt", "0") or 0)
     if not logical_cols:
@@ -439,10 +518,6 @@ def _neutralize_reference_table(
             )
             logical_cols = max(logical_cols, r_cols)
     logical_cols = max(logical_cols, 1)
-
-    has_existing_note = _table_format(tbl).note is not None and len(rest) > 1
-    existing_note = [rest[-1]] if has_existing_note else []
-    data_body = rest[:-1] if has_existing_note else rest
 
     if len(data_body) >= 3:
         # first_body(머리행 이중선 짝) + interior body(가는선) + last(굵은 하단선) 보존

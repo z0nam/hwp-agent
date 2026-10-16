@@ -1657,5 +1657,107 @@ def test_expand_vertical_merges_preserves_header_flag() -> None:
     assert r1_tcs[1].get("header") == "1"
 
 
+def test_pick_reference_table_requires_body_row() -> None:
+    """_pick_reference_table rejects tables that have only header rows and no body rows (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    # p1: 2 rows, both header="1" (all header rows, no body row)
+    p1 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    # p2: 2 rows, row 0 header="1", row 1 header="0" (valid header + body)
+    p2 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    assert mod._pick_reference_table([p1]) is None
+    picked = mod._pick_reference_table([p1, p2])
+    assert picked is not None and picked[0] is p2
+
+
+def test_pick_reference_table_rejects_horizontal_merges_unless_designated() -> None:
+    """_pick_reference_table rejects tables with colSpan > 1 in non-note rows unless designated (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    # p1: 2 rows, row 1 has a merged cell colSpan="2" -> auto-selection rejects
+    p1 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2" rowSpan="1"/></hp:tc></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    # p2: designated with {{table_template}} caption even though it has colSpan="2" -> accepted
+    p2 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2" rowSpan="1"/></hp:tc></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    # p3: 2 rows, clean 2x2 grid -> accepted
+    p3 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    assert mod._pick_reference_table([p1]) is None
+    picked = mod._pick_reference_table([p1, p3])
+    assert picked is not None and picked[0] is p3
+
+    picked_designated = mod._pick_reference_table([p1, p2])
+    assert picked_designated is not None and picked_designated[0] is p2
+
+
+def test_expand_horizontal_merges_splits_merged_cells() -> None:
+    """_expand_horizontal_merges splits colSpan > 1 cells into individual 1-col cells (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    xml = (
+        f'<hp:tr xmlns:hp="{hp}">'
+        f'<hp:tc header="0"><hp:cellSpan colSpan="2" rowSpan="1"/><hp:cellSz width="2000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc header="0"><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'</hp:tr>'
+    )
+    tr = etree.fromstring(xml.encode("utf-8"))
+    mod._expand_horizontal_merges(tr)
+
+    tcs = tr.findall(f"{{{hp}}}tc")
+    assert len(tcs) == 3
+    assert all(tc.find(f"{{{hp}}}cellSpan").get("colSpan") == "1" for tc in tcs)
+    widths = [tc.find(f"{{{hp}}}cellSz").get("width") for tc in tcs]
+    assert widths == ["1000", "1000", "1000"]
+
+
+
 
 

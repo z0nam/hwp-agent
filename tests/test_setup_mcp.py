@@ -896,3 +896,94 @@ def test_codex_dotted_keys_preserve_custom_fields(tmp_path: Path) -> None:
     assert entry["startup_timeout_sec"] == 45
     assert entry["env"] == {"CUSTOM_KEY": "custom_val"}
     assert parsed["mcp_servers"]["other"]["command"] == "/bin/other"
+
+
+def test_jsonc_creates_bak_backup_on_modification(tmp_path: Path) -> None:
+    gemini_cfg = config_path_for("gemini", home=tmp_path, env={}, platform="darwin")
+    gemini_cfg.parent.mkdir(parents=True, exist_ok=True)
+    jsonc_raw = '// My precious comment\n{\n  "mcpServers": {}\n}\n'
+    gemini_cfg.write_text(jsonc_raw, encoding="utf-8")
+
+    res = register_clients(
+        ("gemini",), home=tmp_path, env={}, platform="darwin", command="/bin/hwp-agent"
+    )
+    assert res[0].status == "added"
+    assert "원본 백업" in res[0].detail
+
+    bak_file = gemini_cfg.with_name(gemini_cfg.name + ".bak")
+    assert bak_file.is_file()
+    assert "// My precious comment" in bak_file.read_text(encoding="utf-8")
+
+
+def test_codex_register_does_not_touch_other_table_inline(tmp_path: Path) -> None:
+    codex_cfg = config_path_for("codex", home=tmp_path, env={}, platform="darwin")
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        "[other_table]\n"
+        'hwp-agent = { test = "keep this untouched" }\n\n'
+        "[mcp_servers]\n"
+        'other = { command = "/bin/other" }\n'
+    )
+    codex_cfg.write_text(content, encoding="utf-8")
+
+    res = register_clients(
+        ("codex",), home=tmp_path, env={}, platform="darwin", command="/bin/hwp-agent"
+    )
+    assert res[0].status == "added"
+
+    result = codex_cfg.read_text(encoding="utf-8")
+    # other_table must be preserved
+    assert 'hwp-agent = { test = "keep this untouched" }' in result
+    parsed = tomllib.loads(result)
+    assert parsed["other_table"]["hwp-agent"] == {"test": "keep this untouched"}
+    assert parsed["mcp_servers"]["hwp-agent"]["command"] == "/bin/hwp-agent"
+
+
+def test_codex_remove_sections_preserves_comments_boundary(tmp_path: Path) -> None:
+    codex_cfg = config_path_for("codex", home=tmp_path, env={}, platform="darwin")
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    # Example 1: section with trailing comments for next table
+    content = (
+        "[mcp_servers.hwp-agent]\n"
+        'command = "/bin/hwp-agent"\n'
+        'args = ["mcp"]\n\n'
+        "# --- other servers ---\n"
+        "[mcp_servers.spacemath]\n"
+        'command = "/bin/spacemath"\n'
+    )
+    codex_cfg.write_text(content, encoding="utf-8")
+
+    unreg = unregister_clients(("codex",), home=tmp_path, env={}, platform="darwin")
+    assert unreg[0].status == "removed"
+
+    result = codex_cfg.read_text(encoding="utf-8")
+    assert "# --- other servers ---" in result
+    assert "[mcp_servers.spacemath]" in result
+    parsed = tomllib.loads(result)
+    assert "hwp-agent" not in parsed["mcp_servers"]
+    assert parsed["mcp_servers"]["spacemath"]["command"] == "/bin/spacemath"
+
+
+def test_codex_dotted_keys_quoted_keys_and_nested(tmp_path: Path) -> None:
+    codex_cfg = config_path_for("codex", home=tmp_path, env={}, platform="darwin")
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        "[mcp_servers]\n"
+        'hwp-agent.command = "/old/hwp-agent"\n'
+        'hwp-agent.args = ["mcp"]\n'
+        'hwp-agent.env."MY.SPECIAL.VAR" = "val1"\n'
+        'hwp-agent.nested = { deep = { num = 42 } }\n'
+    )
+    codex_cfg.write_text(content, encoding="utf-8")
+
+    res = register_clients(
+        ("codex",), home=tmp_path, env={}, platform="darwin", command="/new/hwp-agent"
+    )
+    assert res[0].status == "updated"
+
+    result = codex_cfg.read_text(encoding="utf-8")
+    parsed = tomllib.loads(result)
+    assert parsed["mcp_servers"]["hwp-agent"]["command"] == "/new/hwp-agent"
+    assert parsed["mcp_servers"]["hwp-agent"]["env"]["MY.SPECIAL.VAR"] == "val1"
+    assert parsed["mcp_servers"]["hwp-agent"]["nested"]["deep"]["num"] == 42
+

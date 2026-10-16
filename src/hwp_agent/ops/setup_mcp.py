@@ -404,17 +404,21 @@ def _strip_json_comments(text: str) -> str:
     return "".join(out)
 
 
-def _load_json_c(raw: str) -> object:
+def _load_json_c(raw: str) -> tuple[object, bool]:
+    """Parse JSON or JSONC. Returns (loaded_object, had_comments)."""
     try:
-        return json.loads(raw)
+        return json.loads(raw), False
     except json.JSONDecodeError:
-        return json.loads(_strip_json_comments(raw))
+        stripped = _strip_json_comments(raw)
+        return json.loads(stripped), True
 
 
 def _register_json_client(
     client: str, path: Path, command: str, *, dry_run: bool = False
-) -> str:
+) -> tuple[str, str]:
     desired = _desired_json_entry(client, command)
+    had_comments = False
+    raw = ""
     if not path.is_file():
         data: dict[str, object] = {}
     else:
@@ -422,7 +426,7 @@ def _register_json_client(
         if not raw:
             data = {}
         else:
-            loaded = _load_json_c(raw)
+            loaded, had_comments = _load_json_c(raw)
             if not isinstance(loaded, dict):
                 raise ValueError(f"{path}: JSON 최상위 구조가 객체(dict)가 아닙니다")
             data = loaded
@@ -439,50 +443,87 @@ def _register_json_client(
         updated = dict(existing)
         updated.update(desired)
         if updated == existing:
-            return "unchanged"
+            return "unchanged", ""
         servers[SERVER_NAME] = updated
         status = "updated"
     else:
         servers[SERVER_NAME] = desired
         status = "added"
 
+    detail = ""
     if not dry_run:
+        if had_comments and raw:
+            bak = path.with_name(f"{path.name}.bak")
+            _write_text_atomic(bak, raw + "\n")
+            detail = f"주석 포함 파일 — 원본 백업({bak.name}) 생성됨"
         _write_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-    return status
+    return status, detail
 
 
 def _unregister_json_client(
     path: Path, *, matching_command: str | None = None, dry_run: bool = False
-) -> str:
+) -> tuple[str, str]:
     if not path.is_file():
-        return "noop"
+        return "noop", ""
     raw = path.read_text(encoding="utf-8-sig").strip()
     if not raw:
-        return "noop"
-    loaded = _load_json_c(raw)
+        return "noop", ""
+    loaded, had_comments = _load_json_c(raw)
     if not isinstance(loaded, dict):
         raise ValueError(f"{path}: JSON 최상위 구조가 객체(dict)가 아닙니다")
     servers = loaded.get("mcpServers")
     if not isinstance(servers, dict) or SERVER_NAME not in servers:
-        return "noop"
+        return "noop", ""
 
     entry = servers[SERVER_NAME]
     if matching_command is not None:
         entry_cmd = entry.get("command") if isinstance(entry, dict) else None
         if not _is_same_command(entry_cmd, matching_command):
-            return "noop"
+            return "noop", ""
 
     del servers[SERVER_NAME]
+    detail = ""
     if not dry_run:
+        if had_comments and raw:
+            bak = path.with_name(f"{path.name}.bak")
+            _write_text_atomic(bak, raw + "\n")
+            detail = f"주석 포함 파일 — 원본 백업({bak.name}) 생성됨"
         _write_text_atomic(
             path, json.dumps(loaded, ensure_ascii=False, indent=2) + "\n"
         )
-    return "removed"
+    return "removed", detail
 
 
 def _toml_string(val: str) -> str:
     """Serialize a string as a TOML-safe literal UTF-8 string with escaped controls."""
     return json.dumps(val, ensure_ascii=False)
+
+
+def _toml_key(k: str) -> str:
+    """Format a TOML table/key name. Uses bare key if valid, else quotes it."""
+    if re.fullmatch(r"[A-Za-z0-9_-]+", k):
+        return k
+    return json.dumps(k, ensure_ascii=False)
+
+
+def _toml_format_value(v: object) -> str:
+    """Recursively format a value for TOML inline serialization, raising ValueError on unsupported types."""
+    if isinstance(v, str):
+        return json.dumps(v, ensure_ascii=False)
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, dict):
+        pairs = [
+            f"{_toml_key(sub_k)} = {_toml_format_value(sub_v)}"
+            for sub_k, sub_v in v.items()
+        ]
+        return f"{{ {', '.join(pairs)} }}"
+    if isinstance(v, list):
+        items = [_toml_format_value(item) for item in v]
+        return f"[{', '.join(items)}]"
+    raise ValueError(f"TOML로 직렬화할 수 없는 값 형식입니다: {type(v).__name__} ({v!r})")
 
 
 def _codex_section_text(command: str, extra: dict[str, object] | None = None) -> str:
@@ -495,32 +536,8 @@ def _codex_section_text(command: str, extra: dict[str, object] | None = None) ->
         for k, v in extra.items():
             if k in ("command", "args"):
                 continue
-            if isinstance(v, str):
-                lines.append(f"{k} = {_toml_string(v)}")
-            elif isinstance(v, bool):
-                lines.append(f"{k} = {'true' if v else 'false'}")
-            elif isinstance(v, (int, float)):
-                lines.append(f"{k} = {v}")
-            elif isinstance(v, dict):
-                pairs = []
-                for sub_k, sub_v in v.items():
-                    if isinstance(sub_v, str):
-                        pairs.append(f"{sub_k} = {_toml_string(sub_v)}")
-                    elif isinstance(sub_v, bool):
-                        pairs.append(f"{sub_k} = {'true' if sub_v else 'false'}")
-                    elif isinstance(sub_v, (int, float)):
-                        pairs.append(f"{sub_k} = {sub_v}")
-                lines.append(f"{k} = {{ {', '.join(pairs)} }}")
-            elif isinstance(v, list):
-                items = []
-                for item in v:
-                    if isinstance(item, str):
-                        items.append(_toml_string(item))
-                    elif isinstance(item, bool):
-                        items.append("true" if item else "false")
-                    elif isinstance(item, (int, float)):
-                        items.append(str(item))
-                lines.append(f"{k} = [{', '.join(items)}]")
+            formatted_val = _toml_format_value(v)
+            lines.append(f"{_toml_key(k)} = {formatted_val}")
     return "\n".join(lines) + "\n"
 
 
@@ -538,14 +555,14 @@ _CODEX_INLINE_LINE_RE = re.compile(
 )
 _CODEX_GLOBAL_DOTTED_RE = re.compile(
     r"(?m)^[ \t]*mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')"
-    r"(?:\.[a-zA-Z0-9_-]+)*[ \t]*=.*$\r?\n?"
+    r"(?:\.[^=\r\n]+)*[ \t]*=.*$\r?\n?"
 )
 _CODEX_MCP_TABLE_RE = re.compile(
     r"(?m)^\[mcp_servers\][ \t]*(?:#[^\r\n]*)?\r?$"
 )
 _CODEX_SCOPED_DOTTED_RE = re.compile(
     r"(?m)^[ \t]*(?:hwp-agent|\"hwp-agent\"|'hwp-agent')"
-    r"(?:\.[a-zA-Z0-9_-]+)+[ \t]*=.*$\r?\n?"
+    r"(?:\.[^=\r\n]+)+[ \t]*=.*$\r?\n?"
 )
 
 
@@ -576,11 +593,18 @@ def _remove_codex_sections(raw: str) -> str:
         if next_m:
             sec_end = header_end + next_m.start()
             sec_chunk = raw[header_end:sec_end]
-            trailing_m = re.search(
-                r"((?:^[ \t]*#[^\r\n]*\r?\n[ \t]*)+)$", sec_chunk, re.MULTILINE
-            )
-            keep_len = len(trailing_m.group(1)) if trailing_m else 0
-            del_end = sec_end - keep_len
+            lines = sec_chunk.splitlines(keepends=True)
+            last_content_idx = -1
+            for idx in range(len(lines) - 1, -1, -1):
+                s = lines[idx].strip()
+                if s and not s.startswith("#"):
+                    last_content_idx = idx
+                    break
+            if last_content_idx != -1:
+                del_len = sum(len(lines[i]) for i in range(last_content_idx + 1))
+                del_end = header_end + del_len
+            else:
+                del_end = sec_end
         else:
             del_end = len(raw)
         raw = raw[:start] + raw[del_end:]
@@ -826,10 +850,21 @@ def _update_codex_main_section(
 
         return raw[:header_end] + sec_body + raw[sec_end:]
 
-    inline_match = _CODEX_INLINE_RE.search(raw)
-    if inline_match:
-        updated_line = _update_inline_table(inline_match.group(0), command)
-        return raw[: inline_match.start()] + updated_line + raw[inline_match.end() :]
+    m = _CODEX_MCP_TABLE_RE.search(raw)
+    if m:
+        header_end = m.end()
+        next_m = re.search(r"(?m)^\[", raw[header_end:])
+        sec_end = header_end + next_m.start() if next_m else len(raw)
+        sec_body = raw[header_end:sec_end]
+        inline_match = _CODEX_INLINE_RE.search(sec_body)
+        if inline_match:
+            updated_line = _update_inline_table(inline_match.group(0), command)
+            updated_sec = (
+                sec_body[: inline_match.start()]
+                + updated_line
+                + sec_body[inline_match.end() :]
+            )
+            return raw[:header_end] + updated_sec + raw[sec_end:]
 
     cleaned = _clean_codex_mcp_servers_table(raw)
     sep = "" if cleaned.endswith("\n\n") else ("\n" if cleaned.endswith("\n") else "\n\n")
@@ -938,9 +973,11 @@ def register_clients(
         try:
             if client == "codex":
                 status = _register_codex_toml(cfg, resolved_cmd, dry_run=dry_run)
+                detail = ""
             else:
-                status = _register_json_client(client, cfg, resolved_cmd, dry_run=dry_run)
-            detail = ""
+                status, detail = _register_json_client(
+                    client, cfg, resolved_cmd, dry_run=dry_run
+                )
         except Exception as exc:
             status = "error"
             detail = str(exc)
@@ -982,11 +1019,11 @@ def unregister_clients(
                 status = _unregister_codex_toml(
                     cfg, matching_command=resolved_matching, dry_run=dry_run
                 )
+                detail = ""
             else:
-                status = _unregister_json_client(
+                status, detail = _unregister_json_client(
                     cfg, matching_command=resolved_matching, dry_run=dry_run
                 )
-            detail = ""
         except Exception as exc:
             status = "error"
             detail = str(exc)

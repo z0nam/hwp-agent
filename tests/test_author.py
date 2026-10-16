@@ -1496,7 +1496,9 @@ def test_fill_sections_preserves_table_template_across_parts(tmp_path: Path) -> 
 
 @pytest.mark.skipif(not _HOUSE_POLICY.is_file(), reason="baked house form not present")
 def test_fill_sections_without_tables_drops_neutralized_reference_table(tmp_path: Path) -> None:
-    """Building content with no tables must drop the neutralized reference table so no stray empty table remains (#30)."""
+    """Building content with no tables must drop the neutralized reference table so no stray empty
+    table remains (#30).
+    """
     from hwpx.document import HwpxDocument
 
     from hwp_agent.ops import fill_sections
@@ -1557,8 +1559,11 @@ def test_refresh_strip_keeps_neutralized_table_template(tmp_path: Path) -> None:
 
 
 def test_neutralize_reference_table_handles_clean_grid() -> None:
-    """_neutralize_reference_table neutralizes clean grid tables and generates a synthesized note row (#30)."""
+    """_neutralize_reference_table neutralizes clean grid tables and generates a synthesized note
+    row (#30).
+    """
     import importlib.util
+
     from lxml import etree
 
     spec = importlib.util.spec_from_file_location(
@@ -1573,24 +1578,36 @@ def test_neutralize_reference_table_handles_clean_grid() -> None:
         f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="3">'
         f'<hp:sz width="3000" height="4000"/>'
         f'<hp:tr>'
-        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
-        f'<hp:tc><hp:cellAddr colAddr="1" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
-        f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        '<hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/>'
+        '<hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        '<hp:tc><hp:cellAddr colAddr="1" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/>'
+        '<hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        '<hp:tc><hp:cellAddr colAddr="2" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/>'
+        '<hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
         f'</hp:tr>'
         f'<hp:tr>'
-        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
-        f'<hp:tc><hp:cellAddr colAddr="1" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
-        f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        '<hp:tc><hp:cellAddr colAddr="0" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/>'
+        '<hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        '<hp:tc><hp:cellAddr colAddr="1" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/>'
+        '<hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        '<hp:tc><hp:cellAddr colAddr="2" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/>'
+        '<hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
         f'</hp:tr>'
         f'<hp:tr>'
-        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
-        f'<hp:tc><hp:cellAddr colAddr="1" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
-        f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        '<hp:tc><hp:cellAddr colAddr="0" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/>'
+        '<hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        '<hp:tc><hp:cellAddr colAddr="1" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/>'
+        '<hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        '<hp:tc><hp:cellAddr colAddr="2" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/>'
+        '<hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
         f'</hp:tr>'
         f'<hp:tr>'
-        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="3"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
-        f'<hp:tc><hp:cellAddr colAddr="1" rowAddr="3"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
-        f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="3"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        '<hp:tc><hp:cellAddr colAddr="0" rowAddr="3"/><hp:cellSpan colSpan="1" rowSpan="1"/>'
+        '<hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        '<hp:tc><hp:cellAddr colAddr="1" rowAddr="3"/><hp:cellSpan colSpan="1" rowSpan="1"/>'
+        '<hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        '<hp:tc><hp:cellAddr colAddr="2" rowAddr="3"/><hp:cellSpan colSpan="1" rowSpan="1"/>'
+        '<hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
         f'</hp:tr>'
         f'</hp:tbl></hp:run></hp:p>'
     )
@@ -1616,8 +1633,11 @@ def test_neutralize_reference_table_handles_clean_grid() -> None:
 
 
 def test_pick_reference_table_rejects_undersized() -> None:
-    """_pick_reference_table rejects layout/form tables that have < 2 rows or < 2 logical cols (#30)."""
+    """_pick_reference_table rejects layout/form tables that have < 2 rows or < 2 logical cols
+    (#30).
+    """
     import importlib.util
+
     from lxml import etree
 
     spec = importlib.util.spec_from_file_location(
@@ -1631,13 +1651,16 @@ def test_pick_reference_table_rejects_undersized() -> None:
     # p2: 3 rows, 1 col (undersized by col)
     # p3: 2 rows, 2 cols (valid)
     p1 = etree.fromstring(
-        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2"><hp:tr><hp:tc/><hp:tc/></hp:tr></hp:tbl></hp:run></hp:p>'
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2"><hp:tr><hp:tc/><hp:tc/></hp:tr>'
+        '</hp:tbl></hp:run></hp:p>'
     )
     p2 = etree.fromstring(
-        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="1"><hp:tr><hp:tc/></hp:tr><hp:tr><hp:tc/></hp:tr><hp:tr><hp:tc/></hp:tr></hp:tbl></hp:run></hp:p>'
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="1"><hp:tr><hp:tc/></hp:tr><hp:tr><hp:tc/>'
+        '</hp:tr><hp:tr><hp:tc/></hp:tr></hp:tbl></hp:run></hp:p>'
     )
     p3 = etree.fromstring(
-        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2"><hp:tr><hp:tc/><hp:tc/></hp:tr><hp:tr><hp:tc/><hp:tc/></hp:tr></hp:tbl></hp:run></hp:p>'
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2"><hp:tr><hp:tc/><hp:tc/></hp:tr><hp:tr>'
+        '<hp:tc/><hp:tc/></hp:tr></hp:tbl></hp:run></hp:p>'
     )
     picked = mod._pick_reference_table([p1, p2, p3])
     assert picked is not None
@@ -1648,6 +1671,7 @@ def test_pick_reference_table_rejects_undersized() -> None:
 def test_pick_reference_table_rejects_vertical_merges_even_if_designated() -> None:
     """_pick_reference_table rejects tables with rowSpan > 1 even if designated (#30)."""
     import importlib.util
+
     from lxml import etree
 
     spec = importlib.util.spec_from_file_location(
@@ -1660,8 +1684,10 @@ def test_pick_reference_table_rejects_vertical_merges_even_if_designated() -> No
     # p1: designated with {{table_template}}, but has vertical merge (rowSpan="2")
     p1 = etree.fromstring(
         f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
-        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
-        f'<hp:tr><hp:tc header="1"><hp:cellSpan colSpan="1" rowSpan="2"/></hp:tc><hp:tc header="1"/></hp:tr>'
+        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template}}}}</hp:t>'
+        '</hp:run></hp:p></hp:subList></hp:caption>'
+        '<hp:tr><hp:tc header="1"><hp:cellSpan colSpan="1" rowSpan="2"/></hp:tc>'
+        '<hp:tc header="1"/></hp:tr>'
         f'<hp:tr><hp:tc header="0"/></hp:tr>'
         f'</hp:tbl></hp:run></hp:p>'
     )
@@ -1680,6 +1706,7 @@ def test_pick_reference_table_rejects_vertical_merges_even_if_designated() -> No
 def test_pick_reference_table_requires_body_row() -> None:
     """_pick_reference_table rejects tables that have only header rows and no body rows (#30)."""
     import importlib.util
+
     from lxml import etree
 
     spec = importlib.util.spec_from_file_location(
@@ -1709,8 +1736,10 @@ def test_pick_reference_table_requires_body_row() -> None:
 
 
 def test_pick_reference_table_rejects_horizontal_merges_even_if_designated() -> None:
-    """_pick_reference_table rejects tables with colSpan > 1 in data rows even if designated (#30)."""
+    """_pick_reference_table rejects tables with colSpan > 1 in data rows even if designated (#30).
+    """
     import importlib.util
+
     from lxml import etree
 
     spec = importlib.util.spec_from_file_location(
@@ -1730,7 +1759,8 @@ def test_pick_reference_table_rejects_horizontal_merges_even_if_designated() -> 
     # p2: designated with {{table_template}} caption but has colSpan="2" -> rejected
     p2 = etree.fromstring(
         f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
-        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
+        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template}}}}</hp:t>'
+        '</hp:run></hp:p></hp:subList></hp:caption>'
         f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
         f'<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2" rowSpan="1"/></hp:tc></hp:tr>'
         f'</hp:tbl></hp:run></hp:p>'
@@ -1751,6 +1781,7 @@ def test_pick_reference_table_rejects_horizontal_merges_even_if_designated() -> 
 def test_neutralize_reference_table_rejects_merges() -> None:
     """_neutralize_reference_table raises ValueError if given tables with merges (#30)."""
     import importlib.util
+
     import pytest
     from lxml import etree
 
@@ -1778,13 +1809,16 @@ def test_neutralize_reference_table_rejects_merges() -> None:
         f'</hp:tbl></hp:run></hp:p>'
     )
     tbl_h = p_hmerge.find(f".//{{{hp}}}tbl")
-    with pytest.raises(ValueError, match="Cannot neutralize reference table with horizontal merges"):
+    with pytest.raises(
+        ValueError, match="Cannot neutralize reference table with horizontal merges"
+    ):
         mod._neutralize_reference_table(p_hmerge, tbl_h)
 
 
 def test_is_table_note_row_distinguishes_notes_from_totals() -> None:
     """_is_table_note_row recognizes true note rows and rejects total/summary rows (#30)."""
     import importlib.util
+
     from lxml import etree
 
     spec = importlib.util.spec_from_file_location(
@@ -1797,13 +1831,17 @@ def test_is_table_note_row_distinguishes_notes_from_totals() -> None:
 
     # 1. Note row with '주)' text
     tr_note1 = etree.fromstring(
-        f'<hp:tr xmlns:hp="{hp}"><hp:tc><hp:subList><hp:p><hp:run><hp:t>주) 2024년 기준 추정치</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr xmlns:hp="{hp}"><hp:tc><hp:subList><hp:p><hp:run>'
+        '<hp:t>주) 2024년 기준 추정치</hp:t>'
+        '</hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
     )
     assert mod._is_table_note_row(tr_note1, logical_cols=3) is True
 
     # 2. Note row with '자료:' text
     tr_note2 = etree.fromstring(
-        f'<hp:tr xmlns:hp="{hp}"><hp:tc><hp:subList><hp:p><hp:run><hp:t>자료: 통계청</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr xmlns:hp="{hp}"><hp:tc><hp:subList><hp:p><hp:run>'
+        '<hp:t>자료: 통계청</hp:t></hp:run>'
+        '</hp:p></hp:subList></hp:tc></hp:tr>'
     )
     assert mod._is_table_note_row(tr_note2, logical_cols=3) is True
 
@@ -1820,7 +1858,9 @@ def test_is_table_note_row_distinguishes_notes_from_totals() -> None:
     # 4. Total row merged across full width but containing '총계'
     tr_total_merged = etree.fromstring(
         f'<hp:tr xmlns:hp="{hp}">'
-        f'<hp:tc><hp:cellSpan colSpan="3"/><hp:subList><hp:p><hp:run><hp:t>총계 300건</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        '<hp:tc><hp:cellSpan colSpan="3"/><hp:subList><hp:p><hp:run>'
+        '<hp:t>총계 300건</hp:t></hp:run>'
+        '</hp:p></hp:subList></hp:tc>'
         f'</hp:tr>'
     )
     assert mod._is_table_note_row(tr_total_merged, logical_cols=3) is False
@@ -1829,6 +1869,7 @@ def test_is_table_note_row_distinguishes_notes_from_totals() -> None:
 def test_pick_reference_table_does_not_treat_total_row_as_note() -> None:
     """_pick_reference_table does not classify a total row with distinct styling as a note (#30)."""
     import importlib.util
+
     from lxml import etree
 
     spec = importlib.util.spec_from_file_location(
@@ -1843,17 +1884,31 @@ def test_pick_reference_table_does_not_treat_total_row_as_note() -> None:
     # Should NOT be ranked as note-bearing, and total row stays in data_rows
     p1 = etree.fromstring(
         f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
-        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>항목</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>값</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
-        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>A</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
-        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="99"><hp:run><hp:t>합계</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList><hp:p styleIDRef="99"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        '<hp:tr><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>항목</hp:t>'
+        '</hp:run></hp:p></hp:subList></hp:tc><hp:tc header="1"><hp:subList><hp:p styleIDRef="5">'
+        '<hp:run><hp:t>값</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        '<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>A</hp:t>'
+        '</hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList>'
+        '<hp:p styleIDRef="10"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        '</hp:tr>'
+        '<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="99"><hp:run><hp:t>합계</hp:t>'
+        '</hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList>'
+        '<hp:p styleIDRef="99"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        '</hp:tr>'
         f'</hp:tbl></hp:run></hp:p>'
     )
     # p2: Table ending with a true note row
     p2 = etree.fromstring(
         f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
-        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>항목</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>값</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
-        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>A</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
-        f'<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2"/><hp:subList><hp:p styleIDRef="99"><hp:run><hp:t>자료: 통계청</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        '<hp:tr><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>항목</hp:t>'
+        '</hp:run></hp:p></hp:subList></hp:tc><hp:tc header="1"><hp:subList><hp:p styleIDRef="5">'
+        '<hp:run><hp:t>값</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        '<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>A</hp:t>'
+        '</hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList>'
+        '<hp:p styleIDRef="10"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        '</hp:tr>'
+        '<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2"/><hp:subList><hp:p styleIDRef="99">'
+        '<hp:run><hp:t>자료: 통계청</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
         f'</hp:tbl></hp:run></hp:p>'
     )
 
@@ -1863,9 +1918,13 @@ def test_pick_reference_table_does_not_treat_total_row_as_note() -> None:
 
 
 def test_neutralize_reference_table_preserves_note_styling_on_existing_note() -> None:
-    """_neutralize_reference_table normalizes existing note rows to note_style so _table_format detects them (#30)."""
+    """_neutralize_reference_table normalizes existing note rows to note_style so _table_format
+    detects them (#30).
+    """
     import importlib.util
+
     from lxml import etree
+
     from hwp_agent.ops.author import _table_format
 
     spec = importlib.util.spec_from_file_location(
@@ -1879,9 +1938,15 @@ def test_neutralize_reference_table_preserves_note_styling_on_existing_note() ->
     # Table with header, body, and trailing note that currently shares body styleIDRef="10"
     xml = (
         f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
-        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>항목</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>값</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
-        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>A</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
-        f'<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2"/><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>주) 2024년 기준</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        '<hp:tr><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>항목</hp:t>'
+        '</hp:run></hp:p></hp:subList></hp:tc><hp:tc header="1"><hp:subList><hp:p styleIDRef="5">'
+        '<hp:run><hp:t>값</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        '<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>A</hp:t>'
+        '</hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList>'
+        '<hp:p styleIDRef="10"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        '</hp:tr>'
+        '<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2"/><hp:subList><hp:p styleIDRef="10">'
+        '<hp:run><hp:t>주) 2024년 기준</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
         f'</hp:tbl></hp:run></hp:p>'
     )
     p = etree.fromstring(xml.encode("utf-8"))
@@ -1904,9 +1969,13 @@ def test_neutralize_reference_table_preserves_note_styling_on_existing_note() ->
 
 
 def test_neutralize_reference_table_caption_multi_t_strips_title() -> None:
-    """_neutralize_reference_table replaces title with {{table_template}} even when split across multiple <hp:t> (#30)."""
+    """_neutralize_reference_table replaces title with {{table_template}} even when split across
+    multiple <hp:t> (#30).
+    """
     import importlib.util
+
     from lxml import etree
+
     from hwp_agent.ops.author import _caption_text
 
     spec = importlib.util.spec_from_file_location(
@@ -1939,8 +2008,11 @@ def test_neutralize_reference_table_caption_multi_t_strips_title() -> None:
 
 
 def test_neutralize_reference_table_isolates_table_run() -> None:
-    """_neutralize_reference_table strips all sibling runs and non-tbl children from the table paragraph (#30)."""
+    """_neutralize_reference_table strips all sibling runs and non-tbl children from the table
+    paragraph (#30).
+    """
     import importlib.util
+
     from lxml import etree
 
     spec = importlib.util.spec_from_file_location(
@@ -1974,8 +2046,11 @@ def test_neutralize_reference_table_isolates_table_run() -> None:
 
 
 def test_neutralize_reference_table_synthesizes_cellspan_if_missing() -> None:
-    """_neutralize_reference_table inserts <hp:cellSpan> when synthesizing a note row from a cell without cellSpan (#30)."""
+    """_neutralize_reference_table inserts <hp:cellSpan> when synthesizing a note row from a cell
+    without cellSpan (#30).
+    """
     import importlib.util
+
     from lxml import etree
 
     spec = importlib.util.spec_from_file_location(
@@ -2007,9 +2082,12 @@ def test_neutralize_reference_table_synthesizes_cellspan_if_missing() -> None:
 
 
 def test_insert_body_marker_preserves_secpr_when_table_in_opener(tmp_path: Path) -> None:
-    """insert_body_marker preserves secPr in opener and isolates the table cleanly when the table is in the opener paragraph (#30)."""
+    """insert_body_marker preserves secPr in opener and isolates the table cleanly when the table is
+    in the opener paragraph (#30).
+    """
     import importlib.util
     import zipfile
+
     from lxml import etree
 
     spec = importlib.util.spec_from_file_location(
@@ -2027,7 +2105,8 @@ def test_insert_body_marker_preserves_secpr_when_table_in_opener(tmp_path: Path)
         f'<hp:run charPrIDRef="5">'
         f'<hp:secPr id="999"/>'
         f'<hp:tbl colCnt="2">'
-        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt;</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
+        '<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt;</hp:t></hp:run></hp:p>'
+        '</hp:subList></hp:caption>'
         f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
         f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
         f'</hp:tbl>'
@@ -2067,7 +2146,9 @@ def test_insert_body_marker_preserves_secpr_when_table_in_opener(tmp_path: Path)
 
 
 def test_is_neutralized_reference_table() -> None:
-    """_is_neutralized_reference_table recognizes neutralized house format tables and distinguishes them from user tables (#30)."""
+    """_is_neutralized_reference_table recognizes neutralized house format tables and distinguishes
+    them from user tables (#30).
+    """
     from lxml import etree
 
     from hwp_agent.ops.author import _is_neutralized_reference_table
@@ -2077,12 +2158,18 @@ def test_is_neutralized_reference_table() -> None:
     # Neutralized house format table: header with 구분/항목/내용 and empty body
     xml_neutral = (
         f'<hp:tbl xmlns:hp="{hp}">'
-        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
-        f'<hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>항목</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
-        f'<hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>내용</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
-        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc>'
-        f'<hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc>'
-        f'<hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        '<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p>'
+        '</hp:subList></hp:tc>'
+        '<hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>항목</hp:t></hp:run></hp:p></hp:subList>'
+        '</hp:tc>'
+        '<hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>내용</hp:t></hp:run></hp:p></hp:subList>'
+        '</hp:tc></hp:tr>'
+        '<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p>'
+        '</hp:subList></hp:tc>'
+        '<hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList>'
+        '</hp:tc>'
+        '<hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList>'
+        '</hp:tc></hp:tr>'
         f'</hp:tbl>'
     )
     tbl_neutral = etree.fromstring(xml_neutral.encode("utf-8"))
@@ -2091,8 +2178,10 @@ def test_is_neutralized_reference_table() -> None:
     # User table with real content in data row: not neutralized
     xml_user_data = (
         f'<hp:tbl xmlns:hp="{hp}">'
-        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
-        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t>실제데이터</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        '<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p>'
+        '</hp:subList></hp:tc></hp:tr>'
+        '<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t>실제데이터</hp:t></hp:run></hp:p>'
+        '</hp:subList></hp:tc></hp:tr>'
         f'</hp:tbl>'
     )
     tbl_user_data = etree.fromstring(xml_user_data.encode("utf-8"))
@@ -2101,8 +2190,10 @@ def test_is_neutralized_reference_table() -> None:
     # User table with custom headers: not neutralized
     xml_user_header = (
         f'<hp:tbl xmlns:hp="{hp}">'
-        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>연도</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
-        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        '<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>연도</hp:t></hp:run></hp:p>'
+        '</hp:subList></hp:tc></hp:tr>'
+        '<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p>'
+        '</hp:subList></hp:tc></hp:tr>'
         f'</hp:tbl>'
     )
     tbl_user_header = etree.fromstring(xml_user_header.encode("utf-8"))
@@ -2110,7 +2201,9 @@ def test_is_neutralized_reference_table() -> None:
 
 
 def test_is_sample_reference_table() -> None:
-    """_is_sample_reference_table requires both :sample modifier and neutralized structure to drop (#30)."""
+    """_is_sample_reference_table requires both :sample modifier and neutralized structure to drop
+    (#30).
+    """
     from lxml import etree
 
     from hwp_agent.ops.author import _is_sample_reference_table
@@ -2120,20 +2213,28 @@ def test_is_sample_reference_table() -> None:
     # 1. Neutralized table with explicit :sample modifier -> True (drop on completion)
     xml_sample = (
         f'<hp:tbl xmlns:hp="{hp}">'
-        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template:sample}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
-        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
-        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        '<hp:caption><hp:subList><hp:p><hp:run>'
+        f'<hp:t>&lt;표 1&gt; {{{{table_template:sample}}}}</hp:t></hp:run></hp:p></hp:subList>'
+        '</hp:caption>'
+        '<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p>'
+        '</hp:subList></hp:tc></hp:tr>'
+        '<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p>'
+        '</hp:subList></hp:tc></hp:tr>'
         f'</hp:tbl>'
     )
     tbl_sample = etree.fromstring(xml_sample.encode("utf-8"))
     assert _is_sample_reference_table(tbl_sample) is True
 
-    # 2. Neutralized table with plain {{table_template}} (no modifier) -> False (keep table, protect user forms)
+    # 2. Neutralized table with plain {{table_template}} (no modifier) -> False (keep table, protect
+    # user forms)
     xml_user_plain = (
         f'<hp:tbl xmlns:hp="{hp}">'
-        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
-        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
-        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template}}}}</hp:t>'
+        '</hp:run></hp:p></hp:subList></hp:caption>'
+        '<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p>'
+        '</hp:subList></hp:tc></hp:tr>'
+        '<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p>'
+        '</hp:subList></hp:tc></hp:tr>'
         f'</hp:tbl>'
     )
     tbl_user_plain = etree.fromstring(xml_user_plain.encode("utf-8"))
@@ -2142,9 +2243,13 @@ def test_is_sample_reference_table() -> None:
     # 3. Table with real content even if tagged with :sample -> False (protect user data)
     xml_sample_with_data = (
         f'<hp:tbl xmlns:hp="{hp}">'
-        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template:sample}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
-        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
-        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t>실제내용</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        '<hp:caption><hp:subList><hp:p><hp:run>'
+        f'<hp:t>&lt;표 1&gt; {{{{table_template:sample}}}}</hp:t></hp:run></hp:p></hp:subList>'
+        '</hp:caption>'
+        '<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p>'
+        '</hp:subList></hp:tc></hp:tr>'
+        '<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t>실제내용</hp:t></hp:run></hp:p>'
+        '</hp:subList></hp:tc></hp:tr>'
         f'</hp:tbl>'
     )
     tbl_sample_with_data = etree.fromstring(xml_sample_with_data.encode("utf-8"))
@@ -2152,8 +2257,11 @@ def test_is_sample_reference_table() -> None:
 
 
 def test_neutralize_reference_table_caption_and_span_schema_order() -> None:
-    """_neutralize_reference_table places new caption before inMargin/tr and cellSpan before cellSz (#30)."""
+    """_neutralize_reference_table places new caption before inMargin/tr and cellSpan before cellSz
+    (#30).
+    """
     import importlib.util
+
     from lxml import etree
 
     spec = importlib.util.spec_from_file_location(
@@ -2200,9 +2308,13 @@ def test_neutralize_reference_table_caption_and_span_schema_order() -> None:
 
 
 def test_neutralize_reference_table_upgrades_existing_token_to_sample() -> None:
-    """_neutralize_reference_table upgrades an existing {{table_template}} token to :sample so it drops on build (#30)."""
+    """_neutralize_reference_table upgrades an existing {{table_template}} token to :sample so it
+    drops on build (#30).
+    """
     import importlib.util
+
     from lxml import etree
+
     from hwp_agent.ops.author import _caption_text
 
     spec = importlib.util.spec_from_file_location(
@@ -2232,14 +2344,17 @@ def test_neutralize_reference_table_upgrades_existing_token_to_sample() -> None:
 
 
 @pytest.mark.skipif(not _HOUSE_POLICY.is_file(), reason="baked house form not present")
-def test_fill_sections_with_explicit_table_template_still_drops_sample_table(tmp_path: Path) -> None:
+def test_fill_sections_with_explicit_table_template_still_drops_sample_table(
+    tmp_path: Path,
+) -> None:
     """When the user explicitly designates another reference table via table_template,
     the neutralized :sample table is still dropped on fill completion (#30)."""
     from hwpx.document import HwpxDocument
+
     from hwp_agent.ops import fill_sections
 
     out = tmp_path / "built_custom_ref.hwpx"
-    res = fill_sections(
+    fill_sections(
         _HOUSE_POLICY,
         [
             ("{{intro}}", "# 들어가며\n\n- 서문 문단\n"),
@@ -2259,9 +2374,13 @@ def test_fill_sections_with_explicit_table_template_still_drops_sample_table(tmp
 
 
 def test_neutralize_reference_table_caption_token_split_across_multiple_t() -> None:
-    """_neutralize_reference_table upgrades caption token even when split across runs like {{table and _template}} (#30)."""
+    """_neutralize_reference_table upgrades caption token even when split across runs like {{table
+    and _template}} (#30).
+    """
     import importlib.util
+
     from lxml import etree
+
     from hwp_agent.ops.author import _caption_text
 
     spec = importlib.util.spec_from_file_location(

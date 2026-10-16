@@ -60,7 +60,9 @@ INSERTION_MARKERS = (
 _TABLE_TOKEN_RE = re.compile(r"\{\{\s*table[\w:-]*\s*\}\}", re.IGNORECASE)
 #: a table designated with an explicit sample modifier (e.g. ``{{table_template:sample}}``)
 #: is a dummy format placeholder and is dropped after fill completes.
-_TABLE_SAMPLE_RE = re.compile(r"\{\{\s*table[\w:-]*:(?:sample|drop|placeholder)\s*\}\}", re.IGNORECASE)
+_TABLE_SAMPLE_RE = re.compile(
+    r"\{\{\s*table[\w:-]*:(?:sample|drop|placeholder)\s*\}\}", re.IGNORECASE
+)
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 _HH = "http://www.hancom.co.kr/hwpml/2011/head"
 _HC = "http://www.hancom.co.kr/hwpml/2011/core"

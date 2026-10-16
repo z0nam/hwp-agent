@@ -239,6 +239,51 @@ def _sibling_note_style(
     return (sid or "0", nxt.get("paraPrIDRef"), cid)
 
 
+def _is_table_note_row(tr, logical_cols: int, header_root=None) -> bool:
+    """표의 특정 행이 주/출처/각주(note) 행인지 검증한다.
+
+    _table_format 은 본문 행과 스타일이 다르면 무조건 note 로 간주하므로,
+    합계/소계/평균 행처럼 다른 스타일이 적용된 데이터 행이 note 로 오분류되지 않도록
+    텍스트(주/자료/출처/※), 공인된 각주 스타일, 또는 전체 너비 병합 셀 여부를 확인한다.
+    """
+    from hwp_agent.ops.author import _NOTE_RE
+
+    tcs = tr.findall(_hp("tc"))
+    if not tcs:
+        return False
+
+    row_text = "".join(t.text or "" for t in tr.findall(".//" + _hp("t"))).strip()
+
+    # 1. 텍스트 패턴 (주/자료/출처/※/*)
+    if _NOTE_RE.match(row_text) or row_text.startswith("※") or row_text.startswith("*"):
+        return True
+
+    # 2. 공인된 각주 스타일
+    sid = None
+    first_p = tr.find(".//" + _hp("p"))
+    if first_p is not None:
+        sid = first_p.get("styleIDRef")
+    note_names = {"자료", "JRI_각주", "각주1", "각주", "주석"}
+    if header_root is not None and sid is not None:
+        st = header_root.find(f".//{_hh('style')}[@id='{sid}']")
+        style_name = (st.get("name") or "").strip() if st is not None else ""
+        if style_name in note_names:
+            return True
+
+    # 3. 행 전체 너비 병합(1셀이거나 colSpan == logical_cols)이면서 합계/집계 단어가 아닌 경우
+    span = tcs[0].find(_hp("cellSpan"))
+    c_span = int(span.get("colSpan", "1") or 1) if span is not None else 1
+    is_full_width = (
+        len(tcs) == 1 and (c_span >= logical_cols or logical_cols <= 1)
+    ) or (c_span == logical_cols)
+    if is_full_width:
+        if re.match(r"^(합계|소계|총계|총\s*합|평균|계|Total|Sum|Avg)\b", row_text):
+            return False
+        return True
+
+    return False
+
+
 def _pick_reference_table(paras: list, header_root=None):
     """섹션 문단들에서 ``{{table_template}}`` 기준으로 삼을 데이터 표 하나를 고른다.
 
@@ -290,8 +335,12 @@ def _pick_reference_table(paras: list, header_root=None):
             continue
 
         sib_note = _sibling_note_style(p, header_root)
-        has_note = (_table_format(tbl).note is not None) or (sib_note is not None)
-        has_existing_note = _table_format(tbl).note is not None and len(rows[h:]) > 1
+        is_trailing_note = (
+            len(rows[h:]) > 1
+            and _is_table_note_row(rows[-1], logical_cols, header_root)
+        )
+        has_note = is_trailing_note or (sib_note is not None)
+        has_existing_note = is_trailing_note
         data_rows = rows[:-1] if has_existing_note else rows
 
         has_vmerge = any(
@@ -390,7 +439,21 @@ def _neutralize_reference_table(
     header_rows = rows[:h]
     rest = rows[h:]
 
-    has_existing_note = _table_format(tbl).note is not None and len(rest) > 1
+    # 논리 열 수: 테이블의 colCnt 속성 또는 각 행의 colSpan 합산 최댓값
+    logical_cols = int(tbl.get("colCnt", "0") or 0)
+    if not logical_cols:
+        for tr in rows:
+            r_cols = sum(
+                int(span.get("colSpan", "1") or 1) if (span := tc.find(_hp("cellSpan"))) is not None else 1
+                for tc in tr.findall(_hp("tc"))
+            )
+            logical_cols = max(logical_cols, r_cols)
+    logical_cols = max(logical_cols, 1)
+
+    has_existing_note = (
+        len(rest) > 1
+        and _is_table_note_row(rest[-1], logical_cols, header_root)
+    )
     existing_note = [rest[-1]] if has_existing_note else []
     data_body = rest[:-1] if has_existing_note else rest
 
@@ -404,17 +467,6 @@ def _neutralize_reference_table(
         raise ValueError(
             "Cannot neutralize reference table with horizontal merges in data rows"
         )
-
-    # 논리 열 수: 테이블의 colCnt 속성 또는 각 행의 colSpan 합산 최댓값
-    logical_cols = int(tbl.get("colCnt", "0") or 0)
-    if not logical_cols:
-        for tr in rows:
-            r_cols = sum(
-                int(span.get("colSpan", "1") or 1) if (span := tc.find(_hp("cellSpan"))) is not None else 1
-                for tc in tr.findall(_hp("tc"))
-            )
-            logical_cols = max(logical_cols, r_cols)
-    logical_cols = max(logical_cols, 1)
 
     if len(data_body) >= 3:
         # first_body(머리행 이중선 짝) + interior body(가는선) + last(굵은 하단선) 보존

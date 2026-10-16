@@ -1753,6 +1753,87 @@ def test_neutralize_reference_table_rejects_merges() -> None:
         mod._neutralize_reference_table(p_hmerge, tbl_h)
 
 
+def test_is_table_note_row_distinguishes_notes_from_totals() -> None:
+    """_is_table_note_row recognizes true note rows and rejects total/summary rows (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # 1. Note row with '주)' text
+    tr_note1 = etree.fromstring(
+        f'<hp:tr xmlns:hp="{hp}"><hp:tc><hp:subList><hp:p><hp:run><hp:t>주) 2024년 기준 추정치</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+    )
+    assert mod._is_table_note_row(tr_note1, logical_cols=3) is True
+
+    # 2. Note row with '자료:' text
+    tr_note2 = etree.fromstring(
+        f'<hp:tr xmlns:hp="{hp}"><hp:tc><hp:subList><hp:p><hp:run><hp:t>자료: 통계청</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+    )
+    assert mod._is_table_note_row(tr_note2, logical_cols=3) is True
+
+    # 3. Total row across multiple cells (not full-width merged, starts with '합계')
+    tr_total = etree.fromstring(
+        f'<hp:tr xmlns:hp="{hp}">'
+        f'<hp:tc><hp:subList><hp:p><hp:run><hp:t>합계</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'<hp:tc><hp:subList><hp:p><hp:run><hp:t>100</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'<hp:tc><hp:subList><hp:p><hp:run><hp:t>200</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'</hp:tr>'
+    )
+    assert mod._is_table_note_row(tr_total, logical_cols=3) is False
+
+    # 4. Total row merged across full width but containing '총계'
+    tr_total_merged = etree.fromstring(
+        f'<hp:tr xmlns:hp="{hp}">'
+        f'<hp:tc><hp:cellSpan colSpan="3"/><hp:subList><hp:p><hp:run><hp:t>총계 300건</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'</hp:tr>'
+    )
+    assert mod._is_table_note_row(tr_total_merged, logical_cols=3) is False
+
+
+def test_pick_reference_table_does_not_treat_total_row_as_note() -> None:
+    """_pick_reference_table does not classify a total row with distinct styling as a note (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # p1: Table ending with a total row (styleIDRef="99" differing from body "10")
+    # Should NOT be ranked as note-bearing, and total row stays in data_rows
+    p1 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>항목</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>값</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>A</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="99"><hp:run><hp:t>합계</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList><hp:p styleIDRef="99"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    # p2: Table ending with a true note row
+    p2 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>항목</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>값</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>A</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2"/><hp:subList><hp:p styleIDRef="99"><hp:run><hp:t>자료: 통계청</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+
+    # p2 should outrank p1 because p2 has a verified note row
+    picked = mod._pick_reference_table([p1, p2])
+    assert picked is not None and picked[0] is p2
+
+
+
 
 
 

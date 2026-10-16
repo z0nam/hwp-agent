@@ -113,3 +113,37 @@ def test_check_cli_runs(capsys) -> None:
         assert args.func(args) == 0
     out = capsys.readouterr().out
     assert "HEADING ladder" in out and "findings" in out
+
+
+@pytest.mark.skipif(not DEFAULT_TPL.is_file(), reason="bundled default template missing")
+def test_marker_audit_reports_table_template() -> None:
+    """check surfaces a {{table_template}} table caption in the markers list (#30)."""
+    r = diagnose_template(str(DEFAULT_TPL))
+    toks = {e["token"]: e for e in r["markers"]}
+    assert "{{table_template}}" in toks
+    assert toks["{{table_template}}"]["count"] == 1
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "기반과제_서식.normalized.hwpx",
+        "센터과제_서식.normalized.hwpx",
+        "전략과제_서식.normalized.hwpx",
+        "정책과제_서식.normalized.hwpx",
+    ],
+)
+def test_baked_house_forms_have_table_template(name: str) -> None:
+    """All 4 baked JRI report forms carry {{table_template}} in section 4 (#30)."""
+    p = REPO_ROOT / "examples" / "house-forms" / name
+    if not p.is_file():
+        pytest.skip(f"{name} not present")
+    r = diagnose_template(str(p))
+    assert r["classification"] == "structured"
+    assert r["warnings"] == []
+    toks = {(e["token"], e["section"]): e["count"] for e in r["markers"]}
+    assert toks.get(("{{intro}}", 3)) == 1
+    assert toks.get(("{{body}}", 4)) == 1
+    assert toks.get(("{{table_template}}", 4)) == 1
+    assert toks.get(("{{references}}", 5)) == 1
+

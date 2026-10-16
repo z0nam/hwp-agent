@@ -1402,6 +1402,7 @@ def fill_from_markdown(
     marker_token: str | None = None,
     equal_columns: bool = False,
     strip_other_markers: bool = False,
+    strip_table_token: bool = True,
     links: bool = True,
     blue_links: bool = False,
 ) -> AuthorResult:
@@ -1775,7 +1776,9 @@ def fill_from_markdown(
         )
 
     # clean the {{table…}} designation token out of the reference table's caption
-    if designated and ref_element is not None:
+    # (fill_sections defers this to the final part so earlier parts like intro don't
+    # consume the token before body/appendix run)
+    if strip_table_token and designated and ref_element is not None:
         _strip_table_token(ref_element)
         ref_section.mark_dirty()  # so the edited section is re-serialized on save
 
@@ -1850,6 +1853,7 @@ def fill_sections(
                 table_template=table_template,
                 marker_token=token,
                 equal_columns=equal_columns,
+                strip_table_token=(i == last),
                 links=links,
                 blue_links=blue_links,
             )

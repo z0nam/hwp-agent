@@ -1429,3 +1429,100 @@ def test_footnote_number_format_follows_section(tmp_path: Path) -> None:
     got = fn.find(f".//{_HP}autoNumFormat")
     assert got.get("type") == "CIRCLED_DIGIT" and got.get("supscript") == "1"
     assert fn.get("suffixChar") is None  # no decoration → no suffix code point
+
+
+_HOUSE_POLICY = (
+    REPO_ROOT / "examples" / "house-forms" / "정책과제_서식.normalized.hwpx"
+)
+
+
+@pytest.mark.skipif(not _HOUSE_POLICY.is_file(), reason="baked house form not present")
+def test_fill_sections_preserves_table_template_across_parts(tmp_path: Path) -> None:
+    """Earlier parts in fill_sections/build must not strip {{table_template}} before
+    a later part (e.g. {{body}}) authors its tables (#30)."""
+    from hwpx.document import HwpxDocument
+
+    from hwp_agent.ops import fill_sections
+    from hwp_agent.ops.author import _caption_text
+
+    out = tmp_path / "built.hwpx"
+    res = fill_sections(
+        _HOUSE_POLICY,
+        [
+            ("{{intro}}", "# 들어가며\n\n- 서문 문단\n"),
+            (
+                "{{body}}",
+                "# Ⅰ. 서론\n\n서식 비교표\n| 구분 | 값 | 설명 |\n|---|---|---|\n"
+                "| 가 | 1 | 첫 행 |\n| 나 | 2 | 중간 행 |\n| 다 | 3 | 끝 행 |\n"
+                "자료) 제주연구원(2026)\n",
+            ),
+            ("{{references}}", "- 참고문헌 항목\n"),
+        ],
+        output=out,
+    )
+    assert not any("{{table" in w for w in res.warnings), res.warnings
+
+    doc = HwpxDocument.open(str(out))
+    gen, _sec = _find_authored_table(doc, "첫 행")
+    assert gen is not None
+    rows = gen.findall(f"{_HP}tr")
+    assert len(rows) == 5  # header + 3 body rows + merged note row
+    # header row uses the house header borderFill (5/6/7), not section 2's form table
+    hdr_bfs = [tc.get("borderFillIDRef") for tc in rows[0].findall(f"{_HP}tc")]
+    assert hdr_bfs == ["5", "6", "7"]
+    # body rows carry 표내용 style (id 8) and distinct top/mid/bottom borderFill bands
+    assert [tc.get("borderFillIDRef") for tc in rows[1].findall(f"{_HP}tc")] == ["8", "9", "10"]
+    assert [tc.get("borderFillIDRef") for tc in rows[2].findall(f"{_HP}tc")] == ["11", "12", "13"]
+    assert [tc.get("borderFillIDRef") for tc in rows[3].findall(f"{_HP}tc")] == ["14", "15", "16"]
+    for tr in rows[1:4]:
+        for tc in tr.findall(f"{_HP}tc"):
+            assert tc.find(f".//{_HP}p").get("styleIDRef") == "8"
+    # caption cloned with 표제목 style (id 7) and title text
+    assert "서식 비교표" in _caption_text(gen)
+    assert gen.find(f"{_HP}caption//{_HP}p").get("styleIDRef") == "7"
+    # trailing merged note row carries 자료 style (id 10) and borderless fill (17)
+    note_tcs = rows[4].findall(f"{_HP}tc")
+    assert len(note_tcs) == 1
+    assert note_tcs[0].get("borderFillIDRef") == "17"
+    assert note_tcs[0].find(f".//{_HP}p").get("styleIDRef") == "10"
+    assert "제주연구원(2026)" in "".join(t.text or "" for t in note_tcs[0].iter(f"{_HP}t"))
+    # {{table_template}} token was stripped after the final part completed
+    all_text = "".join(t.text or "" for s in doc.sections for t in s.element.iter(f"{_HP}t"))
+    assert "{{table_template}}" not in all_text
+
+
+def test_refresh_strip_keeps_neutralized_table_template(tmp_path: Path) -> None:
+    """insert_body_marker(strip=True, keep_table=True) preserves one neutralized
+    {{table_template}} table with header/body/last bands, 표내용 style, and 자료 note row."""
+    import importlib.util
+    import shutil
+
+    from hwpx.document import HwpxDocument
+
+    from hwp_agent.ops.author import _caption_text, _table_format
+
+    if not _HOUSE_POLICY.is_file():
+        pytest.skip("baked house form not present")
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    work = tmp_path / "form.hwpx"
+    shutil.copyfile(_HOUSE_POLICY, work)
+    kept = mod.insert_body_marker(work, 4, strip=True, marker="body", keep_table=True)
+    assert kept is True
+
+    doc = HwpxDocument.open(str(work))
+    tbls = list(doc.sections[4].element.iter(f"{_HP}tbl"))
+    assert len(tbls) == 1
+    assert "{{table_template}}" in _caption_text(tbls[0])
+    fmt = _table_format(tbls[0])
+    assert fmt.header.left_bf == "5"
+    assert fmt.first_body.left_bf == "8" and fmt.first_body.style == "8"
+    assert fmt.body.left_bf == "11" and fmt.body.style == "8"
+    assert fmt.last.left_bf == "14" and fmt.last.style == "8"
+    assert fmt.note is not None and fmt.note.style == "10"
+

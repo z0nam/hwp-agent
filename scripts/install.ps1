@@ -24,11 +24,11 @@ function Warn($m) { Write-Host "warn: $m" -ForegroundColor Yellow }
 
 # --- 1. Install the CLI on PATH --------------------------------------------
 if (Get-Command uv -ErrorAction SilentlyContinue) {
-    Info "Installing hwp-agent CLI with uv (editable)..."
-    uv tool install --editable "$RepoRoot" --force
+    Info "Installing hwp-agent CLI with uv (editable, with MCP)..."
+    uv tool install --editable "${RepoRoot}[mcp]" --force
 } elseif (Get-Command pipx -ErrorAction SilentlyContinue) {
-    Info "Installing hwp-agent CLI with pipx (editable)..."
-    pipx install --editable "$RepoRoot" --force
+    Info "Installing hwp-agent CLI with pipx (editable, with MCP)..."
+    pipx install --editable "${RepoRoot}[mcp]" --force
 } else {
     throw "need 'uv' or 'pipx' to install the CLI on PATH. Install uv: https://docs.astral.sh/uv/  or:  pip install -e `"$RepoRoot`""
 }

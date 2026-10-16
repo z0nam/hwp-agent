@@ -1527,11 +1527,10 @@ def test_refresh_strip_keeps_neutralized_table_template(tmp_path: Path) -> None:
     assert fmt.note is not None and fmt.note.style == "10"
 
 
-def test_neutralize_reference_table_handles_merged_cells() -> None:
-    """_neutralize_reference_table resets vertical rowSpans and derives note colSpan
-    from the logical column count even when rows contain merged cells (#30 Codex review)."""
+def test_neutralize_reference_table_handles_clean_grid() -> None:
+    """_neutralize_reference_table neutralizes clean grid tables and generates a synthesized note row (#30)."""
     import importlib.util
-    from xml.etree import ElementTree as ET
+    from lxml import etree
 
     spec = importlib.util.spec_from_file_location(
         "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
@@ -1540,9 +1539,7 @@ def test_neutralize_reference_table_handles_merged_cells() -> None:
     spec.loader.exec_module(mod)
 
     hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
-    # 4 rows, 3 logical columns.
-    # r1 c0 has rowSpan="3" (crossing dropped rows).
-    # r3 has a horizontally merged cell (2 physical cells, colSpan="2" + "1").
+    # 4 rows, 3 logical columns, rectangular grid without merges
     xml = (
         f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="3">'
         f'<hp:sz width="3000" height="4000"/>'
@@ -1552,39 +1549,31 @@ def test_neutralize_reference_table_handles_merged_cells() -> None:
         f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
         f'</hp:tr>'
         f'<hp:tr>'
-        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="3"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
         f'<hp:tc><hp:cellAddr colAddr="1" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
         f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
         f'</hp:tr>'
         f'<hp:tr>'
+        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
         f'<hp:tc><hp:cellAddr colAddr="1" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
         f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
         f'</hp:tr>'
         f'<hp:tr>'
-        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="3"/><hp:cellSpan colSpan="2" rowSpan="1"/><hp:cellSz width="2000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="3"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="1" rowAddr="3"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
         f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="3"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
         f'</hp:tr>'
         f'</hp:tbl></hp:run></hp:p>'
     )
-    from lxml import etree
     para = etree.fromstring(xml.encode("utf-8"))
     tbl = para.find(f".//{{{hp}}}tbl")
     mod._neutralize_reference_table(para, tbl, sibling_note_style=("10", "22", "23"))
 
     trs = tbl.findall(f"{{{hp}}}tr")
-    # All kept cells have rowSpan normalized to 1 (no dangling vertical spans)
-    for tr in trs:
-        for tc in tr.findall(f"{{{hp}}}tc"):
-            span = tc.find(f"{{{hp}}}cellSpan")
-            if span is not None:
-                assert span.get("rowSpan") == "1"
+    # Kept rows: header + 3 body rows + 1 note row = 5 rows
+    assert len(trs) == 5
 
-    # Row 2 (which was covered by r1's vertical merge) now has full 3 cells with colAddr 0, 1, 2
-    r2_tcs = trs[2].findall(f"{{{hp}}}tc")
-    assert len(r2_tcs) == 3
-    assert [tc.find(f"{{{hp}}}cellAddr").get("colAddr") for tc in r2_tcs] == ["0", "1", "2"]
-
-    # Synthesized note row (last tr) spans all 3 logical columns, not physical 2
+    # Synthesized note row (last tr) spans all 3 logical columns
     note_tr = trs[-1]
     assert len(note_tr.findall(f"{{{hp}}}tc")) == 1
     note_tc = note_tr.find(f"{{{hp}}}tc")
@@ -1627,8 +1616,8 @@ def test_pick_reference_table_rejects_undersized() -> None:
     assert mod._pick_reference_table([p1, p2]) is None
 
 
-def test_expand_vertical_merges_preserves_header_flag() -> None:
-    """_expand_vertical_merges preserves header='1' on covered clones when expanding multi-row headers (#30)."""
+def test_pick_reference_table_rejects_vertical_merges_even_if_designated() -> None:
+    """_pick_reference_table rejects tables with rowSpan > 1 even if designated (#30)."""
     import importlib.util
     from lxml import etree
 
@@ -1639,22 +1628,24 @@ def test_expand_vertical_merges_preserves_header_flag() -> None:
     spec.loader.exec_module(mod)
 
     hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
-    # r0: c0 has rowSpan="2" and header="1", c1 header="1"
-    # r1: covered c0 omitted, c1 header="1"
-    xml = (
-        f'<hp:tbl xmlns:hp="{hp}" colCnt="2">'
-        f'<hp:tr><hp:tc header="1"><hp:cellSpan colSpan="1" rowSpan="2"/><hp:subList><hp:p/></hp:subList></hp:tc>'
-        f'<hp:tc header="1"><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList><hp:p/></hp:subList></hp:tc></hp:tr>'
-        f'<hp:tr><hp:tc header="1"><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList><hp:p/></hp:subList></hp:tc></hp:tr>'
-        f'</hp:tbl>'
+    # p1: designated with {{table_template}}, but has vertical merge (rowSpan="2")
+    p1 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"><hp:cellSpan colSpan="1" rowSpan="2"/></hp:tc><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
     )
-    tbl = etree.fromstring(xml.encode("utf-8"))
-    mod._expand_vertical_merges(tbl)
-    r1_tcs = tbl.findall(f"{{{hp}}}tr")[1].findall(f"{{{hp}}}tc")
-    assert len(r1_tcs) == 2
-    # The clone inserted in row 1 for col 0 preserves header="1"
-    assert r1_tcs[0].get("header") == "1"
-    assert r1_tcs[1].get("header") == "1"
+    # p2: clean 2x2 grid
+    p2 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    assert mod._pick_reference_table([p1]) is None
+    picked = mod._pick_reference_table([p1, p2])
+    assert picked is not None and picked[0] is p2
 
 
 def test_pick_reference_table_requires_body_row() -> None:
@@ -1688,8 +1679,8 @@ def test_pick_reference_table_requires_body_row() -> None:
     assert picked is not None and picked[0] is p2
 
 
-def test_pick_reference_table_rejects_horizontal_merges_unless_designated() -> None:
-    """_pick_reference_table rejects tables with colSpan > 1 in non-note rows unless designated (#30)."""
+def test_pick_reference_table_rejects_horizontal_merges_even_if_designated() -> None:
+    """_pick_reference_table rejects tables with colSpan > 1 in data rows even if designated (#30)."""
     import importlib.util
     from lxml import etree
 
@@ -1707,7 +1698,7 @@ def test_pick_reference_table_rejects_horizontal_merges_unless_designated() -> N
         f'<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2" rowSpan="1"/></hp:tc></hp:tr>'
         f'</hp:tbl></hp:run></hp:p>'
     )
-    # p2: designated with {{table_template}} caption even though it has colSpan="2" -> accepted
+    # p2: designated with {{table_template}} caption but has colSpan="2" -> rejected
     p2 = etree.fromstring(
         f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
         f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
@@ -1723,16 +1714,15 @@ def test_pick_reference_table_rejects_horizontal_merges_unless_designated() -> N
         f'</hp:tbl></hp:run></hp:p>'
     )
     assert mod._pick_reference_table([p1]) is None
-    picked = mod._pick_reference_table([p1, p3])
+    assert mod._pick_reference_table([p2]) is None
+    picked = mod._pick_reference_table([p1, p2, p3])
     assert picked is not None and picked[0] is p3
 
-    picked_designated = mod._pick_reference_table([p1, p2])
-    assert picked_designated is not None and picked_designated[0] is p2
 
-
-def test_expand_horizontal_merges_splits_merged_cells() -> None:
-    """_expand_horizontal_merges splits colSpan > 1 cells into individual 1-col cells (#30)."""
+def test_neutralize_reference_table_rejects_merges() -> None:
+    """_neutralize_reference_table raises ValueError if given tables with merges (#30)."""
     import importlib.util
+    import pytest
     from lxml import etree
 
     spec = importlib.util.spec_from_file_location(
@@ -1742,20 +1732,25 @@ def test_expand_horizontal_merges_splits_merged_cells() -> None:
     spec.loader.exec_module(mod)
 
     hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
-    xml = (
-        f'<hp:tr xmlns:hp="{hp}">'
-        f'<hp:tc header="0"><hp:cellSpan colSpan="2" rowSpan="1"/><hp:cellSz width="2000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
-        f'<hp:tc header="0"><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
-        f'</hp:tr>'
+    p_vmerge = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"><hp:cellSpan rowSpan="2"/></hp:tc><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
     )
-    tr = etree.fromstring(xml.encode("utf-8"))
-    mod._expand_horizontal_merges(tr)
+    tbl_v = p_vmerge.find(f".//{{{hp}}}tbl")
+    with pytest.raises(ValueError, match="Cannot neutralize reference table with vertical merges"):
+        mod._neutralize_reference_table(p_vmerge, tbl_v)
 
-    tcs = tr.findall(f"{{{hp}}}tc")
-    assert len(tcs) == 3
-    assert all(tc.find(f"{{{hp}}}cellSpan").get("colSpan") == "1" for tc in tcs)
-    widths = [tc.find(f"{{{hp}}}cellSz").get("width") for tc in tcs]
-    assert widths == ["1000", "1000", "1000"]
+    p_hmerge = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2"/></hp:tc></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    tbl_h = p_hmerge.find(f".//{{{hp}}}tbl")
+    with pytest.raises(ValueError, match="Cannot neutralize reference table with horizontal merges"):
+        mod._neutralize_reference_table(p_hmerge, tbl_h)
 
 
 

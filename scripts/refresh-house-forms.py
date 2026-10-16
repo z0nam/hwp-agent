@@ -305,12 +305,15 @@ def _pick_reference_table(paras: list, header_root=None):
             for tc in tr.findall(_hp("tc"))
             if (span := tc.find(_hp("cellSpan"))) is not None
         )
-        designated = bool(_TABLE_TOKEN_RE.search(_caption_text(tbl)))
-        if (has_vmerge or has_hmerge) and not designated:
+        # 수직 병합이나 데이터 행의 수평 병합이 있는 표는 테두리 대역(border zones)을
+        # 온전히 복원할 수 없으므로(중간선/상하단선 왜곡), designated 여부와 관계없이
+        # 기준 표에서 완전히 배제(reject)한다.
+        if has_vmerge or has_hmerge:
             continue
 
+        designated = bool(_TABLE_TOKEN_RE.search(_caption_text(tbl)))
         full_bands = len(rows) >= 4
-        rank = (designated, not has_vmerge, not has_hmerge, has_note, full_bands, -idx)
+        rank = (designated, has_note, full_bands, -idx)
         if best_rank is None or rank > best_rank:
             best_rank = rank
             best = (p, tbl, sib_note)
@@ -344,124 +347,6 @@ def _build_template_caption(
     return etree.fromstring(xml.encode("utf-8"))
 
 
-def _expand_vertical_merges(tbl) -> None:
-    """수직 병합 셀(rowSpan > 1)을 풀고, 누락된 행별 셀들을 복제 삽입하여 완전한 그리드로 전개한다."""
-    from hwp_agent.ops.form import _set_cell_text_overwrite
-
-    trs = tbl.findall(_hp("tr"))
-    if not trs:
-        return
-    logical_cols = int(tbl.get("colCnt", "0") or 0)
-    if not logical_cols:
-        for tr in trs:
-            r_cols = sum(
-                int(span.get("colSpan", "1") or 1)
-                if (span := tc.find(_hp("cellSpan"))) is not None
-                else 1
-                for tc in tr.findall(_hp("tc"))
-            )
-            logical_cols = max(logical_cols, r_cols)
-    logical_cols = max(logical_cols, 1)
-
-    grid = [[None] * logical_cols for _ in range(len(trs))]
-    for r, tr in enumerate(trs):
-        c = 0
-        for tc in tr.findall(_hp("tc")):
-            while c < logical_cols and grid[r][c] is not None:
-                c += 1
-            if c >= logical_cols:
-                break
-            span = tc.find(_hp("cellSpan"))
-            cs = int(span.get("colSpan", "1") or 1) if span is not None else 1
-            rs = int(span.get("rowSpan", "1") or 1) if span is not None else 1
-            for dr in range(rs):
-                if r + dr < len(trs):
-                    for dc in range(cs):
-                        if c + dc < logical_cols:
-                            grid[r + dr][c + dc] = (tc, dr == 0 and dc == 0)
-            c += cs
-
-    for r, tr in enumerate(trs):
-        existing_tcs = set(tr.findall(_hp("tc")))
-        row_cells = []
-        c = 0
-        while c < logical_cols:
-            entry = grid[r][c]
-            if entry is None:
-                c += 1
-                continue
-            tc, is_origin = entry
-            span = tc.find(_hp("cellSpan"))
-            cs = int(span.get("colSpan", "1") or 1) if span is not None else 1
-            if tc in existing_tcs and is_origin:
-                if span is not None:
-                    span.set("rowSpan", "1")
-                row_cells.append(tc)
-            else:
-                clone = copy.deepcopy(tc)
-                hdr = tc.get("header") or ("1" if any(x.get("header") == "1" for x in tr.findall(_hp("tc"))) else "0")
-                clone.set("header", hdr)
-                _set_cell_text_overwrite(clone, "")
-                cl_span = clone.find(_hp("cellSpan"))
-                if cl_span is not None:
-                    cl_span.set("rowSpan", "1")
-                    cl_span.set("colSpan", str(cs))
-                row_cells.append(clone)
-            c += cs
-
-        for child in list(tr.findall(_hp("tc"))):
-            tr.remove(child)
-        for cell in row_cells:
-            tr.append(cell)
-
-
-def _expand_horizontal_merges(tr) -> None:
-    """수평 병합 셀(colSpan > 1)을 colSpan=1인 개별 셀들로 분할하여 사각형 그리드로 전개한다."""
-    from hwp_agent.ops.form import _set_cell_text_overwrite
-
-    tcs = tr.findall(_hp("tc"))
-    if not any(
-        int(span.get("colSpan", "1") or 1) > 1
-        for tc in tcs
-        if (span := tc.find(_hp("cellSpan"))) is not None
-    ):
-        return
-
-    new_tcs = []
-    for tc in tcs:
-        span = tc.find(_hp("cellSpan"))
-        cs = int(span.get("colSpan", "1") or 1) if span is not None else 1
-        if cs <= 1:
-            new_tcs.append(tc)
-            continue
-        sz = tc.find(_hp("cellSz"))
-        w = int(sz.get("width")) if sz is not None and (sz.get("width") or "").isdigit() else None
-        split_w = (w // cs) if w is not None else None
-
-        if span is not None:
-            span.set("colSpan", "1")
-        if sz is not None and split_w is not None:
-            sz.set("width", str(split_w))
-        new_tcs.append(tc)
-
-        for _ in range(cs - 1):
-            clone = copy.deepcopy(tc)
-            _set_cell_text_overwrite(clone, "")
-            cl_span = clone.find(_hp("cellSpan"))
-            if cl_span is not None:
-                cl_span.set("colSpan", "1")
-            if sz is not None and split_w is not None:
-                cl_sz = clone.find(_hp("cellSz"))
-                if cl_sz is not None:
-                    cl_sz.set("width", str(split_w))
-            new_tcs.append(clone)
-
-    for child in list(tr.findall(_hp("tc"))):
-        tr.remove(child)
-    for cell in new_tcs:
-        tr.append(cell)
-
-
 def _neutralize_reference_table(
     table_p, tbl, header_root=None, sibling_note_style=None
 ) -> None:
@@ -482,8 +367,13 @@ def _neutralize_reference_table(
     )
     from hwp_agent.ops.form import _set_cell_text_overwrite
 
-    # 수직 병합 셀이 있으면 행별 독립 셀로 전개하여 삭제 후 누락/열 밀림 방지
-    _expand_vertical_merges(tbl)
+    has_vmerge = any(
+        int(span.get("rowSpan", "1") or 1) > 1
+        for tc in tbl.findall(".//" + _hp("tc"))
+        if (span := tc.find(_hp("cellSpan"))) is not None
+    )
+    if has_vmerge:
+        raise ValueError("Cannot neutralize reference table with vertical merges")
 
     caption_style = _find_style(header_root, ("표제목", "표/그림 제목"))
     body_cell_style = _find_style(header_root, ("표내용", "JRI_표내용"))
@@ -504,9 +394,16 @@ def _neutralize_reference_table(
     existing_note = [rest[-1]] if has_existing_note else []
     data_body = rest[:-1] if has_existing_note else rest
 
-    # 지정 기준표라도 수평 병합 셀이 데이터 행에 남아있으면 분할하여 1열 1셀 그리드로 전개
-    for tr in (*header_rows, *data_body):
-        _expand_horizontal_merges(tr)
+    has_hmerge = any(
+        int(span.get("colSpan", "1") or 1) > 1
+        for tr in (*header_rows, *data_body)
+        for tc in tr.findall(_hp("tc"))
+        if (span := tc.find(_hp("cellSpan"))) is not None
+    )
+    if has_hmerge:
+        raise ValueError(
+            "Cannot neutralize reference table with horizontal merges in data rows"
+        )
 
     # 논리 열 수: 테이블의 colCnt 속성 또는 각 행의 colSpan 합산 최댓값
     logical_cols = int(tbl.get("colCnt", "0") or 0)
@@ -537,9 +434,6 @@ def _neutralize_reference_table(
             _set_cell_text_overwrite(
                 tc, generic[ci] if (ri == 0 and ci < len(generic)) else ""
             )
-            span = tc.find(_hp("cellSpan"))
-            if span is not None and int(span.get("rowSpan", "1") or 1) > 1:
-                span.set("rowSpan", "1")
             for lsa in tc.findall(".//" + _hp("linesegarray")):
                 lsa.getparent().remove(lsa)
 
@@ -547,9 +441,6 @@ def _neutralize_reference_table(
         for tc in tr.findall(_hp("tc")):
             tc.set("header", "0")
             _set_cell_text_overwrite(tc, "")
-            span = tc.find(_hp("cellSpan"))
-            if span is not None and int(span.get("rowSpan", "1") or 1) > 1:
-                span.set("rowSpan", "1")
             if body_cell_style is not None:
                 b_sid, b_pid, b_cid = body_cell_style
                 for p in tc.findall(_hp("subList") + "/" + _hp("p")):
@@ -575,9 +466,6 @@ def _neutralize_reference_table(
             for tc in tr.findall(_hp("tc")):
                 tc.set("header", "0")
                 _set_cell_text_overwrite(tc, "")
-                span = tc.find(_hp("cellSpan"))
-                if span is not None and int(span.get("rowSpan", "1") or 1) > 1:
-                    span.set("rowSpan", "1")
                 sz = tc.find(_hp("cellSz"))
                 if sz is not None:
                     sz.set("height", "0")

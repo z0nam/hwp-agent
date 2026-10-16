@@ -324,6 +324,21 @@ def _write_text_atomic(path: Path, content: str) -> None:
     tmp.replace(path)
 
 
+def _is_same_command(actual: object, expected: str | None) -> bool:
+    if expected is None:
+        return True
+    if not isinstance(actual, str):
+        return False
+    if actual == expected:
+        return True
+    try:
+        norm_actual = os.path.normcase(os.path.abspath(actual))
+        norm_expected = os.path.normcase(os.path.abspath(expected))
+        return norm_actual == norm_expected
+    except Exception:
+        return False
+
+
 def _register_json_client(
     client: str, path: Path, command: str, *, dry_run: bool = False
 ) -> str:
@@ -348,17 +363,25 @@ def _register_json_client(
         raise ValueError(f"{path}: 'mcpServers' 항목이 객체(dict)가 아닙니다")
 
     existing = servers.get(SERVER_NAME)
-    if existing == desired:
-        return "unchanged"
+    if isinstance(existing, dict):
+        updated = dict(existing)
+        updated.update(desired)
+        if updated == existing:
+            return "unchanged"
+        servers[SERVER_NAME] = updated
+        status = "updated"
+    else:
+        servers[SERVER_NAME] = desired
+        status = "added"
 
-    status = "added" if existing is None else "updated"
-    servers[SERVER_NAME] = desired
     if not dry_run:
         _write_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
     return status
 
 
-def _unregister_json_client(path: Path, *, dry_run: bool = False) -> str:
+def _unregister_json_client(
+    path: Path, *, matching_command: str | None = None, dry_run: bool = False
+) -> str:
     if not path.is_file():
         return "noop"
     raw = path.read_text(encoding="utf-8").strip()
@@ -370,6 +393,13 @@ def _unregister_json_client(path: Path, *, dry_run: bool = False) -> str:
     servers = loaded.get("mcpServers")
     if not isinstance(servers, dict) or SERVER_NAME not in servers:
         return "noop"
+
+    entry = servers[SERVER_NAME]
+    if matching_command is not None:
+        entry_cmd = entry.get("command") if isinstance(entry, dict) else None
+        if not _is_same_command(entry_cmd, matching_command):
+            return "noop"
+
     del servers[SERVER_NAME]
     if not dry_run:
         _write_text_atomic(
@@ -386,8 +416,46 @@ def _codex_section_text(command: str) -> str:
     )
 
 
+_CODEX_MAIN_TABLE_RE = re.compile(
+    r"(?m)^\[mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')\][ \t]*\r?$"
+)
+
+
+def _update_codex_main_section(raw: str, command: str) -> str:
+    match = _CODEX_MAIN_TABLE_RE.search(raw)
+    if not match:
+        sep = "" if raw.endswith("\n\n") else ("\n" if raw.endswith("\n") else "\n\n")
+        return raw + sep + _codex_section_text(command)
+
+    header_end = match.end()
+    next_match = re.search(r"(?m)^\[", raw[header_end:])
+    sec_end = header_end + next_match.start() if next_match else len(raw)
+
+    sec_body = raw[header_end:sec_end]
+    cmd_str = f"command = {json.dumps(command)}"
+    args_str = 'args = ["mcp"]'
+
+    if re.search(r"(?m)^[ \t]*command[ \t]*=.*$", sec_body):
+        sec_body = re.sub(
+            r"(?m)^[ \t]*command[ \t]*=.*$", lambda _: cmd_str, sec_body, count=1
+        )
+    else:
+        sec_body = f"\n{cmd_str}" + sec_body
+
+    if re.search(r"(?m)^[ \t]*args[ \t]*=.*$", sec_body):
+        sec_body = re.sub(
+            r"(?m)^[ \t]*args[ \t]*=.*$", lambda _: args_str, sec_body, count=1
+        )
+    else:
+        if cmd_str in sec_body:
+            sec_body = sec_body.replace(cmd_str, f"{cmd_str}\n{args_str}", 1)
+        else:
+            sec_body = f"\n{args_str}" + sec_body
+
+    return raw[:header_end] + sec_body + raw[sec_end:]
+
+
 def _register_codex_toml(path: Path, command: str, *, dry_run: bool = False) -> str:
-    desired_dict = {"command": command, "args": ["mcp"]}
     block = _codex_section_text(command)
 
     if not path.is_file():
@@ -407,28 +475,24 @@ def _register_codex_toml(path: Path, command: str, *, dry_run: bool = False) -> 
         raise ValueError(f"{path}: 'mcp_servers' 항목이 테이블이 아닙니다")
 
     existing = mcp_servers.get(SERVER_NAME) if isinstance(mcp_servers, dict) else None
-    if existing == desired_dict:
+    if (
+        isinstance(existing, dict)
+        and existing.get("command") == command
+        and existing.get("args") == ["mcp"]
+    ):
         return "unchanged"
 
-    if _CODEX_SECTION_RE.search(raw):
-        matches = list(_CODEX_SECTION_RE.finditer(raw))
-        first = matches[0]
-        # Replace the first section and strip any extra sub-sections for hwp-agent.
-        rebuilt = raw[: first.start()] + block
-        pos = first.end()
-        for extra in matches[1:]:
-            rebuilt += raw[pos : extra.start()]
-            pos = extra.end()
-        rebuilt += raw[pos:]
-        status = "updated"
-    else:
-        sep = "" if raw.endswith("\n\n") else ("\n" if raw.endswith("\n") else "\n\n")
-        rebuilt = raw + sep + block
-        status = "added" if existing is None else "updated"
+    status = "updated" if isinstance(existing, dict) else "added"
+    rebuilt = _update_codex_main_section(raw, command)
 
     # Verify the resulting TOML parses cleanly and has the expected entry.
     check = tomllib.loads(rebuilt)
-    if check.get("mcp_servers", {}).get(SERVER_NAME) != desired_dict:
+    check_entry = check.get("mcp_servers", {}).get(SERVER_NAME)
+    if (
+        not isinstance(check_entry, dict)
+        or check_entry.get("command") != command
+        or check_entry.get("args") != ["mcp"]
+    ):
         raise RuntimeError(f"{path}: TOML 갱신 후 검증에 실패했습니다")
 
     if not dry_run:
@@ -436,7 +500,9 @@ def _register_codex_toml(path: Path, command: str, *, dry_run: bool = False) -> 
     return status
 
 
-def _unregister_codex_toml(path: Path, *, dry_run: bool = False) -> str:
+def _unregister_codex_toml(
+    path: Path, *, matching_command: str | None = None, dry_run: bool = False
+) -> str:
     if not path.is_file():
         return "noop"
     raw = path.read_text(encoding="utf-8")
@@ -446,6 +512,12 @@ def _unregister_codex_toml(path: Path, *, dry_run: bool = False) -> str:
     mcp_servers = parsed.get("mcp_servers")
     if not isinstance(mcp_servers, dict) or SERVER_NAME not in mcp_servers:
         return "noop"
+
+    if matching_command is not None:
+        entry = mcp_servers[SERVER_NAME]
+        entry_cmd = entry.get("command") if isinstance(entry, dict) else None
+        if not _is_same_command(entry_cmd, matching_command):
+            return "noop"
 
     rebuilt = _CODEX_SECTION_RE.sub("", raw)
     rebuilt = re.sub(r"\n{3,}", "\n\n", rebuilt)
@@ -494,19 +566,31 @@ def register_clients(
 def unregister_clients(
     clients: Sequence[str],
     *,
+    matching_command: str | Path | None = None,
     home: Path | None = None,
     env: Mapping[str, str] | None = None,
     platform: str | None = None,
     dry_run: bool = False,
 ) -> list[RegistrationAction]:
-    """Idempotently remove ``hwp-agent`` from each requested client's MCP config."""
+    """Idempotently remove ``hwp-agent`` from each requested client's MCP config.
+
+    If ``matching_command`` is specified, only entries whose command matches
+    it will be removed (protecting other installations/manual setups).
+    """
+    resolved_matching = (
+        str(matching_command).strip() if matching_command is not None else None
+    )
     actions: list[RegistrationAction] = []
     for client in clients:
         cfg = config_path_for(client, home=home, env=env, platform=platform)
         if client == "codex":
-            status = _unregister_codex_toml(cfg, dry_run=dry_run)
+            status = _unregister_codex_toml(
+                cfg, matching_command=resolved_matching, dry_run=dry_run
+            )
         else:
-            status = _unregister_json_client(cfg, dry_run=dry_run)
+            status = _unregister_json_client(
+                cfg, matching_command=resolved_matching, dry_run=dry_run
+            )
         actions.append(
             RegistrationAction(
                 client=client,

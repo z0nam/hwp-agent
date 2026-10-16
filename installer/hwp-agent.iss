@@ -46,7 +46,7 @@ Name: "{autoprograms}\hwp-agent 폴더 열기"; Filename: "{app}"
 Filename: "{app}\hwp-agent.exe"; Parameters: "--version"; Flags: runhidden nowait skipifsilent
 
 [UninstallRun]
-Filename: "{app}\hwp-agent.exe"; Parameters: "setup --unregister all"; Flags: runhidden; RunOnceId: "UnregisterMcp"
+Filename: "{app}\hwp-agent.exe"; Parameters: "setup --unregister all --matching-command ""{app}\hwp-agent.exe"""; Flags: runhidden; RunOnceId: "UnregisterMcp"
 
 [Code]
 var

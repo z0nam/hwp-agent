@@ -201,7 +201,9 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         try:
             targets = resolve_targets(args.unregister)
             unreg_actions = unregister_clients(
-                targets, dry_run=getattr(args, "dry_run", False)
+                targets,
+                matching_command=getattr(args, "matching_command", None),
+                dry_run=getattr(args, "dry_run", False),
             )
         except (OSError, ValueError, RuntimeError) as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -1051,6 +1053,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CLIENTS",
         help="remove hwp-agent MCP server from AI client configs "
         "(default when no value given: all)",
+    )
+    setup.add_argument(
+        "--matching-command",
+        dest="matching_command",
+        default=None,
+        metavar="PATH",
+        help="only unregister entries whose command matches this path",
     )
     setup.add_argument(
         "--detect",

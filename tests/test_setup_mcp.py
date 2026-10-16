@@ -312,3 +312,103 @@ def test_cli_setup_register_and_guide_out_utf8_bom(
         "removed",
         "removed",
     ]
+
+
+def test_register_preserves_custom_fields_in_existing_entry(tmp_path: Path) -> None:
+    # 1. Claude Desktop: existing has custom env
+    desktop_cfg = config_path_for(
+        "claude-desktop", home=tmp_path, env={}, platform="darwin"
+    )
+    desktop_cfg.parent.mkdir(parents=True, exist_ok=True)
+    desktop_cfg.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "hwp-agent": {
+                        "command": "/old/path/hwp-agent",
+                        "args": ["mcp"],
+                        "env": {"HWP_AGENT_PROFILE": "/custom/profile.json"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # 2. Codex: existing has custom startup_timeout_sec and env table
+    codex_cfg = config_path_for("codex", home=tmp_path, env={}, platform="darwin")
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    codex_cfg.write_text(
+        "[mcp_servers.hwp-agent]\n"
+        'command = "/old/hwp-agent"\n'
+        'args = ["mcp"]\n'
+        "startup_timeout_sec = 60\n\n"
+        "[mcp_servers.hwp-agent.env]\n"
+        'MY_ENV = "value"\n',
+        encoding="utf-8",
+    )
+
+    new_cmd = "/new/path/hwp-agent"
+    actions = register_clients(
+        ("claude-desktop", "codex"),
+        command=new_cmd,
+        home=tmp_path,
+        env={},
+        platform="darwin",
+    )
+    assert [a.status for a in actions] == ["updated", "updated"]
+
+    # Verify JSON: command updated, env preserved!
+    d_data = json.loads(desktop_cfg.read_text(encoding="utf-8"))
+    assert d_data["mcpServers"]["hwp-agent"]["command"] == new_cmd
+    assert d_data["mcpServers"]["hwp-agent"]["env"] == {
+        "HWP_AGENT_PROFILE": "/custom/profile.json"
+    }
+
+    # Verify TOML: command updated, startup_timeout_sec & subtable preserved!
+    c_data = tomllib.loads(codex_cfg.read_text(encoding="utf-8"))
+    assert c_data["mcp_servers"]["hwp-agent"]["command"] == new_cmd
+    assert c_data["mcp_servers"]["hwp-agent"]["startup_timeout_sec"] == 60
+    assert c_data["mcp_servers"]["hwp-agent"]["env"] == {"MY_ENV": "value"}
+
+
+def test_unregister_matching_command_only(tmp_path: Path) -> None:
+    desktop_cfg = config_path_for(
+        "claude-desktop", home=tmp_path, env={}, platform="darwin"
+    )
+    desktop_cfg.parent.mkdir(parents=True, exist_ok=True)
+    desktop_cfg.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "hwp-agent": {
+                        "command": "/installed/hwp-agent",
+                        "args": ["mcp"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # Different command doesn't remove (noop)
+    unreg_mismatch = unregister_clients(
+        ("claude-desktop",),
+        matching_command="/other/dev/hwp-agent",
+        home=tmp_path,
+        env={},
+        platform="darwin",
+    )
+    assert unreg_mismatch[0].status == "noop"
+    assert "hwp-agent" in json.loads(desktop_cfg.read_text(encoding="utf-8"))["mcpServers"]
+
+    # Matching command removes
+    unreg_match = unregister_clients(
+        ("claude-desktop",),
+        matching_command="/installed/hwp-agent",
+        home=tmp_path,
+        env={},
+        platform="darwin",
+    )
+    assert unreg_match[0].status == "removed"
+    assert "hwp-agent" not in json.loads(desktop_cfg.read_text(encoding="utf-8"))["mcpServers"]

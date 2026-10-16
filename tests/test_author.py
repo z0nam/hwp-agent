@@ -1429,3 +1429,877 @@ def test_footnote_number_format_follows_section(tmp_path: Path) -> None:
     got = fn.find(f".//{_HP}autoNumFormat")
     assert got.get("type") == "CIRCLED_DIGIT" and got.get("supscript") == "1"
     assert fn.get("suffixChar") is None  # no decoration → no suffix code point
+
+
+_HOUSE_POLICY = (
+    REPO_ROOT / "examples" / "house-forms" / "정책과제_서식.normalized.hwpx"
+)
+
+
+@pytest.mark.skipif(not _HOUSE_POLICY.is_file(), reason="baked house form not present")
+def test_fill_sections_preserves_table_template_across_parts(tmp_path: Path) -> None:
+    """Earlier parts in fill_sections/build must not strip {{table_template}} before
+    a later part (e.g. {{body}}) authors its tables (#30)."""
+    from hwpx.document import HwpxDocument
+
+    from hwp_agent.ops import fill_sections
+    from hwp_agent.ops.author import _caption_text
+
+    out = tmp_path / "built.hwpx"
+    res = fill_sections(
+        _HOUSE_POLICY,
+        [
+            ("{{intro}}", "# 들어가며\n\n- 서문 문단\n"),
+            (
+                "{{body}}",
+                "# Ⅰ. 서론\n\n서식 비교표\n| 구분 | 값 | 설명 |\n|---|---|---|\n"
+                "| 가 | 1 | 첫 행 |\n| 나 | 2 | 중간 행 |\n| 다 | 3 | 끝 행 |\n"
+                "자료) 제주연구원(2026)\n",
+            ),
+            ("{{references}}", "- 참고문헌 항목\n"),
+        ],
+        output=out,
+    )
+    assert not any("{{table" in w for w in res.warnings), res.warnings
+
+    doc = HwpxDocument.open(str(out))
+    gen, _sec = _find_authored_table(doc, "첫 행")
+    assert gen is not None
+    rows = gen.findall(f"{_HP}tr")
+    assert len(rows) == 5  # header + 3 body rows + merged note row
+    # header row uses the house header borderFill (5/6/7), not section 2's form table
+    hdr_bfs = [tc.get("borderFillIDRef") for tc in rows[0].findall(f"{_HP}tc")]
+    assert hdr_bfs == ["5", "6", "7"]
+    # body rows carry 표내용 style (id 8) and distinct top/mid/bottom borderFill bands
+    assert [tc.get("borderFillIDRef") for tc in rows[1].findall(f"{_HP}tc")] == ["8", "9", "10"]
+    assert [tc.get("borderFillIDRef") for tc in rows[2].findall(f"{_HP}tc")] == ["11", "12", "13"]
+    assert [tc.get("borderFillIDRef") for tc in rows[3].findall(f"{_HP}tc")] == ["14", "15", "16"]
+    for tr in rows[1:4]:
+        for tc in tr.findall(f"{_HP}tc"):
+            assert tc.find(f".//{_HP}p").get("styleIDRef") == "8"
+    # caption cloned with 표제목 style (id 7) and title text
+    assert "서식 비교표" in _caption_text(gen)
+    assert gen.find(f"{_HP}caption//{_HP}p").get("styleIDRef") == "7"
+    # trailing merged note row carries 자료 style (id 10) and borderless fill (17)
+    note_tcs = rows[4].findall(f"{_HP}tc")
+    assert len(note_tcs) == 1
+    assert note_tcs[0].get("borderFillIDRef") == "17"
+    assert note_tcs[0].find(f".//{_HP}p").get("styleIDRef") == "10"
+    assert "제주연구원(2026)" in "".join(t.text or "" for t in note_tcs[0].iter(f"{_HP}t"))
+    # {{table_template}} token was stripped after the final part completed
+    all_text = "".join(t.text or "" for s in doc.sections for t in s.element.iter(f"{_HP}t"))
+    assert "{{table_template}}" not in all_text
+    # Section 4 contains only the authored table; the neutralized reference table was dropped
+    s4_tbls = list(doc.sections[4].element.iter(f"{_HP}tbl"))
+    assert len(s4_tbls) == 1
+
+
+@pytest.mark.skipif(not _HOUSE_POLICY.is_file(), reason="baked house form not present")
+def test_fill_sections_without_tables_drops_neutralized_reference_table(tmp_path: Path) -> None:
+    """Building content with no tables must drop the neutralized reference table so no stray empty table remains (#30)."""
+    from hwpx.document import HwpxDocument
+
+    from hwp_agent.ops import fill_sections
+
+    out = tmp_path / "built_no_tables.hwpx"
+    res = fill_sections(
+        _HOUSE_POLICY,
+        [
+            ("{{intro}}", "# 들어가며\n\n- 서문 문단\n"),
+            ("{{body}}", "# Ⅰ. 서론\n\n본문 문단만 있고 표는 없음.\n"),
+            ("{{references}}", "- 참고문헌 항목\n"),
+        ],
+        output=out,
+    )
+    assert not any("{{table" in w for w in res.warnings), res.warnings
+
+    doc = HwpxDocument.open(str(out))
+    # Section 4 has no tables left at all
+    s4_tbls = list(doc.sections[4].element.iter(f"{_HP}tbl"))
+    assert len(s4_tbls) == 0
+
+
+
+def test_refresh_strip_keeps_neutralized_table_template(tmp_path: Path) -> None:
+    """insert_body_marker(strip=True, keep_table=True) preserves one neutralized
+    {{table_template}} table with header/body/last bands, 표내용 style, and 자료 note row."""
+    import importlib.util
+    import shutil
+
+    from hwpx.document import HwpxDocument
+
+    from hwp_agent.ops.author import _caption_text, _table_format
+
+    if not _HOUSE_POLICY.is_file():
+        pytest.skip("baked house form not present")
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    work = tmp_path / "form.hwpx"
+    shutil.copyfile(_HOUSE_POLICY, work)
+    kept = mod.insert_body_marker(work, 4, strip=True, marker="body", keep_table=True)
+    assert kept is True
+
+    doc = HwpxDocument.open(str(work))
+    tbls = list(doc.sections[4].element.iter(f"{_HP}tbl"))
+    assert len(tbls) == 1
+    assert "{{table_template:sample}}" in _caption_text(tbls[0])
+    fmt = _table_format(tbls[0])
+    assert fmt.header.left_bf == "5"
+    assert fmt.first_body.left_bf == "8" and fmt.first_body.style == "8"
+    assert fmt.body.left_bf == "11" and fmt.body.style == "8"
+    assert fmt.last.left_bf == "14" and fmt.last.style == "8"
+    assert fmt.note is not None and fmt.note.style == "10"
+
+
+def test_neutralize_reference_table_handles_clean_grid() -> None:
+    """_neutralize_reference_table neutralizes clean grid tables and generates a synthesized note row (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    # 4 rows, 3 logical columns, rectangular grid without merges
+    xml = (
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="3">'
+        f'<hp:sz width="3000" height="4000"/>'
+        f'<hp:tr>'
+        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="1" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'</hp:tr>'
+        f'<hp:tr>'
+        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="1" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'</hp:tr>'
+        f'<hp:tr>'
+        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="1" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'</hp:tr>'
+        f'<hp:tr>'
+        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="3"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="1" rowAddr="3"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="3"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'</hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    para = etree.fromstring(xml.encode("utf-8"))
+    tbl = para.find(f".//{{{hp}}}tbl")
+    mod._neutralize_reference_table(para, tbl, sibling_note_style=("10", "22", "23"))
+
+    trs = tbl.findall(f"{{{hp}}}tr")
+    # Kept rows: header + 3 body rows + 1 note row = 5 rows
+    assert len(trs) == 5
+
+    # Synthesized note row (last tr) spans all 3 logical columns
+    note_tr = trs[-1]
+    assert len(note_tr.findall(f"{{{hp}}}tc")) == 1
+    note_tc = note_tr.find(f"{{{hp}}}tc")
+    note_span = note_tc.find(f"{{{hp}}}cellSpan")
+    assert note_span is not None
+    assert note_span.get("colSpan") == "3"
+    assert note_span.get("rowSpan") == "1"
+    note_addr = note_tc.find(f"{{{hp}}}cellAddr")
+    assert note_addr is not None
+    assert note_addr.get("colAddr") == "0"
+
+
+def test_pick_reference_table_rejects_undersized() -> None:
+    """_pick_reference_table rejects layout/form tables that have < 2 rows or < 2 logical cols (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    # p1: 1 row, 2 cols (undersized by row)
+    # p2: 3 rows, 1 col (undersized by col)
+    # p3: 2 rows, 2 cols (valid)
+    p1 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2"><hp:tr><hp:tc/><hp:tc/></hp:tr></hp:tbl></hp:run></hp:p>'
+    )
+    p2 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="1"><hp:tr><hp:tc/></hp:tr><hp:tr><hp:tc/></hp:tr><hp:tr><hp:tc/></hp:tr></hp:tbl></hp:run></hp:p>'
+    )
+    p3 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2"><hp:tr><hp:tc/><hp:tc/></hp:tr><hp:tr><hp:tc/><hp:tc/></hp:tr></hp:tbl></hp:run></hp:p>'
+    )
+    picked = mod._pick_reference_table([p1, p2, p3])
+    assert picked is not None
+    assert picked[0] is p3
+    assert mod._pick_reference_table([p1, p2]) is None
+
+
+def test_pick_reference_table_rejects_vertical_merges_even_if_designated() -> None:
+    """_pick_reference_table rejects tables with rowSpan > 1 even if designated (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    # p1: designated with {{table_template}}, but has vertical merge (rowSpan="2")
+    p1 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"><hp:cellSpan colSpan="1" rowSpan="2"/></hp:tc><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    # p2: clean 2x2 grid
+    p2 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    assert mod._pick_reference_table([p1]) is None
+    picked = mod._pick_reference_table([p1, p2])
+    assert picked is not None and picked[0] is p2
+
+
+def test_pick_reference_table_requires_body_row() -> None:
+    """_pick_reference_table rejects tables that have only header rows and no body rows (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    # p1: 2 rows, both header="1" (all header rows, no body row)
+    p1 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    # p2: 2 rows, row 0 header="1", row 1 header="0" (valid header + body)
+    p2 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    assert mod._pick_reference_table([p1]) is None
+    picked = mod._pick_reference_table([p1, p2])
+    assert picked is not None and picked[0] is p2
+
+
+def test_pick_reference_table_rejects_horizontal_merges_even_if_designated() -> None:
+    """_pick_reference_table rejects tables with colSpan > 1 in data rows even if designated (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    # p1: 2 rows, row 1 has a merged cell colSpan="2" -> auto-selection rejects
+    p1 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2" rowSpan="1"/></hp:tc></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    # p2: designated with {{table_template}} caption but has colSpan="2" -> rejected
+    p2 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2" rowSpan="1"/></hp:tc></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    # p3: 2 rows, clean 2x2 grid -> accepted
+    p3 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    assert mod._pick_reference_table([p1]) is None
+    assert mod._pick_reference_table([p2]) is None
+    picked = mod._pick_reference_table([p1, p2, p3])
+    assert picked is not None and picked[0] is p3
+
+
+def test_neutralize_reference_table_rejects_merges() -> None:
+    """_neutralize_reference_table raises ValueError if given tables with merges (#30)."""
+    import importlib.util
+    import pytest
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    p_vmerge = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"><hp:cellSpan rowSpan="2"/></hp:tc><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    tbl_v = p_vmerge.find(f".//{{{hp}}}tbl")
+    with pytest.raises(ValueError, match="Cannot neutralize reference table with vertical merges"):
+        mod._neutralize_reference_table(p_vmerge, tbl_v)
+
+    p_hmerge = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2"/></hp:tc></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    tbl_h = p_hmerge.find(f".//{{{hp}}}tbl")
+    with pytest.raises(ValueError, match="Cannot neutralize reference table with horizontal merges"):
+        mod._neutralize_reference_table(p_hmerge, tbl_h)
+
+
+def test_is_table_note_row_distinguishes_notes_from_totals() -> None:
+    """_is_table_note_row recognizes true note rows and rejects total/summary rows (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # 1. Note row with '주)' text
+    tr_note1 = etree.fromstring(
+        f'<hp:tr xmlns:hp="{hp}"><hp:tc><hp:subList><hp:p><hp:run><hp:t>주) 2024년 기준 추정치</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+    )
+    assert mod._is_table_note_row(tr_note1, logical_cols=3) is True
+
+    # 2. Note row with '자료:' text
+    tr_note2 = etree.fromstring(
+        f'<hp:tr xmlns:hp="{hp}"><hp:tc><hp:subList><hp:p><hp:run><hp:t>자료: 통계청</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+    )
+    assert mod._is_table_note_row(tr_note2, logical_cols=3) is True
+
+    # 3. Total row across multiple cells (not full-width merged, starts with '합계')
+    tr_total = etree.fromstring(
+        f'<hp:tr xmlns:hp="{hp}">'
+        f'<hp:tc><hp:subList><hp:p><hp:run><hp:t>합계</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'<hp:tc><hp:subList><hp:p><hp:run><hp:t>100</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'<hp:tc><hp:subList><hp:p><hp:run><hp:t>200</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'</hp:tr>'
+    )
+    assert mod._is_table_note_row(tr_total, logical_cols=3) is False
+
+    # 4. Total row merged across full width but containing '총계'
+    tr_total_merged = etree.fromstring(
+        f'<hp:tr xmlns:hp="{hp}">'
+        f'<hp:tc><hp:cellSpan colSpan="3"/><hp:subList><hp:p><hp:run><hp:t>총계 300건</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'</hp:tr>'
+    )
+    assert mod._is_table_note_row(tr_total_merged, logical_cols=3) is False
+
+
+def test_pick_reference_table_does_not_treat_total_row_as_note() -> None:
+    """_pick_reference_table does not classify a total row with distinct styling as a note (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # p1: Table ending with a total row (styleIDRef="99" differing from body "10")
+    # Should NOT be ranked as note-bearing, and total row stays in data_rows
+    p1 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>항목</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>값</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>A</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="99"><hp:run><hp:t>합계</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList><hp:p styleIDRef="99"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    # p2: Table ending with a true note row
+    p2 = etree.fromstring(
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>항목</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>값</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>A</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2"/><hp:subList><hp:p styleIDRef="99"><hp:run><hp:t>자료: 통계청</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+
+    # p2 should outrank p1 because p2 has a verified note row
+    picked = mod._pick_reference_table([p1, p2])
+    assert picked is not None and picked[0] is p2
+
+
+def test_neutralize_reference_table_preserves_note_styling_on_existing_note() -> None:
+    """_neutralize_reference_table normalizes existing note rows to note_style so _table_format detects them (#30)."""
+    import importlib.util
+    from lxml import etree
+    from hwp_agent.ops.author import _table_format
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # Table with header, body, and trailing note that currently shares body styleIDRef="10"
+    xml = (
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>항목</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>값</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>A</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2"/><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>주) 2024년 기준</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    p = etree.fromstring(xml.encode("utf-8"))
+    tbl = p.find(f".//{{{hp}}}tbl")
+
+    # Neutralize with note_style = ("99", "88", "77")
+    mod._neutralize_reference_table(p, tbl, sibling_note_style=("99", "88", "77"))
+
+    # The existing note cell should now have styleIDRef="99" and blank text
+    trs = tbl.findall(f"{{{hp}}}tr")
+    note_tr = trs[-1]
+    p_note = note_tr.find(f".//{{{hp}}}p")
+    assert p_note is not None
+    assert p_note.get("styleIDRef") == "99"
+
+    # When _table_format reads this neutralized table, it successfully detects fmt.note!
+    fmt = _table_format(tbl)
+    assert fmt.note is not None
+    assert fmt.note.style == "99"
+
+
+def test_neutralize_reference_table_caption_multi_t_strips_title() -> None:
+    """_neutralize_reference_table replaces title with {{table_template}} even when split across multiple <hp:t> (#30)."""
+    import importlib.util
+    from lxml import etree
+    from hwp_agent.ops.author import _caption_text
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    xml = (
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:caption><hp:subList><hp:p>'
+        f'<hp:run><hp:t>&lt;표 1</hp:t></hp:run>'
+        f'<hp:run><hp:t>&gt; 제주 인구</hp:t></hp:run>'
+        f'<hp:run><hp:t> 추이 및 전망</hp:t></hp:run>'
+        f'</hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    p = etree.fromstring(xml.encode("utf-8"))
+    tbl = p.find(f".//{{{hp}}}tbl")
+    mod._neutralize_reference_table(p, tbl)
+
+    cap_txt = _caption_text(tbl)
+    assert "<표 1> {{table_template:sample}}" == cap_txt
+    assert "제주 인구" not in cap_txt
+    assert "추이" not in cap_txt
+
+
+def test_neutralize_reference_table_isolates_table_run() -> None:
+    """_neutralize_reference_table strips all sibling runs and non-tbl children from the table paragraph (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    xml = (
+        f'<hp:p xmlns:hp="{hp}">'
+        f'<hp:run><hp:t>앞선 예시 텍스트</hp:t></hp:run>'
+        f'<hp:run><hp:t>표 앞 텍스트</hp:t><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run>'
+        f'<hp:run><hp:t>뒤따르는 예시 텍스트</hp:t></hp:run>'
+        f'</hp:p>'
+    )
+    p = etree.fromstring(xml.encode("utf-8"))
+    tbl = p.find(f".//{{{hp}}}tbl")
+    mod._neutralize_reference_table(p, tbl)
+
+    runs = p.findall(f"{{{hp}}}run")
+    assert len(runs) == 1
+    # The single run contains only the tbl, no residual <hp:t>
+    assert len(runs[0]) == 1
+    assert runs[0][0].tag == f"{{{hp}}}tbl"
+    assert "예시 텍스트" not in "".join(t.text or "" for t in p.iter(f"{{{hp}}}t"))
+
+
+def test_neutralize_reference_table_synthesizes_cellspan_if_missing() -> None:
+    """_neutralize_reference_table inserts <hp:cellSpan> when synthesizing a note row from a cell without cellSpan (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # A table where tc elements do not have any <hp:cellSpan> child element
+    xml = (
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="3">'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    p = etree.fromstring(xml.encode("utf-8"))
+    tbl = p.find(f".//{{{hp}}}tbl")
+    mod._neutralize_reference_table(p, tbl, sibling_note_style=("10", "20", "30"))
+
+    trs = tbl.findall(f"{{{hp}}}tr")
+    note_tr = trs[-1]
+    tc0 = note_tr.find(f"{{{hp}}}tc")
+    span = tc0.find(f"{{{hp}}}cellSpan")
+    assert span is not None
+    assert span.get("colSpan") == "3"
+    assert span.get("rowSpan") == "1"
+
+
+def test_insert_body_marker_preserves_secpr_when_table_in_opener(tmp_path: Path) -> None:
+    """insert_body_marker preserves secPr in opener and isolates the table cleanly when the table is in the opener paragraph (#30)."""
+    import importlib.util
+    import zipfile
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    hh = "http://www.hancom.co.kr/hwpml/2011/head"
+
+    section_xml = (
+        f'<hp:sec xmlns:hp="{hp}">'
+        f'<hp:p id="1" paraPrIDRef="10">'
+        f'<hp:run charPrIDRef="5">'
+        f'<hp:secPr id="999"/>'
+        f'<hp:tbl colCnt="2">'
+        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt;</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl>'
+        f'</hp:run>'
+        f'</hp:p>'
+        f'</hp:sec>'
+    )
+    header_xml = f'<hh:head xmlns:hh="{hh}"></hh:head>'
+
+    fake_hwpx = tmp_path / "test.hwpx"
+    with zipfile.ZipFile(fake_hwpx, "w") as z:
+        z.writestr("Contents/section0.xml", section_xml)
+        z.writestr("Contents/header.xml", header_xml)
+
+    kept = mod.insert_body_marker(fake_hwpx, 0, strip=True, marker="body", keep_table=True)
+    assert kept is True
+
+    with zipfile.ZipFile(fake_hwpx, "r") as z:
+        res_xml = z.read("Contents/section0.xml")
+    res_root = etree.fromstring(res_xml)
+    paras = res_root.findall(f"{{{hp}}}p")
+
+    # Paras: opener (with secPr), marker paragraph ({{body}}), and table_p (with tbl)
+    assert len(paras) == 3
+
+    # 1. Opener preserves secPr and paraPrIDRef
+    assert paras[0].find(f".//{{{hp}}}secPr") is not None
+    assert paras[0].find(f".//{{{hp}}}tbl") is None  # table was removed from opener
+
+    # 2. Marker paragraph has the {{body}} marker
+    assert "{{body}}" in "".join(t.text or "" for t in paras[1].iter(f"{{{hp}}}t"))
+
+    # 3. Table paragraph has the neutralized table and carries valid paraPrIDRef
+    assert paras[2].find(f".//{{{hp}}}tbl") is not None
+    assert paras[2].get("paraPrIDRef") == "10"
+    assert paras[2].find(f".//{{{hp}}}secPr") is None  # no duplicated secPr
+
+
+def test_is_neutralized_reference_table() -> None:
+    """_is_neutralized_reference_table recognizes neutralized house format tables and distinguishes them from user tables (#30)."""
+    from lxml import etree
+
+    from hwp_agent.ops.author import _is_neutralized_reference_table
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # Neutralized house format table: header with 구분/항목/내용 and empty body
+    xml_neutral = (
+        f'<hp:tbl xmlns:hp="{hp}">'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'<hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>항목</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'<hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>내용</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'<hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc>'
+        f'<hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl>'
+    )
+    tbl_neutral = etree.fromstring(xml_neutral.encode("utf-8"))
+    assert _is_neutralized_reference_table(tbl_neutral) is True
+
+    # User table with real content in data row: not neutralized
+    xml_user_data = (
+        f'<hp:tbl xmlns:hp="{hp}">'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t>실제데이터</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl>'
+    )
+    tbl_user_data = etree.fromstring(xml_user_data.encode("utf-8"))
+    assert _is_neutralized_reference_table(tbl_user_data) is False
+
+    # User table with custom headers: not neutralized
+    xml_user_header = (
+        f'<hp:tbl xmlns:hp="{hp}">'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>연도</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl>'
+    )
+    tbl_user_header = etree.fromstring(xml_user_header.encode("utf-8"))
+    assert _is_neutralized_reference_table(tbl_user_header) is False
+
+
+def test_is_sample_reference_table() -> None:
+    """_is_sample_reference_table requires both :sample modifier and neutralized structure to drop (#30)."""
+    from lxml import etree
+
+    from hwp_agent.ops.author import _is_sample_reference_table
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # 1. Neutralized table with explicit :sample modifier -> True (drop on completion)
+    xml_sample = (
+        f'<hp:tbl xmlns:hp="{hp}">'
+        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template:sample}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl>'
+    )
+    tbl_sample = etree.fromstring(xml_sample.encode("utf-8"))
+    assert _is_sample_reference_table(tbl_sample) is True
+
+    # 2. Neutralized table with plain {{table_template}} (no modifier) -> False (keep table, protect user forms)
+    xml_user_plain = (
+        f'<hp:tbl xmlns:hp="{hp}">'
+        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl>'
+    )
+    tbl_user_plain = etree.fromstring(xml_user_plain.encode("utf-8"))
+    assert _is_sample_reference_table(tbl_user_plain) is False
+
+    # 3. Table with real content even if tagged with :sample -> False (protect user data)
+    xml_sample_with_data = (
+        f'<hp:tbl xmlns:hp="{hp}">'
+        f'<hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;표 1&gt; {{{{table_template:sample}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p><hp:run><hp:t>구분</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p><hp:run><hp:t>실제내용</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl>'
+    )
+    tbl_sample_with_data = etree.fromstring(xml_sample_with_data.encode("utf-8"))
+    assert _is_sample_reference_table(tbl_sample_with_data) is False
+
+
+def test_neutralize_reference_table_caption_and_span_schema_order() -> None:
+    """_neutralize_reference_table places new caption before inMargin/tr and cellSpan before cellSz (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # Table with sz, pos, inMargin, tr — but NO caption initially
+    xml = (
+        f'<hp:p xmlns:hp="{hp}">'
+        f'<hp:run>'
+        f'<hp:tbl colCnt="2">'
+        f'<hp:sz width="30000" height="10000"/>'
+        f'<hp:pos/>'
+        f'<hp:inMargin left="100" right="100" top="100" bottom="100"/>'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl>'
+        f'</hp:run>'
+        f'</hp:p>'
+    )
+    p = etree.fromstring(xml.encode("utf-8"))
+    tbl = p.find(f".//{{{hp}}}tbl")
+    mod._neutralize_reference_table(p, tbl, sibling_note_style=("10", "20", "30"))
+
+    # Verify caption is placed BEFORE inMargin and tr (HWPX schema order)
+    tags = [c.tag.split("}")[-1] for c in tbl]
+    assert "caption" in tags
+    cap_idx = tags.index("caption")
+    in_margin_idx = tags.index("inMargin")
+    tr_idx = tags.index("tr")
+    assert cap_idx < in_margin_idx < tr_idx
+
+    # Verify synthesized note row's cellSpan is placed BEFORE cellSz
+    note_tr = tbl.findall(f"{{{hp}}}tr")[-1]
+    tc0 = note_tr.find(f"{{{hp}}}tc")
+    tc_tags = [c.tag.split("}")[-1] for c in tc0]
+    assert "cellSpan" in tc_tags
+    if "cellSz" in tc_tags:
+        assert tc_tags.index("cellSpan") < tc_tags.index("cellSz")
+
+
+def test_neutralize_reference_table_upgrades_existing_token_to_sample() -> None:
+    """_neutralize_reference_table upgrades an existing {{table_template}} token to :sample so it drops on build (#30)."""
+    import importlib.util
+    from lxml import etree
+    from hwp_agent.ops.author import _caption_text
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # Table whose caption already carries a plain {{table_template}} token
+    xml = (
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:caption><hp:subList><hp:p>'
+        f'<hp:run><hp:t>&lt;표 1&gt; {{{{table_template}}}}</hp:t></hp:run>'
+        f'</hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    p = etree.fromstring(xml.encode("utf-8"))
+    tbl = p.find(f".//{{{hp}}}tbl")
+    mod._neutralize_reference_table(p, tbl)
+
+    cap_txt = _caption_text(tbl)
+    assert "<표 1> {{table_template:sample}}" == cap_txt
+
+
+@pytest.mark.skipif(not _HOUSE_POLICY.is_file(), reason="baked house form not present")
+def test_fill_sections_with_explicit_table_template_still_drops_sample_table(tmp_path: Path) -> None:
+    """When the user explicitly designates another reference table via table_template,
+    the neutralized :sample table is still dropped on fill completion (#30)."""
+    from hwpx.document import HwpxDocument
+    from hwp_agent.ops import fill_sections
+
+    out = tmp_path / "built_custom_ref.hwpx"
+    res = fill_sections(
+        _HOUSE_POLICY,
+        [
+            ("{{intro}}", "# 들어가며\n\n- 서문 문단\n"),
+            ("{{body}}", "# Ⅰ. 서론\n\n| 가 | 나 |\n|---|---|\n| 1 | 2 |\n"),
+            ("{{references}}", "- 참고문헌 항목\n"),
+        ],
+        table_template="custom_table_specifier",
+        output=out,
+    )
+    doc = HwpxDocument.open(str(out))
+    # Section 4 must contain ONLY the newly authored table; the :sample dummy table was dropped
+    s4_tbls = list(doc.sections[4].element.iter(f"{_HP}tbl"))
+    assert len(s4_tbls) == 1
+    all_text = "".join(t.text or "" for s in doc.sections for t in s.element.iter(f"{_HP}t"))
+    assert "{{table_template:sample}}" not in all_text
+    assert "{{table_template}}" not in all_text
+
+
+def test_neutralize_reference_table_caption_token_split_across_multiple_t() -> None:
+    """_neutralize_reference_table upgrades caption token even when split across runs like {{table and _template}} (#30)."""
+    import importlib.util
+    from lxml import etree
+    from hwp_agent.ops.author import _caption_text
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # Caption where {{table_template}} is split across two <hp:t> elements
+    xml = (
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:caption><hp:subList><hp:p>'
+        f'<hp:run><hp:t>&lt;표 1&gt; {{{{table</hp:t></hp:run>'
+        f'<hp:run><hp:t>_template}}}}</hp:t></hp:run>'
+        f'</hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    p = etree.fromstring(xml.encode("utf-8"))
+    tbl = p.find(f".//{{{hp}}}tbl")
+    mod._neutralize_reference_table(p, tbl)
+
+    cap_txt = _caption_text(tbl)
+    assert "<표 1> {{table_template:sample}}" == cap_txt
+
+
+
+
+
+
+
+
+
+
+
+
+
+

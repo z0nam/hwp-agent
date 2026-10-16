@@ -86,21 +86,24 @@ def _ladder(
 
 
 def _marker_audit(doc, inst_style: str | None = None) -> list[dict]:
-    """Locate each insertion marker (``{{body}}`` …) and how many times it occurs.
+    """Locate each insertion marker (``{{body}}`` …) and ``{{table_template}}`` table.
 
-    ``write``/``build`` route content to these markers; a marker that appears twice
-    is ambiguous (which one gets the content?) and one that appears in an unexpected
-    place routes content to the wrong section. Reporting the placement up front makes
-    those mistakes visible without a render (the deterministic half of a house-form
-    assembly check). Returns ``[{token, section, count}, …]`` in document order.
+    ``write``/``build`` route content to these markers and copy table styling from a
+    ``{{table…}}``-captioned reference table; a marker that appears twice is ambiguous
+    (which one gets the content?) and one that appears in an unexpected place routes
+    content to the wrong section. Reporting the placement up front makes those mistakes
+    visible without a render (the deterministic half of a house-form assembly check).
+    Returns ``[{token, section, count}, …]`` in document order.
 
     ``AI:INSTRUCTION`` paragraphs are skipped, mirroring ``fill_from_markdown``, which
     removes them before selecting a marker — otherwise an instruction that merely
     *mentions* a token (e.g. "content is written at ``{{body}}``") is miscounted as a
     second live marker and falsely flagged ambiguous.
     """
-    from .author import INSERTION_MARKERS
+    from .author import _HP, _TABLE_TOKEN_RE, INSERTION_MARKERS, _caption_text
 
+    table_token = "{{table_template}}"
+    order = (*INSERTION_MARKERS, table_token)
     out: list[dict] = []
     for si, section in enumerate(doc.sections):
         counts: dict[str, int] = {}
@@ -111,7 +114,10 @@ def _marker_audit(doc, inst_style: str | None = None) -> list[dict]:
             for m in INSERTION_MARKERS:
                 if m in text:
                     counts[m] = counts.get(m, 0) + 1
-        for m in INSERTION_MARKERS:  # stable order
+        for tbl in section.element.iter(f"{{{_HP}}}tbl"):
+            if _TABLE_TOKEN_RE.search(_caption_text(tbl)):
+                counts[table_token] = counts.get(table_token, 0) + 1
+        for m in order:  # stable order
             if m in counts:
                 out.append({"token": m, "section": si, "count": counts[m]})
     return out

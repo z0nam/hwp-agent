@@ -9,7 +9,8 @@
     {
       "section": 4,
       "marker": "body",
-      "strip": true
+      "strip": true,
+      "keep_table": true
     },
     {
       "section": 5,

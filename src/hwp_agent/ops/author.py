@@ -58,6 +58,9 @@ INSERTION_MARKERS = (
 #: a table whose caption carries a ``{{table…}}`` token (e.g. ``{{table}}``,
 #: ``{{table_template}}``) is the format reference for generated tables.
 _TABLE_TOKEN_RE = re.compile(r"\{\{\s*table[\w:-]*\s*\}\}", re.IGNORECASE)
+#: a table designated with an explicit sample modifier (e.g. ``{{table_template:sample}}``)
+#: is a dummy format placeholder and is dropped after fill completes.
+_TABLE_SAMPLE_RE = re.compile(r"\{\{\s*table[\w:-]*:(?:sample|drop|placeholder)\s*\}\}", re.IGNORECASE)
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 _HH = "http://www.hancom.co.kr/hwpml/2011/head"
 _HC = "http://www.hancom.co.kr/hwpml/2011/core"
@@ -881,6 +884,72 @@ def _strip_table_token(tbl_element) -> None:
             t.text = _TABLE_TOKEN_RE.sub("", t.text).rstrip()
 
 
+def _is_neutralized_reference_table(tbl_element) -> bool:
+    """Return True if *tbl_element* is a neutralized format reference table.
+
+    Such a table was created solely to preserve house styles in stripped templates:
+      - Header row cells are either blank or standard placeholders ('구분', '항목', '내용').
+      - All non-header (data and note) cells are completely empty.
+    """
+    trs = tbl_element.findall(f"{{{_HP}}}tr")
+    if not trs:
+        return False
+    generic_headers = {"", "구분", "항목", "내용"}
+    for ri, tr in enumerate(trs):
+        for tc in tr.findall(f"{{{_HP}}}tc"):
+            text = "".join(t.text or "" for t in tc.iter(f"{{{_HP}}}t")).strip()
+            is_header = tc.get("header") == "1" or ri == 0
+            if is_header:
+                if text not in generic_headers:
+                    return False
+            else:
+                if text:
+                    return False
+    return True
+
+
+def _is_sample_reference_table(tbl_element) -> bool:
+    """Return True if *tbl_element* is a dummy format-reference table marked for dropping.
+
+    To protect user-defined reference tables (e.g. empty form tables with {{table_template}}),
+    a table is dropped on fill completion only when BOTH:
+      1. Its caption carries an explicit sample modifier (e.g. ``{{table_template:sample}}``).
+      2. Its cells contain only generic placeholders ('구분', '항목', '내용') and blank body cells.
+    """
+    if not _TABLE_SAMPLE_RE.search(_caption_text(tbl_element)):
+        return False
+    return _is_neutralized_reference_table(tbl_element)
+
+
+def _drop_sample_tables(doc: HwpxDocument) -> int:
+    """Drop any dummy :sample format reference tables from the document.
+
+    A table tagged with an explicit sample modifier (e.g. {{table_template:sample}})
+    and having only placeholder cells was created solely to hold house styles in a stripped
+    template. On final build completion, drop it so it never remains in the final document,
+    even if the user explicitly specified a different reference table via --table-template.
+    """
+    dropped = 0
+    for section in doc.sections:
+        for tbl in list(section.element.iter(f"{{{_HP}}}tbl")):
+            if _is_sample_reference_table(tbl):
+                p = tbl.getparent()
+                while p is not None and p.tag != f"{{{_HP}}}p":
+                    p = p.getparent()
+                if p is not None:
+                    if p.find(f".//{{{_HP}}}secPr") is not None:
+                        tbl_parent = tbl.getparent()
+                        if tbl_parent is not None:
+                            tbl_parent.remove(tbl)
+                    else:
+                        parent = p.getparent()
+                        if parent is not None:
+                            parent.remove(p)
+                    section.mark_dirty()
+                    dropped += 1
+    return dropped
+
+
 def _clone_caption(ref_el, title: str, chapter: str | None):
     """Clone the reference table's caption (auto-number + 표제목 style) with *title*.
 
@@ -1471,6 +1540,7 @@ def fill_from_markdown(
     marker_token: str | None = None,
     equal_columns: bool = False,
     strip_other_markers: bool = False,
+    strip_table_token: bool = True,
     links: bool = True,
     blue_links: bool = False,
     math: bool = True,
@@ -1927,10 +1997,14 @@ def fill_from_markdown(
             + ", ".join(f"[^{f}]" for f in unused)
         )
 
-    # clean the {{table…}} designation token out of the reference table's caption
-    if designated and ref_element is not None:
-        _strip_table_token(ref_element)
-        ref_section.mark_dirty()  # so the edited section is re-serialized on save
+    # clean the {{table…}} designation token out of the reference table's caption,
+    # and drop any dummy :sample format reference tables across the document so they
+    # never remain in the final output (even if another reference was chosen via --table-template).
+    if strip_table_token:
+        _drop_sample_tables(doc)
+        if designated and ref_element is not None and ref_element.getparent() is not None:
+            _strip_table_token(ref_element)
+            ref_section.mark_dirty()
 
     if marker is not None:
         # if the marker paragraph opens its 구역 (carries <hp:secPr>), move that
@@ -2004,6 +2078,7 @@ def fill_sections(
                 table_template=table_template,
                 marker_token=token,
                 equal_columns=equal_columns,
+                strip_table_token=(i == last),
                 links=links,
                 blue_links=blue_links,
                 math=math,

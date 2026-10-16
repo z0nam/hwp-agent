@@ -118,10 +118,20 @@ def load_config(name: str) -> dict:
 
 
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+_HH = "http://www.hancom.co.kr/hwpml/2011/head"
+_HC = "http://www.hancom.co.kr/hwpml/2011/core"
 
 
 def _hp(tag: str) -> str:
     return f"{{{_HP}}}{tag}"
+
+
+def _hh(tag: str) -> str:
+    return f"{{{_HH}}}{tag}"
+
+
+def _hc(tag: str) -> str:
+    return f"{{{_HC}}}{tag}"
 
 
 def _blank_para(p) -> None:
@@ -161,6 +171,500 @@ def _para_text(p) -> str:
     return "".join((t.text or "") for t in p.findall(".//" + _hp("t")))
 
 
+def _find_style(
+    header_root, names: tuple[str, ...]
+) -> tuple[str, str | None, str | None] | None:
+    """header.xml 에서 *names* 중 첫 일치 스타일의 (styleID, paraPrID, charPrID) 반환."""
+    if header_root is None:
+        return None
+    by_name = {
+        (s.get("name") or "").strip(): (
+            s.get("id"),
+            s.get("paraPrIDRef"),
+            s.get("charPrIDRef"),
+        )
+        for s in header_root.findall(".//" + _hh("style"))
+        if s.get("id") is not None
+    }
+    for name in names:
+        if name in by_name:
+            return by_name[name]
+    return None
+
+
+def _find_borderless_bf(header_root) -> str | None:
+    """네 변 모두 NONE 이고 배경 채움이 없는 borderFill id (주/출처 병합행용). 17 우선."""
+    if header_root is None:
+        return None
+    sides = ("leftBorder", "rightBorder", "topBorder", "bottomBorder")
+    matches: list[str] = []
+    for bf in header_root.findall(".//" + _hh("borderFill")):
+        bid = bf.get("id")
+        if not bid:
+            continue
+        if not all(
+            (b := bf.find(_hh(s))) is not None and b.get("type") == "NONE"
+            for s in sides
+        ):
+            continue
+        wb = bf.find(".//" + _hc("winBrush"))
+        if wb is not None and (wb.get("faceColor") or "none").lower() != "none":
+            continue
+        matches.append(bid)
+    if "17" in matches:
+        return "17"
+    return matches[-1] if matches else None
+
+
+def _sibling_note_style(
+    table_p, header_root=None
+) -> tuple[str, str | None, str | None] | None:
+    """표 바로 다음 문단이 주)/자료)/출처) 줄이면 그 문단의 (styleID, paraPrID, charPrID)."""
+    from hwp_agent.ops.author import _NOTE_RE
+
+    nxt = table_p.getnext()
+    if nxt is None or nxt.tag != _hp("p") or nxt.find(".//" + _hp("tbl")) is not None:
+        return None
+    txt = _para_text(nxt).strip()
+    sid = nxt.get("styleIDRef")
+    note_names = {"자료", "JRI_각주", "각주1", "각주"}
+    style_name = ""
+    if header_root is not None and sid is not None:
+        st = header_root.find(f".//{_hh('style')}[@id='{sid}']")
+        style_name = (st.get("name") or "").strip() if st is not None else ""
+    if not (_NOTE_RE.match(txt) or style_name in note_names):
+        return None
+    run = nxt.find(_hp("run"))
+    cid = run.get("charPrIDRef") if run is not None else None
+    return (sid or "0", nxt.get("paraPrIDRef"), cid)
+
+
+def _is_table_note_row(tr, logical_cols: int, header_root=None) -> bool:
+    """표의 특정 행이 주/출처/각주(note) 행인지 검증한다.
+
+    _table_format 은 본문 행과 스타일이 다르면 무조건 note 로 간주하므로,
+    합계/소계/평균 행처럼 다른 스타일이 적용된 데이터 행이 note 로 오분류되지 않도록
+    텍스트(주/자료/출처/※), 공인된 각주 스타일, 또는 전체 너비 병합 셀 여부를 확인한다.
+    """
+    from hwp_agent.ops.author import _NOTE_RE
+
+    tcs = tr.findall(_hp("tc"))
+    if not tcs:
+        return False
+
+    row_text = "".join(t.text or "" for t in tr.findall(".//" + _hp("t"))).strip()
+
+    # 1. 텍스트 패턴 (주/자료/출처/※/*)
+    if _NOTE_RE.match(row_text) or row_text.startswith("※") or row_text.startswith("*"):
+        return True
+
+    # 2. 공인된 각주 스타일
+    sid = None
+    first_p = tr.find(".//" + _hp("p"))
+    if first_p is not None:
+        sid = first_p.get("styleIDRef")
+    note_names = {"자료", "JRI_각주", "각주1", "각주", "주석"}
+    if header_root is not None and sid is not None:
+        st = header_root.find(f".//{_hh('style')}[@id='{sid}']")
+        style_name = (st.get("name") or "").strip() if st is not None else ""
+        if style_name in note_names:
+            return True
+
+    # 3. 행 전체 너비 병합(1셀이거나 colSpan == logical_cols)이면서 합계/집계 단어가 아닌 경우
+    span = tcs[0].find(_hp("cellSpan"))
+    c_span = int(span.get("colSpan", "1") or 1) if span is not None else 1
+    is_full_width = (
+        len(tcs) == 1 and (c_span >= logical_cols or logical_cols <= 1)
+    ) or (c_span == logical_cols)
+    if is_full_width:
+        if re.match(r"^(합계|소계|총계|총\s*합|평균|계|Total|Sum|Avg)\b", row_text):
+            return False
+        return True
+
+    return False
+
+
+def _pick_reference_table(paras: list, header_root=None):
+    """섹션 문단들에서 ``{{table_template}}`` 기준으로 삼을 데이터 표 하나를 고른다.
+
+    선택 규칙 (우선순위 순):
+      1. 이미 캡션에 ``{{table…}}`` 토큰이 있는 표
+      2. 주/출처 행(표 내부 하단 병합행 또는 바로 뒤 ``주)``/``자료)`` 문단)이 있는 표
+      3. 머리·본문·끝행 대역이 모두 갖춰진 표(행 4개 이상)
+      4. 문서 순서상 첫 번째 데이터 표(2행×2열 이상, 그림 포함 표 제외)
+    """
+    from hwp_agent.ops.author import (
+        _TABLE_TOKEN_RE,
+        _caption_text,
+        _is_header_row,
+        _table_format,
+    )
+
+    best = None
+    best_rank = None
+    for idx, p in enumerate(paras):
+        tbl = p.find(".//" + _hp("tbl"))
+        if tbl is None or tbl.find(".//" + _hp("pic")) is not None:
+            continue
+        rows = tbl.findall(_hp("tr"))
+        if len(rows) < 2:
+            continue
+        logical_cols = int(tbl.get("colCnt", "0") or 0)
+        if not logical_cols:
+            logical_cols = max(
+                (
+                    sum(
+                        int(span.get("colSpan", "1") or 1)
+                        if (span := tc.find(_hp("cellSpan"))) is not None
+                        else 1
+                        for tc in tr.findall(_hp("tc"))
+                    )
+                    for tr in rows
+                ),
+                default=0,
+            )
+        if logical_cols < 2:
+            continue
+
+        h = 0
+        while h < len(rows) and _is_header_row(rows[h]):
+            h += 1
+        h = h or 1
+        # 헤더 행만 있고 본문 행이 없는 표(예: 2행 모두 헤더)는 기준 표에서 배제
+        if len(rows) <= h:
+            continue
+
+        sib_note = _sibling_note_style(p, header_root)
+        is_trailing_note = (
+            len(rows[h:]) > 1
+            and _is_table_note_row(rows[-1], logical_cols, header_root)
+        )
+        has_note = is_trailing_note or (sib_note is not None)
+        has_existing_note = is_trailing_note
+        data_rows = rows[:-1] if has_existing_note else rows
+
+        has_vmerge = any(
+            int(span.get("rowSpan", "1") or 1) > 1
+            for tc in tbl.findall(".//" + _hp("tc"))
+            if (span := tc.find(_hp("cellSpan"))) is not None
+        )
+        has_hmerge = any(
+            int(span.get("colSpan", "1") or 1) > 1
+            for tr in data_rows
+            for tc in tr.findall(_hp("tc"))
+            if (span := tc.find(_hp("cellSpan"))) is not None
+        )
+        # 수직 병합이나 데이터 행의 수평 병합이 있는 표는 테두리 대역(border zones)을
+        # 온전히 복원할 수 없으므로(중간선/상하단선 왜곡), designated 여부와 관계없이
+        # 기준 표에서 완전히 배제(reject)한다.
+        if has_vmerge or has_hmerge:
+            continue
+
+        designated = bool(_TABLE_TOKEN_RE.search(_caption_text(tbl)))
+        full_bands = len(rows) >= 4
+        rank = (designated, has_note, full_bands, -idx)
+        if best_rank is None or rank > best_rank:
+            best_rank = rank
+            best = (p, tbl, sib_note)
+    return best
+
+
+def _build_template_caption(
+    width: str, style_info: tuple[str, str | None, str | None] | None
+):
+    """``<표 Ⅰ-1> {{table_template}}`` 자동번호 캡션 엘리먼트 생성."""
+    from lxml import etree
+
+    sid, pid, cid = style_info or ("0", "0", "0")
+    xml = (
+        f'<hp:caption xmlns:hp="{_HP}" side="TOP" fullSz="0"'
+        f' width="{width}" gap="850" lastWidth="{width}">'
+        '<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK"'
+        ' vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0"'
+        ' textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">'
+        f'<hp:p id="2147483648" paraPrIDRef="{pid or "0"}" styleIDRef="{sid or "0"}"'
+        ' pageBreak="0" columnBreak="0" merged="0">'
+        f'<hp:run charPrIDRef="{cid or "0"}">'
+        "<hp:t>&lt;표 Ⅰ-</hp:t>"
+        '<hp:ctrl><hp:autoNum num="1" numType="TABLE">'
+        '<hp:autoNumFormat type="DIGIT" userChar="" prefixChar=""'
+        ' suffixChar="" supscript="0"/>'
+        "</hp:autoNum></hp:ctrl>"
+        "<hp:t>&gt; {{table_template:sample}}</hp:t>"
+        "</hp:run></hp:p></hp:subList></hp:caption>"
+    )
+    return etree.fromstring(xml.encode("utf-8"))
+
+
+def _neutralize_reference_table(
+    table_p, tbl, header_root=None, sibling_note_style=None
+) -> None:
+    """선택한 기준 표의 예시 내용을 비우고 ``{{table_template}}`` 캡션과 대역을 갖춘다.
+
+    ``_table_format`` 이 머리행(header) · 첫 본문행(first_body) · 내부 본문행(body) ·
+    마지막 본문행(last, 굵은 하단선) · 주/출처 병합행(note, 테두리 없음) 5개 대역을 모두
+    온전히 읽도록 데이터 행은 ``[header, first_body, body, last]`` 4행을 남기고, 표에
+    주/출처 행이 없으면 서식의 ``자료``/``각주`` 스타일과 무테두리 ``borderFill`` 로
+    하단 병합행을 추가한다.
+    """
+    from lxml import etree
+
+    from hwp_agent.ops.author import (
+        _TABLE_TOKEN_RE,
+        _caption_text,
+        _fit_table_height,
+        _is_header_row,
+        _table_format,
+    )
+    from hwp_agent.ops.form import _set_cell_text_overwrite
+
+    has_vmerge = any(
+        int(span.get("rowSpan", "1") or 1) > 1
+        for tc in tbl.findall(".//" + _hp("tc"))
+        if (span := tc.find(_hp("cellSpan"))) is not None
+    )
+    if has_vmerge:
+        raise ValueError("Cannot neutralize reference table with vertical merges")
+
+    caption_style = _find_style(header_root, ("표제목", "표/그림 제목"))
+    body_cell_style = _find_style(header_root, ("표내용", "JRI_표내용"))
+    note_style = sibling_note_style or _find_style(
+        header_root, ("자료", "JRI_각주", "각주1", "각주")
+    )
+    borderless_bf = _find_borderless_bf(header_root)
+
+    rows = tbl.findall(_hp("tr"))
+    h = 0
+    while h < len(rows) and _is_header_row(rows[h]):
+        h += 1
+    h = h or 1
+    header_rows = rows[:h]
+    rest = rows[h:]
+
+    # 논리 열 수: 테이블의 colCnt 속성 또는 각 행의 colSpan 합산 최댓값
+    logical_cols = int(tbl.get("colCnt", "0") or 0)
+    if not logical_cols:
+        for tr in rows:
+            r_cols = sum(
+                int(span.get("colSpan", "1") or 1) if (span := tc.find(_hp("cellSpan"))) is not None else 1
+                for tc in tr.findall(_hp("tc"))
+            )
+            logical_cols = max(logical_cols, r_cols)
+    logical_cols = max(logical_cols, 1)
+
+    has_existing_note = (
+        len(rest) > 1
+        and _is_table_note_row(rest[-1], logical_cols, header_root)
+    )
+    existing_note = [rest[-1]] if has_existing_note else []
+    data_body = rest[:-1] if has_existing_note else rest
+
+    has_hmerge = any(
+        int(span.get("colSpan", "1") or 1) > 1
+        for tr in (*header_rows, *data_body)
+        for tc in tr.findall(_hp("tc"))
+        if (span := tc.find(_hp("cellSpan"))) is not None
+    )
+    if has_hmerge:
+        raise ValueError(
+            "Cannot neutralize reference table with horizontal merges in data rows"
+        )
+
+    if len(data_body) >= 3:
+        # first_body(머리행 이중선 짝) + interior body(가는선) + last(굵은 하단선) 보존
+        kept_body = [data_body[0], data_body[1], data_body[-1]]
+    else:
+        kept_body = list(data_body)
+
+    keep_ids = {id(r) for r in (*header_rows, *kept_body, *existing_note)}
+    for r in rows:
+        if id(r) not in keep_ids:
+            tbl.remove(r)
+
+    generic = ["구분", "항목", "내용"]
+    for ri, tr in enumerate(header_rows):
+        for ci, tc in enumerate(tr.findall(_hp("tc"))):
+            tc.set("header", "1")
+            _set_cell_text_overwrite(
+                tc, generic[ci] if (ri == 0 and ci < len(generic)) else ""
+            )
+            for lsa in tc.findall(".//" + _hp("linesegarray")):
+                lsa.getparent().remove(lsa)
+
+    for tr in kept_body:
+        for tc in tr.findall(_hp("tc")):
+            tc.set("header", "0")
+            _set_cell_text_overwrite(tc, "")
+            if body_cell_style is not None:
+                b_sid, b_pid, b_cid = body_cell_style
+                for p in tc.findall(_hp("subList") + "/" + _hp("p")):
+                    if b_sid:
+                        p.set("styleIDRef", b_sid)
+                    if b_pid:
+                        p.set("paraPrIDRef", b_pid)
+                    for run in p.findall(_hp("run")):
+                        if b_cid:
+                            run.set("charPrIDRef", b_cid)
+            sz = tc.find(_hp("cellSz"))
+            if (
+                sz is not None
+                and (sz.get("height") or "").isdigit()
+                and int(sz.get("height")) > 2183
+            ):
+                sz.set("height", "2183")
+            for lsa in tc.findall(".//" + _hp("linesegarray")):
+                lsa.getparent().remove(lsa)
+
+    if existing_note:
+        for tr in existing_note:
+            for tc in tr.findall(_hp("tc")):
+                tc.set("header", "0")
+                _set_cell_text_overwrite(tc, "")
+                if note_style is not None:
+                    n_sid, n_pid, n_cid = note_style
+                    for p in tc.findall(_hp("subList") + "/" + _hp("p")):
+                        if n_sid:
+                            p.set("styleIDRef", n_sid)
+                        if n_pid:
+                            p.set("paraPrIDRef", n_pid)
+                        for run in p.findall(_hp("run")):
+                            if n_cid:
+                                run.set("charPrIDRef", n_cid)
+                if borderless_bf:
+                    tc.set("borderFillIDRef", borderless_bf)
+                sz = tc.find(_hp("cellSz"))
+                if sz is not None:
+                    sz.set("height", "0")
+                for lsa in tc.findall(".//" + _hp("linesegarray")):
+                    lsa.getparent().remove(lsa)
+    elif note_style is not None and kept_body:
+        note_tr = copy.deepcopy(kept_body[-1])
+        tcs = note_tr.findall(_hp("tc"))
+        tbl_w = int(tbl.find(_hp("sz")).get("width", "0") or 0) if tbl.find(_hp("sz")) is not None else 0
+        sum_w = sum(
+            int(s.get("width", "0"))
+            for tc in tcs
+            if (s := tc.find(_hp("cellSz"))) is not None
+        )
+        total_w = tbl_w or sum_w
+        tc0 = tcs[0]
+        for extra in tcs[1:]:
+            note_tr.remove(extra)
+        tc0.set("header", "0")
+        if borderless_bf:
+            tc0.set("borderFillIDRef", borderless_bf)
+        span = tc0.find(_hp("cellSpan"))
+        if span is None:
+            span = etree.Element(_hp("cellSpan"))
+            addr = tc0.find(_hp("cellAddr"))
+            sz_el = tc0.find(_hp("cellSz"))
+            sub_el = tc0.find(_hp("subList"))
+            if addr is not None:
+                addr.addnext(span)
+            elif sz_el is not None:
+                sz_el.addprevious(span)
+            elif sub_el is not None:
+                sub_el.addprevious(span)
+            else:
+                tc0.append(span)
+        span.set("colSpan", str(logical_cols))
+        span.set("rowSpan", "1")
+        sz = tc0.find(_hp("cellSz"))
+        if sz is not None:
+            if total_w:
+                sz.set("width", str(total_w))
+            sz.set("height", "0")
+        sub = tc0.find(_hp("subList"))
+        if sub is not None:
+            sub.set("vertAlign", "TOP")
+        _set_cell_text_overwrite(tc0, "")
+        n_sid, n_pid, n_cid = note_style
+        for p in tc0.findall(_hp("subList") + "/" + _hp("p")):
+            if n_sid:
+                p.set("styleIDRef", n_sid)
+            if n_pid:
+                p.set("paraPrIDRef", n_pid)
+            for run in p.findall(_hp("run")):
+                if n_cid:
+                    run.set("charPrIDRef", n_cid)
+        for lsa in tc0.findall(".//" + _hp("linesegarray")):
+            lsa.getparent().remove(lsa)
+        tbl.append(note_tr)
+
+    final_rows = tbl.findall(_hp("tr"))
+    tbl.set("rowCnt", str(len(final_rows)))
+    for ri, tr in enumerate(final_rows):
+        col_cursor = 0
+        for tc in tr.findall(_hp("tc")):
+            addr = tc.find(_hp("cellAddr"))
+            if addr is not None:
+                addr.set("rowAddr", str(ri))
+                addr.set("colAddr", str(col_cursor))
+            span = tc.find(_hp("cellSpan"))
+            c_span = int(span.get("colSpan", "1") or 1) if span is not None else 1
+            col_cursor += c_span
+
+    cap = tbl.find(_hp("caption"))
+    if cap is not None:
+        ts = cap.findall(".//" + _hp("t"))
+        if ts:
+            target_idx = None
+            framing = None
+            for idx, t in enumerate(ts):
+                txt = t.text or ""
+                m = re.search(r"^(.*?[>\]])", txt)
+                if m:
+                    target_idx = idx
+                    framing = m.group(1)
+                    break
+            if target_idx is not None:
+                ts[target_idx].text = f"{framing} {{{{table_template:sample}}}}".strip()
+                for t in ts[target_idx + 1:]:
+                    t.text = ""
+            else:
+                full_text = "".join(t.text or "" for t in ts)
+                if _TABLE_TOKEN_RE.search(full_text):
+                    new_text = _TABLE_TOKEN_RE.sub("{{table_template:sample}}", full_text).strip()
+                else:
+                    new_text = f"{full_text.rstrip()} {{{{table_template:sample}}}}".strip()
+                ts[0].text = new_text
+                for t in ts[1:]:
+                    t.text = ""
+        for lsa in cap.findall(".//" + _hp("linesegarray")):
+            lsa.getparent().remove(lsa)
+    else:
+        tbl_sz = tbl.find(_hp("sz"))
+        width = tbl_sz.get("width", "36805") if tbl_sz is not None else "36805"
+        cap = _build_template_caption(width, caption_style)
+        following_tags = (
+            _hp("shapeComment"),
+            _hp("inMargin"),
+            _hp("cellzoneList"),
+            _hp("tr"),
+        )
+        anchor = next(
+            (tbl.find(tag) for tag in following_tags if tbl.find(tag) is not None),
+            None,
+        )
+        if anchor is not None:
+            anchor.addprevious(cap)
+        else:
+            tbl.append(cap)
+
+    _fit_table_height(tbl)
+    table_p.set("styleIDRef", "0")
+    tbl_run = tbl.getparent()
+    if tbl_run is not None:
+        for child in list(tbl_run):
+            if child is not tbl:
+                tbl_run.remove(child)
+        for run in list(table_p.findall(_hp("run"))):
+            if run is not tbl_run:
+                table_p.remove(run)
+    for lsa in list(table_p.findall(_hp("linesegarray"))):
+        table_p.remove(lsa)
+
+
 def insert_body_marker(
     path: Path,
     section_index: int,
@@ -168,7 +672,8 @@ def insert_body_marker(
     strip: bool = False,
     marker: str = "body",
     keep_heading: bool = False,
-) -> None:
+    keep_table: bool = False,
+) -> bool:
     """굽는 사본의 지정 섹션을 ``{{<marker>}}`` 마커로 정리(컨테이너 보존).
 
     write/build 가 그 파트를 이 자리에 넣게 한다 — 마커가 없으면 마지막 섹션(판권지)에
@@ -181,6 +686,10 @@ def insert_body_marker(
     유지하기 위함 — 이 경우 해당 파트 MD 는 제목(`# 참고문헌`)을 넣지 않는다. 제목이
     opener(secPr) 에 얹혀 있으면 opener 를, opener 가 빈 문단이면 그 뒤 첫 텍스트
     문단(제목)을 앵커로 삼는다.
+
+    *keep_table* 이면 *strip* 시 섹션의 데이터 표 하나를 골라 내용을 중립화하고 캡션을
+    ``{{table_template}}`` 로 달아 마커 뒤에 남긴다(기관 표 서식 보존). 보존된 표가
+    있으면 ``True`` 반환.
     """
     token = "{{" + marker + "}}"
     from lxml import etree
@@ -194,13 +703,42 @@ def insert_body_marker(
             secs = sorted(n for n in names if re.search(r"section\d+\.xml$", n))
             part = secs[section_index]
         xml = z.read(part)
+        header_root = (
+            etree.fromstring(z.read("Contents/header.xml"))
+            if "Contents/header.xml" in names
+            else None
+        )
     root = etree.fromstring(xml)
     paras = root.findall(_hp("p"))
+    preserved_table = False
 
     if strip:
         # 본문 예시 제거: opener(secPr) 만 남겨 비우고, 그 뒤에 {{body}} 마커.
         opener = next((p for p in paras if p.find(".//" + _hp("secPr")) is not None), paras[0])
-        marker = _make_marker(opener, token)
+        marker_el = _make_marker(opener, token)
+        picked = _pick_reference_table(paras, header_root) if keep_table else None
+        table_p = None
+        if picked is not None:
+            cand_p, cand_tbl, sib_note = picked
+            if cand_p is opener:
+                tbl_parent = cand_tbl.getparent()
+                if tbl_parent is not None:
+                    tbl_parent.remove(cand_tbl)
+                table_p = etree.Element(_hp("p"))
+                table_p.set("id", "0")
+                table_p.set("paraPrIDRef", opener.get("paraPrIDRef") or "0")
+                table_p.set("styleIDRef", "0")
+                table_p.set("pageBreak", "0")
+                table_p.set("columnBreak", "0")
+                table_p.set("merged", "0")
+                new_run = etree.SubElement(table_p, _hp("run"))
+                new_run.set("charPrIDRef", "0")
+                new_run.append(cand_tbl)
+            else:
+                table_p = cand_p
+            _neutralize_reference_table(table_p, cand_tbl, header_root, sib_note)
+            preserved_table = True
+
         if keep_heading:
             # 고정 제목을 살린다: opener(제목이 얹힌 경우) 또는 opener 가 비어 있으면
             # 뒤 첫 텍스트 문단(제목)까지 남기고, 나머지 예시만 제거. 마커는 앵커 뒤.
@@ -217,13 +755,15 @@ def insert_body_marker(
             for p in paras:
                 if p not in keep:
                     root.remove(p)
-            anchor.addnext(marker)
+            anchor.addnext(marker_el)
         else:
             _blank_para(opener)
             for p in paras:
                 if p is not opener:
                     root.remove(p)
-            opener.addnext(marker)
+            opener.addnext(marker_el)
+        if table_p is not None:
+            marker_el.addnext(table_p)
     else:
         src = next(
             (
@@ -237,28 +777,29 @@ def insert_body_marker(
         )
         if src is None:
             raise RuntimeError(f"{part}: 마커로 복제할 단순 문단이 없음")
-        marker = copy.deepcopy(src)
-        marker.set("styleIDRef", "0")
-        runs = marker.findall(_hp("run"))
+        marker_el = copy.deepcopy(src)
+        marker_el.set("styleIDRef", "0")
+        runs = marker_el.findall(_hp("run"))
         for r in runs[1:]:
-            marker.remove(r)
+            marker_el.remove(r)
         for child in list(runs[0]):
             runs[0].remove(child)
         etree.SubElement(runs[0], _hp("t")).text = token
         if position == "end":
-            paras[-1].addnext(marker)
+            paras[-1].addnext(marker_el)
         else:
             opener = next((p for p in paras if p.find(".//" + _hp("secPr")) is not None), None)
             if opener is not None:
-                opener.addnext(marker)
+                opener.addnext(marker_el)
             else:
-                paras[0].addprevious(marker)
+                paras[0].addprevious(marker_el)
 
     decl = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
     new = decl + etree.tostring(root, encoding="UTF-8", xml_declaration=False)
     tmp = path.with_suffix(".mark.tmp")
     _rewrite_zip_preserving(path, tmp, {part: new})
     tmp.replace(path)
+    return preserved_table
 
 
 def load_state() -> dict:
@@ -353,15 +894,16 @@ def bake_one(src: Path, out: Path, workdir: Path, config: dict | None = None) ->
         if spec.get("section") is None:
             continue
         mk = spec.get("marker", "body")
-        insert_body_marker(
+        preserved = insert_body_marker(
             out,
             int(spec["section"]),
             spec.get("position", "start"),
             strip=bool(spec.get("strip")),
             marker=mk,
             keep_heading=bool(spec.get("keep_heading")),
+            keep_table=bool(spec.get("keep_table", False)),
         )
-        tag = "·strip" if spec.get("strip") else ""
+        tag = ("·strip" if spec.get("strip") else "") + ("·tbl" if preserved else "")
         placed_markers.append(f"s{spec['section']}:{{{{{mk}}}}}{tag}")
     if placed_markers:
         summary["body_marker"] = " ".join(placed_markers)

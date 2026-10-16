@@ -852,6 +852,35 @@ def _is_sample_reference_table(tbl_element) -> bool:
     return _is_neutralized_reference_table(tbl_element)
 
 
+def _drop_sample_tables(doc: HwpxDocument) -> int:
+    """Drop any dummy :sample format reference tables from the document.
+
+    A table tagged with an explicit sample modifier (e.g. {{table_template:sample}})
+    and having only placeholder cells was created solely to hold house styles in a stripped
+    template. On final build completion, drop it so it never remains in the final document,
+    even if the user explicitly specified a different reference table via --table-template.
+    """
+    dropped = 0
+    for section in doc.sections:
+        for tbl in list(section.element.iter(f"{{{_HP}}}tbl")):
+            if _is_sample_reference_table(tbl):
+                p = tbl.getparent()
+                while p is not None and p.tag != f"{{{_HP}}}p":
+                    p = p.getparent()
+                if p is not None:
+                    if p.find(f".//{{{_HP}}}secPr") is not None:
+                        tbl_parent = tbl.getparent()
+                        if tbl_parent is not None:
+                            tbl_parent.remove(tbl)
+                    else:
+                        parent = p.getparent()
+                        if parent is not None:
+                            parent.remove(p)
+                    section.mark_dirty()
+                    dropped += 1
+    return dropped
+
+
 def _clone_caption(ref_el, title: str, chapter: str | None):
     """Clone the reference table's caption (auto-number + 표제목 style) with *title*.
 
@@ -1816,24 +1845,11 @@ def fill_from_markdown(
         )
 
     # clean the {{table…}} designation token out of the reference table's caption,
-    # or drop the reference table entirely if it is a neutralized dummy table created
-    # solely as a format reference (so it doesn't leave an empty table and stray auto-number).
-    if strip_table_token and designated and ref_element is not None:
-        if _is_sample_reference_table(ref_element):
-            p = ref_element.getparent()
-            while p is not None and p.tag != f"{{{_HP}}}p":
-                p = p.getparent()
-            if p is not None:
-                if p.find(f".//{{{_HP}}}secPr") is not None:
-                    tbl_parent = ref_element.getparent()
-                    if tbl_parent is not None:
-                        tbl_parent.remove(ref_element)
-                else:
-                    parent = p.getparent()
-                    if parent is not None:
-                        parent.remove(p)
-                ref_section.mark_dirty()
-        else:
+    # and drop any dummy :sample format reference tables across the document so they
+    # never remain in the final output (even if another reference was chosen via --table-template).
+    if strip_table_token:
+        _drop_sample_tables(doc)
+        if designated and ref_element is not None and ref_element.getparent() is not None:
             _strip_table_token(ref_element)
             ref_section.mark_dirty()
 

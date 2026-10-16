@@ -2231,6 +2231,34 @@ def test_neutralize_reference_table_upgrades_existing_token_to_sample() -> None:
     assert "<표 1> {{table_template:sample}}" == cap_txt
 
 
+@pytest.mark.skipif(not _HOUSE_POLICY.is_file(), reason="baked house form not present")
+def test_fill_sections_with_explicit_table_template_still_drops_sample_table(tmp_path: Path) -> None:
+    """When the user explicitly designates another reference table via table_template,
+    the neutralized :sample table is still dropped on fill completion (#30)."""
+    from hwpx.document import HwpxDocument
+    from hwp_agent.ops import fill_sections
+
+    out = tmp_path / "built_custom_ref.hwpx"
+    res = fill_sections(
+        _HOUSE_POLICY,
+        [
+            ("{{intro}}", "# 들어가며\n\n- 서문 문단\n"),
+            ("{{body}}", "# Ⅰ. 서론\n\n| 가 | 나 |\n|---|---|\n| 1 | 2 |\n"),
+            ("{{references}}", "- 참고문헌 항목\n"),
+        ],
+        table_template="custom_table_specifier",
+        output=out,
+    )
+    doc = HwpxDocument.open(str(out))
+    # Section 4 must contain ONLY the newly authored table; the :sample dummy table was dropped
+    s4_tbls = list(doc.sections[4].element.iter(f"{_HP}tbl"))
+    assert len(s4_tbls) == 1
+    all_text = "".join(t.text or "" for s in doc.sections for t in s.element.iter(f"{_HP}t"))
+    assert "{{table_template:sample}}" not in all_text
+    assert "{{table_template}}" not in all_text
+
+
+
 
 
 

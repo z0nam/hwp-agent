@@ -466,6 +466,22 @@ def test_register_updates_inline_and_dotted_codex_toml(tmp_path: Path) -> None:
     assert "hwp-agent" not in parsed_after_nested["mcp_servers"]
     assert "other" in parsed_after_nested["mcp_servers"]
 
+    # 1-d. Inline table immediately followed by a standalone user comment on the next line
+    codex_cfg.write_text(
+        '[mcp_servers]\n'
+        'hwp-agent = { command = "/old/hwp" }\n'
+        '# important user comment on next line\n'
+        'other = { command = "/bin/other" }\n',
+        encoding="utf-8",
+    )
+    unreg_standalone = unregister_clients(("codex",), home=tmp_path, env={}, platform="darwin")
+    assert unreg_standalone[0].status == "removed"
+    raw_after_standalone = codex_cfg.read_text(encoding="utf-8")
+    assert "# important user comment on next line" in raw_after_standalone
+    parsed_after_standalone = tomllib.loads(raw_after_standalone)
+    assert "hwp-agent" not in parsed_after_standalone["mcp_servers"]
+    assert "other" in parsed_after_standalone["mcp_servers"]
+
     # 2. Table-scoped dotted keys under [mcp_servers]: hwp-agent.command = ...
     codex_cfg.write_text(
         '[mcp_servers]\n'

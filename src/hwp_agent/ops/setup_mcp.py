@@ -428,7 +428,7 @@ _CODEX_INLINE_RE = re.compile(
     r"(?m)^([ \t]*(?:hwp-agent|\"hwp-agent\"|'hwp-agent')[ \t]*=[ \t]*\{)(.*)(\}[ \t]*(?:#[^\r\n]*)?)\r?$"
 )
 _CODEX_INLINE_LINE_RE = re.compile(
-    r"(?m)^[ \t]*(?:hwp-agent|\"hwp-agent\"|'hwp-agent')[ \t]*=[ \t]*\{.*\}\s*(?:#[^\r\n]*)?\r?\n?"
+    r"(?m)^[ \t]*(?:hwp-agent|\"hwp-agent\"|'hwp-agent')[ \t]*=[ \t]*\{.*\}[ \t]*(?:#[^\r\n]*)?\r?\n?"
 )
 _CODEX_GLOBAL_DOTTED_RE = re.compile(
     r"(?m)^[ \t]*mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')"

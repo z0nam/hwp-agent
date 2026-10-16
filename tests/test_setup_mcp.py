@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import tomllib
 from pathlib import Path
@@ -986,4 +987,79 @@ def test_codex_dotted_keys_quoted_keys_and_nested(tmp_path: Path) -> None:
     assert parsed["mcp_servers"]["hwp-agent"]["command"] == "/new/hwp-agent"
     assert parsed["mcp_servers"]["hwp-agent"]["env"]["MY.SPECIAL.VAR"] == "val1"
     assert parsed["mcp_servers"]["hwp-agent"]["nested"]["deep"]["num"] == 42
+
+
+def test_codex_quoted_toml_path_segments(tmp_path: Path) -> None:
+    codex_cfg = config_path_for("codex", home=tmp_path, env={}, platform="darwin")
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        '["mcp_servers"."hwp-agent"]\n'
+        'command = "/old/hwp-agent"\n'
+        'args = ["mcp"]\n'
+        'env = { FOO = "bar" }\n'
+    )
+    codex_cfg.write_text(content, encoding="utf-8")
+
+    # Registration updates without creating duplicate table
+    res = register_clients(
+        ("codex",), home=tmp_path, env={}, platform="darwin", command="/new/hwp-agent"
+    )
+    assert res[0].status == "updated"
+
+    result = codex_cfg.read_text(encoding="utf-8")
+    parsed = tomllib.loads(result)
+    assert parsed["mcp_servers"]["hwp-agent"]["command"] == "/new/hwp-agent"
+    assert parsed["mcp_servers"]["hwp-agent"]["env"]["FOO"] == "bar"
+
+    # Unregistration removes quoted table cleanly
+    unreg = unregister_clients(("codex",), home=tmp_path, env={}, platform="darwin")
+    assert unreg[0].status == "removed"
+    parsed_after = tomllib.loads(codex_cfg.read_text(encoding="utf-8")) if codex_cfg.read_text(encoding="utf-8").strip() else {}
+    assert "hwp-agent" not in parsed_after.get("mcp_servers", {})
+
+
+def test_codex_inline_table_with_braces_in_comment(tmp_path: Path) -> None:
+    codex_cfg = config_path_for("codex", home=tmp_path, env={}, platform="darwin")
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        "[mcp_servers]\n"
+        'hwp-agent = { command = "/old/hwp-agent", args = ["mcp"] } # note: { some_template_key } and { extra }\n'
+        'other = { command = "/bin/other" }\n'
+    )
+    codex_cfg.write_text(content, encoding="utf-8")
+
+    res = register_clients(
+        ("codex",), home=tmp_path, env={}, platform="darwin", command="/new/hwp-agent"
+    )
+    assert res[0].status == "updated"
+
+    result = codex_cfg.read_text(encoding="utf-8")
+    parsed = tomllib.loads(result)
+    assert parsed["mcp_servers"]["hwp-agent"]["command"] == "/new/hwp-agent"
+    assert "# note: { some_template_key } and { extra }" in result
+
+
+def test_codex_preserve_datetime_custom_fields(tmp_path: Path) -> None:
+    codex_cfg = config_path_for("codex", home=tmp_path, env={}, platform="darwin")
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        "[mcp_servers]\n"
+        'hwp-agent.command = "/old/hwp-agent"\n'
+        'hwp-agent.args = ["mcp"]\n'
+        "hwp-agent.installed_at = 2026-10-16T12:30:00Z\n"
+        "hwp-agent.installed_date = 2026-10-16\n"
+        "hwp-agent.installed_time = 12:30:00\n"
+    )
+    codex_cfg.write_text(content, encoding="utf-8")
+
+    res = register_clients(
+        ("codex",), home=tmp_path, env={}, platform="darwin", command="/new/hwp-agent"
+    )
+    assert res[0].status == "updated"
+
+    result = codex_cfg.read_text(encoding="utf-8")
+    parsed = tomllib.loads(result)
+    assert parsed["mcp_servers"]["hwp-agent"]["command"] == "/new/hwp-agent"
+    assert parsed["mcp_servers"]["hwp-agent"]["installed_date"] == datetime.date(2026, 10, 16)
+
 

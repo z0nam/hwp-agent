@@ -14,6 +14,7 @@ settings in the same file are preserved.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -508,6 +509,8 @@ def _toml_key(k: str) -> str:
 
 def _toml_format_value(v: object) -> str:
     """Recursively format a value for TOML inline serialization, raising ValueError on unsupported types."""
+    if isinstance(v, (datetime.datetime, datetime.date, datetime.time)):
+        return v.isoformat()
     if isinstance(v, str):
         return json.dumps(v, ensure_ascii=False)
     if isinstance(v, bool):
@@ -541,29 +544,86 @@ def _codex_section_text(command: str, extra: dict[str, object] | None = None) ->
     return "\n".join(lines) + "\n"
 
 
+_MCP_SEG = r'(?:mcp_servers|"mcp_servers"|\'mcp_servers\')'
+_HWP_SEG = r'(?:hwp-agent|"hwp-agent"|\'hwp-agent\')'
+_DOT = r"[ \t]*\.[ \t]*"
+
 _CODEX_MAIN_TABLE_RE = re.compile(
-    r"(?m)^\[mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')\][ \t]*(?:#[^\r\n]*)?\r?$"
+    rf"(?m)^\[[ \t]*{_MCP_SEG}{_DOT}{_HWP_SEG}[ \t]*\][ \t]*(?:#[^\r\n]*)?\r?$"
 )
 _CODEX_SECTION_HEADER_RE = re.compile(
-    r"(?m)^\[mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')(?:\.[^\]]+)?\][ \t]*(?:#[^\r\n]*)?\r?\n"
-)
-_CODEX_INLINE_RE = re.compile(
-    r"(?m)^([ \t]*(?:hwp-agent|\"hwp-agent\"|'hwp-agent')[ \t]*=[ \t]*\{)(.*)(\}[ \t]*(?:#[^\r\n]*)?)\r?$"
-)
-_CODEX_INLINE_LINE_RE = re.compile(
-    r"(?m)^[ \t]*(?:hwp-agent|\"hwp-agent\"|'hwp-agent')[ \t]*=[ \t]*\{.*\}[ \t]*(?:#[^\r\n]*)?\r?\n?"
+    rf"(?m)^\[[ \t]*{_MCP_SEG}{_DOT}{_HWP_SEG}(?:{_DOT}[^\]]+)?[ \t]*\][ \t]*(?:#[^\r\n]*)?\r?\n"
 )
 _CODEX_GLOBAL_DOTTED_RE = re.compile(
-    r"(?m)^[ \t]*mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')"
-    r"(?:\.[^=\r\n]+)*[ \t]*=.*$\r?\n?"
+    rf"(?m)^[ \t]*{_MCP_SEG}{_DOT}{_HWP_SEG}"
+    rf"(?:{_DOT}[^=\r\n]+)*[ \t]*=.*$\r?\n?"
 )
 _CODEX_MCP_TABLE_RE = re.compile(
-    r"(?m)^\[mcp_servers\][ \t]*(?:#[^\r\n]*)?\r?$"
+    rf"(?m)^\[[ \t]*{_MCP_SEG}[ \t]*\][ \t]*(?:#[^\r\n]*)?\r?$"
 )
 _CODEX_SCOPED_DOTTED_RE = re.compile(
-    r"(?m)^[ \t]*(?:hwp-agent|\"hwp-agent\"|'hwp-agent')"
-    r"(?:\.[^=\r\n]+)+[ \t]*=.*$\r?\n?"
+    rf"(?m)^[ \t]*{_HWP_SEG}(?:{_DOT}[^=\r\n]+)+[ \t]*=.*$\r?\n?"
 )
+
+
+def _search_inline_table(text: str) -> tuple[int, int, str, str, str] | None:
+    """Find the first inline table definition for hwp-agent in text.
+
+    Returns (line_start, line_end, prefix, inner, suffix) where:
+      - text[line_start:line_end] is the whole line
+      - prefix is e.g. 'hwp-agent = {'
+      - inner is the content between '{' and the matching '}'
+      - suffix is '}' + optional trailing whitespace, comment, and newline.
+    """
+    pattern = re.compile(rf"(?m)^([ \t]*{_HWP_SEG}[ \t]*=[ \t]*\{{)")
+    m = pattern.search(text)
+    if not m:
+        return None
+
+    line_start = m.start()
+    open_brace_end = m.end()
+    prefix = m.group(1)
+
+    depth = 0
+    in_quote = None
+    escape = False
+    close_brace_idx = None
+
+    for idx in range(open_brace_end, len(text)):
+        ch = text[idx]
+        if ch == "\n":
+            break
+        if in_quote:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == in_quote:
+                in_quote = None
+            continue
+        if ch in ('"', "'"):
+            in_quote = ch
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            if depth == 0:
+                close_brace_idx = idx
+                break
+            depth -= 1
+
+    if close_brace_idx is None:
+        return None
+
+    eol = text.find("\n", close_brace_idx)
+    line_end = eol + 1 if eol != -1 else len(text)
+    trailing = text[close_brace_idx + 1 : line_end]
+    if not re.match(r"^[ \t]*(?:#[^\r\n]*)?\r?\n?$", trailing):
+        return None
+
+    inner = text[open_brace_end:close_brace_idx]
+    suffix = text[close_brace_idx:line_end]
+    return (line_start, line_end, prefix, inner, suffix)
 
 
 def _clean_codex_mcp_servers_table(raw: str) -> str:
@@ -576,7 +636,12 @@ def _clean_codex_mcp_servers_table(raw: str) -> str:
         sec_end = header_end + next_m.start() if next_m else len(cleaned)
         sec_body = cleaned[header_end:sec_end]
         cleaned_sec = _CODEX_SCOPED_DOTTED_RE.sub("", sec_body)
-        cleaned_sec = _CODEX_INLINE_LINE_RE.sub("", cleaned_sec)
+        while True:
+            inline_info = _search_inline_table(cleaned_sec)
+            if not inline_info:
+                break
+            s, e, _, _, _ = inline_info
+            cleaned_sec = cleaned_sec[:s] + cleaned_sec[e:]
         cleaned = cleaned[:header_end] + cleaned_sec + cleaned[sec_end:]
     return cleaned
 
@@ -710,10 +775,10 @@ def _find_top_level_inline_key_span(inner: str, key: str) -> tuple[int, int] | N
 def _update_inline_table(line: str, command: str) -> str:
     cmd_str = f"command = {_toml_string(command)}"
     args_str = 'args = ["mcp"]'
-    m = _CODEX_INLINE_RE.match(line)
-    if not m:
+    inline_info = _search_inline_table(line)
+    if not inline_info:
         return line
-    prefix, inner, suffix = m.groups()
+    _, _, prefix, inner, suffix = inline_info
 
     cmd_span = _find_top_level_inline_key_span(inner, "command")
     if cmd_span is not None:
@@ -856,14 +921,11 @@ def _update_codex_main_section(
         next_m = re.search(r"(?m)^\[", raw[header_end:])
         sec_end = header_end + next_m.start() if next_m else len(raw)
         sec_body = raw[header_end:sec_end]
-        inline_match = _CODEX_INLINE_RE.search(sec_body)
-        if inline_match:
-            updated_line = _update_inline_table(inline_match.group(0), command)
-            updated_sec = (
-                sec_body[: inline_match.start()]
-                + updated_line
-                + sec_body[inline_match.end() :]
-            )
+        inline_info = _search_inline_table(sec_body)
+        if inline_info:
+            s, e, _, _, _ = inline_info
+            updated_line = _update_inline_table(sec_body[s:e], command)
+            updated_sec = sec_body[:s] + updated_line + sec_body[e:]
             return raw[:header_end] + updated_sec + raw[sec_end:]
 
     cleaned = _clean_codex_mcp_servers_table(raw)

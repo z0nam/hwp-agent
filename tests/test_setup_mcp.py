@@ -475,3 +475,54 @@ def test_cli_setup_force_with_json_keeps_stdout_clean(
     assert "registered" in payload
     # Diagnostics must have gone to stderr
     assert "downloading converter jar" in captured.err or "ok: jar ready" in captured.err
+
+
+def test_codex_toml_unicode_and_non_bmp_path(tmp_path: Path) -> None:
+    """Non-BMP characters (e.g. emojis in paths) must serialize as valid TOML Unicode scalars."""
+    codex_cfg = tmp_path / ".codex" / "config.toml"
+    emoji_cmd = r"C:\Users\홍길동🚀\AppData\Local\Programs\hwp-agent\hwp-agent.exe"
+
+    # 1. Register to a non-existent file
+    res = register_clients(
+        ("codex",),
+        home=tmp_path,
+        env={"USERPROFILE": str(tmp_path)},
+        platform="win32",
+        command=emoji_cmd,
+    )
+    assert res[0].status == "added"
+    raw = codex_cfg.read_text(encoding="utf-8")
+    parsed = tomllib.loads(raw)
+    assert parsed["mcp_servers"]["hwp-agent"]["command"] == emoji_cmd
+
+    # 2. Update existing table with another non-BMP path
+    emoji_cmd2 = r"C:\Users\홍길동🎉\hwp-agent.exe"
+    res2 = register_clients(
+        ("codex",),
+        home=tmp_path,
+        env={"USERPROFILE": str(tmp_path)},
+        platform="win32",
+        command=emoji_cmd2,
+    )
+    assert res2[0].status == "updated"
+    raw2 = codex_cfg.read_text(encoding="utf-8")
+    parsed2 = tomllib.loads(raw2)
+    assert parsed2["mcp_servers"]["hwp-agent"]["command"] == emoji_cmd2
+
+    # 3. Update inline table with non-BMP path
+    codex_cfg.write_text(
+        '[mcp_servers]\nhwp-agent = { command = "old", args = ["mcp"] }\n',
+        encoding="utf-8",
+    )
+    res3 = register_clients(
+        ("codex",),
+        home=tmp_path,
+        env={"USERPROFILE": str(tmp_path)},
+        platform="win32",
+        command=emoji_cmd,
+    )
+    assert res3[0].status == "updated"
+    raw3 = codex_cfg.read_text(encoding="utf-8")
+    parsed3 = tomllib.loads(raw3)
+    assert parsed3["mcp_servers"]["hwp-agent"]["command"] == emoji_cmd
+

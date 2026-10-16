@@ -408,10 +408,15 @@ def _unregister_json_client(
     return "removed"
 
 
+def _toml_string(val: str) -> str:
+    """Serialize a string as a TOML-safe literal UTF-8 string with escaped controls."""
+    return json.dumps(val, ensure_ascii=False)
+
+
 def _codex_section_text(command: str) -> str:
     return (
         f"[mcp_servers.{SERVER_NAME}]\n"
-        f"command = {json.dumps(command)}\n"
+        f"command = {_toml_string(command)}\n"
         f'args = ["mcp"]\n'
     )
 
@@ -429,7 +434,7 @@ _CODEX_DOTTED_RE = re.compile(
 
 
 def _update_inline_table(line: str, command: str) -> str:
-    cmd_str = f"command = {json.dumps(command)}"
+    cmd_str = f"command = {_toml_string(command)}"
     args_str = 'args = ["mcp"]'
     m = _CODEX_INLINE_RE.match(line)
     if not m:
@@ -459,7 +464,7 @@ def _update_codex_main_section(raw: str, command: str) -> str:
         sec_end = header_end + next_match.start() if next_match else len(raw)
 
         sec_body = raw[header_end:sec_end]
-        cmd_str = f"command = {json.dumps(command)}"
+        cmd_str = f"command = {_toml_string(command)}"
         args_str = 'args = ["mcp"]'
 
         if re.search(r"(?m)^[ \t]*command[ \t]*=.*$", sec_body):
@@ -495,12 +500,16 @@ def _register_codex_toml(path: Path, command: str, *, dry_run: bool = False) -> 
     block = _codex_section_text(command)
 
     if not path.is_file():
+        # Validate that the generated block is valid TOML before writing
+        tomllib.loads(block)
         if not dry_run:
             _write_text_atomic(path, block)
         return "added"
 
     raw = path.read_text(encoding="utf-8")
     if not raw.strip():
+        # Validate that the generated block is valid TOML before writing
+        tomllib.loads(block)
         if not dry_run:
             _write_text_atomic(path, block)
         return "added"

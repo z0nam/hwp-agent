@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -155,9 +156,9 @@ def config_path_for(
         return Path(xdg) / "Claude" / "claude_desktop_config.json"
 
     if client == "claude-code":
-        override = resolved_env.get("CLAUDE_CONFIG_FILE")
-        if override:
-            return Path(override)
+        claude_dir = resolved_env.get("CLAUDE_CONFIG_DIR")
+        if claude_dir:
+            return Path(claude_dir) / ".claude.json"
         return resolved_home / ".claude.json"
 
     if client == "codex":
@@ -209,7 +210,12 @@ def is_client_installed(
         return False
 
     if client == "claude-code":
-        if cfg.exists() or (resolved_home / ".claude").is_dir():
+        claude_dir = (
+            Path(resolved_env["CLAUDE_CONFIG_DIR"])
+            if "CLAUDE_CONFIG_DIR" in resolved_env
+            else resolved_home / ".claude"
+        )
+        if cfg.exists() or claude_dir.is_dir():
             return True
         if which_fn("claude") is not None:
             return True
@@ -319,9 +325,30 @@ def _desired_json_entry(client: str, command: str) -> dict[str, object]:
 
 def _write_text_atomic(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.replace(path)
+    mode = 0o600
+    if path.exists():
+        try:
+            mode = os.stat(path).st_mode & 0o777
+        except OSError:
+            pass
+    fd, tmp_path_str = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    tmp_path = Path(tmp_path_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        try:
+            os.chmod(tmp_path, mode)
+        except OSError:
+            pass
+        tmp_path.replace(path)
+    except BaseException:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _is_same_command(actual: object, expected: str | None) -> bool:

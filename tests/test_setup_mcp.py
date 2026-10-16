@@ -11,9 +11,11 @@ import pytest
 from hwp_agent.cli.main import main as cli_main
 from hwp_agent.ops.setup_mcp import (
     CLIENT_ORDER,
+    _write_text_atomic,
     config_path_for,
     detect_installed_clients,
     format_registration_report,
+    is_client_installed,
     register_clients,
     resolve_targets,
     unregister_clients,
@@ -280,7 +282,7 @@ def test_cli_setup_register_and_guide_out_utf8_bom(
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / ".codex"))
     monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path / ".gemini"))
-    monkeypatch.setenv("CLAUDE_CONFIG_FILE", str(tmp_path / ".claude.json"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
 
     guide_file = tmp_path / "guide.txt"
     rc = cli_main(
@@ -527,7 +529,7 @@ def test_cli_setup_force_with_json_keeps_stdout_clean(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    monkeypatch.setenv("CLAUDE_CONFIG_FILE", str(tmp_path / ".claude.json"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
 
     # Mock download_jar so we don't hit the network in test
     fake_jar = tmp_path / "fake.jar"
@@ -689,6 +691,50 @@ def test_register_and_unregister_with_utf8_bom(tmp_path: Path) -> None:
     assert res_toml[0].status == "added"
     parsed_toml = tomllib.loads(codex_cfg.read_text(encoding="utf-8-sig"))
     assert parsed_toml["mcp_servers"]["hwp-agent"]["command"] == "/bin/hwp-agent"
+
+
+def test_claude_config_dir_resolution(tmp_path: Path) -> None:
+    custom_dir = tmp_path / "custom_claude"
+    custom_dir.mkdir(parents=True)
+    cfg = config_path_for(
+        "claude-code", home=tmp_path, env={"CLAUDE_CONFIG_DIR": str(custom_dir)}
+    )
+    assert cfg == custom_dir / ".claude.json"
+
+    # Test is_client_installed with CLAUDE_CONFIG_DIR
+    assert not is_client_installed(
+        "claude-code",
+        home=tmp_path,
+        env={"CLAUDE_CONFIG_DIR": str(tmp_path / "nonexistent")},
+        which_fn=lambda _: None,
+    )
+    assert is_client_installed(
+        "claude-code",
+        home=tmp_path,
+        env={"CLAUDE_CONFIG_DIR": str(custom_dir)},
+        which_fn=lambda _: None,
+    )
+
+
+def test_write_text_atomic_permissions(tmp_path: Path) -> None:
+    import os
+    import sys
+
+    target = tmp_path / "secret.json"
+    _write_text_atomic(target, '{"key": "val"}')
+    assert target.read_text(encoding="utf-8") == '{"key": "val"}'
+
+    if sys.platform != "win32":
+        # Newly created file must be 0600
+        mode = os.stat(target).st_mode & 0o777
+        assert mode == 0o600
+
+        # Updating existing file must preserve its permissions
+        os.chmod(target, 0o640)
+        _write_text_atomic(target, '{"key": "new_val"}')
+        assert target.read_text(encoding="utf-8") == '{"key": "new_val"}'
+        assert os.stat(target).st_mode & 0o777 == 0o640
+
 
 
 

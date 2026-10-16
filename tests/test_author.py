@@ -2199,6 +2199,39 @@ def test_neutralize_reference_table_caption_and_span_schema_order() -> None:
         assert tc_tags.index("cellSpan") < tc_tags.index("cellSz")
 
 
+def test_neutralize_reference_table_upgrades_existing_token_to_sample() -> None:
+    """_neutralize_reference_table upgrades an existing {{table_template}} token to :sample so it drops on build (#30)."""
+    import importlib.util
+    from lxml import etree
+    from hwp_agent.ops.author import _caption_text
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # Table whose caption already carries a plain {{table_template}} token
+    xml = (
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:caption><hp:subList><hp:p>'
+        f'<hp:run><hp:t>&lt;표 1&gt; {{{{table_template}}}}</hp:t></hp:run>'
+        f'</hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    p = etree.fromstring(xml.encode("utf-8"))
+    tbl = p.find(f".//{{{hp}}}tbl")
+    mod._neutralize_reference_table(p, tbl)
+
+    cap_txt = _caption_text(tbl)
+    assert "<표 1> {{table_template:sample}}" == cap_txt
+
+
+
 
 
 

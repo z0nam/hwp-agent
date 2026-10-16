@@ -606,7 +606,11 @@ def _neutralize_reference_table(
 
     cap = tbl.find(_hp("caption"))
     if cap is not None:
-        if not _TABLE_TOKEN_RE.search(_caption_text(tbl)):
+        if _TABLE_TOKEN_RE.search(_caption_text(tbl)):
+            for t in cap.findall(".//" + _hp("t")):
+                if t.text and _TABLE_TOKEN_RE.search(t.text):
+                    t.text = _TABLE_TOKEN_RE.sub("{{table_template:sample}}", t.text)
+        else:
             ts = cap.findall(".//" + _hp("t"))
             if ts:
                 target_idx = None

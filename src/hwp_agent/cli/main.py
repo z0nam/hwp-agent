@@ -225,7 +225,11 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 if getattr(args, "json", False):
                     print(
                         json.dumps(
-                            {"actions": [], "message": msg},
+                            {
+                                "dry_run": bool(getattr(args, "dry_run", False)),
+                                "actions": [],
+                                "message": msg,
+                            },
                             ensure_ascii=False,
                             indent=2,
                         )

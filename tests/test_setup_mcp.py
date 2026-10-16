@@ -568,3 +568,52 @@ def test_codex_toml_header_comment(tmp_path: Path) -> None:
     assert parsed_after["other"]["key"] == "val"
 
 
+def test_register_and_unregister_with_utf8_bom(tmp_path: Path) -> None:
+    """Configs written with a UTF-8 BOM (e.g. from PowerShell Out-File) must decode cleanly."""
+    claude_cfg = config_path_for("claude-code", home=tmp_path, env={}, platform="darwin")
+    claude_cfg.parent.mkdir(parents=True, exist_ok=True)
+    # Write JSON with UTF-8 BOM
+    bom_json = b'\xef\xbb\xbf{\n  "mcpServers": {\n    "other": {"command": "other"}\n  }\n}'
+    claude_cfg.write_bytes(bom_json)
+
+    # Register should succeed without JSONDecodeError
+    res = register_clients(
+        ("claude-code",),
+        home=tmp_path,
+        env={},
+        platform="darwin",
+        command="/bin/hwp-agent",
+    )
+    assert res[0].status == "added"
+    data = json.loads(claude_cfg.read_text(encoding="utf-8-sig"))
+    assert data["mcpServers"]["other"] == {"command": "other"}
+    assert data["mcpServers"]["hwp-agent"]["command"] == "/bin/hwp-agent"
+
+    # Unregister with BOM
+    claude_cfg.write_bytes(
+        b'\xef\xbb\xbf{\n  "mcpServers": {\n    "hwp-agent": {"command": "/bin/hwp-agent"}\n  }\n}'
+    )
+    unreg = unregister_clients(("claude-code",), home=tmp_path, env={}, platform="darwin")
+    assert unreg[0].status == "removed"
+    data_after = json.loads(claude_cfg.read_text(encoding="utf-8-sig"))
+    assert "hwp-agent" not in data_after.get("mcpServers", {})
+
+    # Also test TOML with UTF-8 BOM
+    codex_cfg = config_path_for("codex", home=tmp_path, env={}, platform="darwin")
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    bom_toml = b'\xef\xbb\xbf[mcp_servers]\nother = { command = "other" }\n'
+    codex_cfg.write_bytes(bom_toml)
+
+    res_toml = register_clients(
+        ("codex",),
+        home=tmp_path,
+        env={},
+        platform="darwin",
+        command="/bin/hwp-agent",
+    )
+    assert res_toml[0].status == "added"
+    parsed_toml = tomllib.loads(codex_cfg.read_text(encoding="utf-8-sig"))
+    assert parsed_toml["mcp_servers"]["hwp-agent"]["command"] == "/bin/hwp-agent"
+
+
+

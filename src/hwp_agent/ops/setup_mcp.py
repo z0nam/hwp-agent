@@ -346,7 +346,7 @@ def _register_json_client(
     if not path.is_file():
         data: dict[str, object] = {}
     else:
-        raw = path.read_text(encoding="utf-8").strip()
+        raw = path.read_text(encoding="utf-8-sig").strip()
         if not raw:
             data = {}
         else:
@@ -384,7 +384,7 @@ def _unregister_json_client(
 ) -> str:
     if not path.is_file():
         return "noop"
-    raw = path.read_text(encoding="utf-8").strip()
+    raw = path.read_text(encoding="utf-8-sig").strip()
     if not raw:
         return "noop"
     loaded = json.loads(raw)
@@ -509,7 +509,7 @@ def _register_codex_toml(path: Path, command: str, *, dry_run: bool = False) -> 
             _write_text_atomic(path, block)
         return "added"
 
-    raw = path.read_text(encoding="utf-8")
+    raw = path.read_text(encoding="utf-8-sig")
     if not raw.strip():
         # Validate that the generated block is valid TOML before writing
         tomllib.loads(block)
@@ -553,7 +553,7 @@ def _unregister_codex_toml(
 ) -> str:
     if not path.is_file():
         return "noop"
-    raw = path.read_text(encoding="utf-8")
+    raw = path.read_text(encoding="utf-8-sig")
     if not raw.strip():
         return "noop"
     parsed = tomllib.loads(raw)

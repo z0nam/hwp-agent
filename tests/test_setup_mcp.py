@@ -444,6 +444,28 @@ def test_register_updates_inline_and_dotted_codex_toml(tmp_path: Path) -> None:
     assert "hwp-agent" not in parsed_after["mcp_servers"]
     assert "other" in parsed_after["mcp_servers"]
 
+    # 1-c. Nested inline table: env = { FOO = "bar" }
+    codex_cfg.write_text(
+        '[mcp_servers]\n'
+        'hwp-agent = { command = "/old/hwp", env = { PROFILE = "default" } }\n'
+        'other = { command = "/bin/other" }\n',
+        encoding="utf-8",
+    )
+    actions_nested = register_clients(
+        ("codex",), command=new_cmd, home=tmp_path, env={}, platform="darwin"
+    )
+    assert actions_nested[0].status == "updated"
+    parsed_nested = tomllib.loads(codex_cfg.read_text(encoding="utf-8"))
+    assert parsed_nested["mcp_servers"]["hwp-agent"]["command"] == new_cmd
+    assert parsed_nested["mcp_servers"]["hwp-agent"]["env"] == {"PROFILE": "default"}
+
+    # Unregister removes the entire nested inline entry cleanly without leaving dangling braces
+    unreg_nested = unregister_clients(("codex",), home=tmp_path, env={}, platform="darwin")
+    assert unreg_nested[0].status == "removed"
+    parsed_after_nested = tomllib.loads(codex_cfg.read_text(encoding="utf-8"))
+    assert "hwp-agent" not in parsed_after_nested["mcp_servers"]
+    assert "other" in parsed_after_nested["mcp_servers"]
+
     # 2. Table-scoped dotted keys under [mcp_servers]: hwp-agent.command = ...
     codex_cfg.write_text(
         '[mcp_servers]\n'

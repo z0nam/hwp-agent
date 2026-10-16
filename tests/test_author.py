@@ -2258,6 +2258,40 @@ def test_fill_sections_with_explicit_table_template_still_drops_sample_table(tmp
     assert "{{table_template}}" not in all_text
 
 
+def test_neutralize_reference_table_caption_token_split_across_multiple_t() -> None:
+    """_neutralize_reference_table upgrades caption token even when split across runs like {{table and _template}} (#30)."""
+    import importlib.util
+    from lxml import etree
+    from hwp_agent.ops.author import _caption_text
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # Caption where {{table_template}} is split across two <hp:t> elements
+    xml = (
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:caption><hp:subList><hp:p>'
+        f'<hp:run><hp:t>&lt;표 1&gt; {{{{table</hp:t></hp:run>'
+        f'<hp:run><hp:t>_template}}}}</hp:t></hp:run>'
+        f'</hp:p></hp:subList></hp:caption>'
+        f'<hp:tr><hp:tc header="1"/><hp:tc header="1"/></hp:tr>'
+        f'<hp:tr><hp:tc header="0"/><hp:tc header="0"/></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    p = etree.fromstring(xml.encode("utf-8"))
+    tbl = p.find(f".//{{{hp}}}tbl")
+    mod._neutralize_reference_table(p, tbl)
+
+    cap_txt = _caption_text(tbl)
+    assert "<표 1> {{table_template:sample}}" == cap_txt
+
+
+
 
 
 

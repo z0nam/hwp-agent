@@ -606,29 +606,30 @@ def _neutralize_reference_table(
 
     cap = tbl.find(_hp("caption"))
     if cap is not None:
-        if _TABLE_TOKEN_RE.search(_caption_text(tbl)):
-            for t in cap.findall(".//" + _hp("t")):
-                if t.text and _TABLE_TOKEN_RE.search(t.text):
-                    t.text = _TABLE_TOKEN_RE.sub("{{table_template:sample}}", t.text)
-        else:
-            ts = cap.findall(".//" + _hp("t"))
-            if ts:
-                target_idx = None
-                framing = None
-                for idx, t in enumerate(ts):
-                    txt = t.text or ""
-                    m = re.search(r"^(.*?[>\]])", txt)
-                    if m:
-                        target_idx = idx
-                        framing = m.group(1)
-                        break
-                if target_idx is not None:
-                    ts[target_idx].text = f"{framing} {{{{table_template:sample}}}}".strip()
-                    for t in ts[target_idx + 1:]:
-                        t.text = ""
+        ts = cap.findall(".//" + _hp("t"))
+        if ts:
+            target_idx = None
+            framing = None
+            for idx, t in enumerate(ts):
+                txt = t.text or ""
+                m = re.search(r"^(.*?[>\]])", txt)
+                if m:
+                    target_idx = idx
+                    framing = m.group(1)
+                    break
+            if target_idx is not None:
+                ts[target_idx].text = f"{framing} {{{{table_template:sample}}}}".strip()
+                for t in ts[target_idx + 1:]:
+                    t.text = ""
+            else:
+                full_text = "".join(t.text or "" for t in ts)
+                if _TABLE_TOKEN_RE.search(full_text):
+                    new_text = _TABLE_TOKEN_RE.sub("{{table_template:sample}}", full_text).strip()
                 else:
-                    last = ts[-1].text or ""
-                    ts[-1].text = f"{last.rstrip()} {{{{table_template:sample}}}}".strip()
+                    new_text = f"{full_text.rstrip()} {{{{table_template:sample}}}}".strip()
+                ts[0].text = new_text
+                for t in ts[1:]:
+                    t.text = ""
         for lsa in cap.findall(".//" + _hp("linesegarray")):
             lsa.getparent().remove(lsa)
     else:

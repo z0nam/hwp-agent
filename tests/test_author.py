@@ -1526,3 +1526,69 @@ def test_refresh_strip_keeps_neutralized_table_template(tmp_path: Path) -> None:
     assert fmt.last.left_bf == "14" and fmt.last.style == "8"
     assert fmt.note is not None and fmt.note.style == "10"
 
+
+def test_neutralize_reference_table_handles_merged_cells() -> None:
+    """_neutralize_reference_table resets vertical rowSpans and derives note colSpan
+    from the logical column count even when rows contain merged cells (#30 Codex review)."""
+    import importlib.util
+    from xml.etree import ElementTree as ET
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    # 4 rows, 3 logical columns.
+    # r1 c0 has rowSpan="3" (crossing dropped rows).
+    # r3 has a horizontally merged cell (2 physical cells, colSpan="2" + "1").
+    xml = (
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="3">'
+        f'<hp:sz width="3000" height="4000"/>'
+        f'<hp:tr>'
+        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="1" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'</hp:tr>'
+        f'<hp:tr>'
+        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="3"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="1" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'</hp:tr>'
+        f'<hp:tr>'
+        f'<hp:tc><hp:cellAddr colAddr="1" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'</hp:tr>'
+        f'<hp:tr>'
+        f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="3"/><hp:cellSpan colSpan="2" rowSpan="1"/><hp:cellSz width="2000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc><hp:cellAddr colAddr="2" rowAddr="3"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="1000"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'</hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    from lxml import etree
+    para = etree.fromstring(xml.encode("utf-8"))
+    tbl = para.find(f".//{{{hp}}}tbl")
+    mod._neutralize_reference_table(para, tbl, sibling_note_style=("10", "22", "23"))
+
+    trs = tbl.findall(f"{{{hp}}}tr")
+    # All kept cells have rowSpan normalized to 1 (no dangling vertical spans)
+    for tr in trs:
+        for tc in tr.findall(f"{{{hp}}}tc"):
+            span = tc.find(f"{{{hp}}}cellSpan")
+            if span is not None:
+                assert span.get("rowSpan") == "1"
+
+    # Synthesized note row (last tr) spans all 3 logical columns, not physical 2
+    note_tr = trs[-1]
+    assert len(note_tr.findall(f"{{{hp}}}tc")) == 1
+    note_tc = note_tr.find(f"{{{hp}}}tc")
+    note_span = note_tc.find(f"{{{hp}}}cellSpan")
+    assert note_span is not None
+    assert note_span.get("colSpan") == "3"
+    assert note_span.get("rowSpan") == "1"
+    note_addr = note_tc.find(f"{{{hp}}}cellAddr")
+    assert note_addr is not None
+    assert note_addr.get("colAddr") == "0"
+
+

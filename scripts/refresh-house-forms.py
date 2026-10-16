@@ -258,13 +258,16 @@ def _pick_reference_table(paras: list, header_root=None):
             continue
         rows = tbl.findall(_hp("tr"))
         ncols = max((len(tr.findall(_hp("tc"))) for tr in rows), default=0)
-        if len(rows) < 2 or ncols < 2:
-            continue
+        has_vmerge = any(
+            int(span.get("rowSpan", "1") or 1) > 1
+            for tc in tbl.findall(".//" + _hp("tc"))
+            if (span := tc.find(_hp("cellSpan"))) is not None
+        )
         designated = bool(_TABLE_TOKEN_RE.search(_caption_text(tbl)))
         sib_note = _sibling_note_style(p, header_root)
         has_note = (_table_format(tbl).note is not None) or (sib_note is not None)
         full_bands = len(rows) >= 4
-        rank = (designated, has_note, full_bands, -idx)
+        rank = (designated, not has_vmerge, has_note, full_bands, -idx)
         if best_rank is None or rank > best_rank:
             best_rank = rank
             best = (p, tbl, sib_note)
@@ -333,6 +336,17 @@ def _neutralize_reference_table(
     header_rows = rows[:h]
     rest = rows[h:]
 
+    # 논리 열 수: 테이블의 colCnt 속성 또는 각 행의 colSpan 합산 최댓값
+    logical_cols = int(tbl.get("colCnt", "0") or 0)
+    if not logical_cols:
+        for tr in rows:
+            r_cols = sum(
+                int(span.get("colSpan", "1") or 1) if (span := tc.find(_hp("cellSpan"))) is not None else 1
+                for tc in tr.findall(_hp("tc"))
+            )
+            logical_cols = max(logical_cols, r_cols)
+    logical_cols = max(logical_cols, 1)
+
     has_existing_note = _table_format(tbl).note is not None and len(rest) > 1
     existing_note = [rest[-1]] if has_existing_note else []
     data_body = rest[:-1] if has_existing_note else rest
@@ -355,6 +369,9 @@ def _neutralize_reference_table(
             _set_cell_text_overwrite(
                 tc, generic[ci] if (ri == 0 and ci < len(generic)) else ""
             )
+            span = tc.find(_hp("cellSpan"))
+            if span is not None and int(span.get("rowSpan", "1") or 1) > 1:
+                span.set("rowSpan", "1")
             for lsa in tc.findall(".//" + _hp("linesegarray")):
                 lsa.getparent().remove(lsa)
 
@@ -362,6 +379,9 @@ def _neutralize_reference_table(
         for tc in tr.findall(_hp("tc")):
             tc.set("header", "0")
             _set_cell_text_overwrite(tc, "")
+            span = tc.find(_hp("cellSpan"))
+            if span is not None and int(span.get("rowSpan", "1") or 1) > 1:
+                span.set("rowSpan", "1")
             if body_cell_style is not None:
                 b_sid, b_pid, b_cid = body_cell_style
                 for p in tc.findall(_hp("subList") + "/" + _hp("p")):
@@ -387,6 +407,9 @@ def _neutralize_reference_table(
             for tc in tr.findall(_hp("tc")):
                 tc.set("header", "0")
                 _set_cell_text_overwrite(tc, "")
+                span = tc.find(_hp("cellSpan"))
+                if span is not None and int(span.get("rowSpan", "1") or 1) > 1:
+                    span.set("rowSpan", "1")
                 sz = tc.find(_hp("cellSz"))
                 if sz is not None:
                     sz.set("height", "0")
@@ -395,12 +418,13 @@ def _neutralize_reference_table(
     elif note_style is not None and kept_body:
         note_tr = copy.deepcopy(kept_body[-1])
         tcs = note_tr.findall(_hp("tc"))
-        ncols = len(tcs)
-        total_w = sum(
+        tbl_w = int(tbl.find(_hp("sz")).get("width", "0") or 0) if tbl.find(_hp("sz")) is not None else 0
+        sum_w = sum(
             int(s.get("width", "0"))
             for tc in tcs
             if (s := tc.find(_hp("cellSz"))) is not None
         )
+        total_w = tbl_w or sum_w
         tc0 = tcs[0]
         for extra in tcs[1:]:
             note_tr.remove(extra)
@@ -409,7 +433,7 @@ def _neutralize_reference_table(
             tc0.set("borderFillIDRef", borderless_bf)
         span = tc0.find(_hp("cellSpan"))
         if span is not None:
-            span.set("colSpan", str(ncols))
+            span.set("colSpan", str(logical_cols))
             span.set("rowSpan", "1")
         sz = tc0.find(_hp("cellSz"))
         if sz is not None:
@@ -436,11 +460,15 @@ def _neutralize_reference_table(
     final_rows = tbl.findall(_hp("tr"))
     tbl.set("rowCnt", str(len(final_rows)))
     for ri, tr in enumerate(final_rows):
-        for ci, tc in enumerate(tr.findall(_hp("tc"))):
+        col_cursor = 0
+        for tc in tr.findall(_hp("tc")):
             addr = tc.find(_hp("cellAddr"))
             if addr is not None:
                 addr.set("rowAddr", str(ri))
-                addr.set("colAddr", str(ci))
+                addr.set("colAddr", str(col_cursor))
+            span = tc.find(_hp("cellSpan"))
+            c_span = int(span.get("colSpan", "1") or 1) if span is not None else 1
+            col_cursor += c_span
 
     cap = tbl.find(_hp("caption"))
     if cap is not None:

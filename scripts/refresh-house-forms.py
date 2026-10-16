@@ -297,7 +297,6 @@ def _pick_reference_table(paras: list, header_root=None):
         _TABLE_TOKEN_RE,
         _caption_text,
         _is_header_row,
-        _table_format,
     )
 
     best = None
@@ -411,10 +410,8 @@ def _neutralize_reference_table(
 
     from hwp_agent.ops.author import (
         _TABLE_TOKEN_RE,
-        _caption_text,
         _fit_table_height,
         _is_header_row,
-        _table_format,
     )
     from hwp_agent.ops.form import _set_cell_text_overwrite
 
@@ -446,7 +443,9 @@ def _neutralize_reference_table(
     if not logical_cols:
         for tr in rows:
             r_cols = sum(
-                int(span.get("colSpan", "1") or 1) if (span := tc.find(_hp("cellSpan"))) is not None else 1
+                int(span.get("colSpan", "1") or 1)
+                if (span := tc.find(_hp("cellSpan"))) is not None
+                else 1
                 for tc in tr.findall(_hp("tc"))
             )
             logical_cols = max(logical_cols, r_cols)
@@ -540,7 +539,8 @@ def _neutralize_reference_table(
     elif note_style is not None and kept_body:
         note_tr = copy.deepcopy(kept_body[-1])
         tcs = note_tr.findall(_hp("tc"))
-        tbl_w = int(tbl.find(_hp("sz")).get("width", "0") or 0) if tbl.find(_hp("sz")) is not None else 0
+        tbl_sz = tbl.find(_hp("sz"))
+        tbl_w = int(tbl_sz.get("width", "0") or 0) if tbl_sz is not None else 0
         sum_w = sum(
             int(s.get("width", "0"))
             for tc in tcs

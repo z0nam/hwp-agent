@@ -375,7 +375,8 @@ def _expand_vertical_merges(tbl) -> None:
                 row_cells.append(tc)
             else:
                 clone = copy.deepcopy(tc)
-                clone.set("header", "0")
+                hdr = tc.get("header") or ("1" if any(x.get("header") == "1" for x in tr.findall(_hp("tc"))) else "0")
+                clone.set("header", hdr)
                 _set_cell_text_overwrite(clone, "")
                 cl_span = clone.find(_hp("cellSpan"))
                 if cl_span is not None:

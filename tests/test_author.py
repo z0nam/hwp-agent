@@ -1627,4 +1627,35 @@ def test_pick_reference_table_rejects_undersized() -> None:
     assert mod._pick_reference_table([p1, p2]) is None
 
 
+def test_expand_vertical_merges_preserves_header_flag() -> None:
+    """_expand_vertical_merges preserves header='1' on covered clones when expanding multi-row headers (#30)."""
+    import importlib.util
+    from lxml import etree
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    # r0: c0 has rowSpan="2" and header="1", c1 header="1"
+    # r1: covered c0 omitted, c1 header="1"
+    xml = (
+        f'<hp:tbl xmlns:hp="{hp}" colCnt="2">'
+        f'<hp:tr><hp:tc header="1"><hp:cellSpan colSpan="1" rowSpan="2"/><hp:subList><hp:p/></hp:subList></hp:tc>'
+        f'<hp:tc header="1"><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList><hp:p/></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="1"><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList><hp:p/></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl>'
+    )
+    tbl = etree.fromstring(xml.encode("utf-8"))
+    mod._expand_vertical_merges(tbl)
+    r1_tcs = tbl.findall(f"{{{hp}}}tr")[1].findall(f"{{{hp}}}tc")
+    assert len(r1_tcs) == 2
+    # The clone inserted in row 1 for col 0 preserves header="1"
+    assert r1_tcs[0].get("header") == "1"
+    assert r1_tcs[1].get("header") == "1"
+
+
+
 

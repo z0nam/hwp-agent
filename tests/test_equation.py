@@ -133,6 +133,9 @@ def test_overset_approximated_as_superscript() -> None:
         ("$5 and $10", [("$5 and $10", None)]),
         ("비용 $ 100 $ 원", [("비용 $ 100 $ 원", None)]),
         (r"\$x\$", [(r"\$x\$", None)]),
+        # Korean particles glue to math; extract emits markers this way
+        ("식$x^2$은", [("식", None), ("x^2", "inline"), ("은", None)]),
+        ("값$\\hwp{x}$이다", [("값", None), ("\\hwp{x}", "inline"), ("이다", None)]),
     ],
 )
 def test_math_pieces(text, expected) -> None:
@@ -264,3 +267,10 @@ def test_extract_hangul_authored_equations() -> None:
     md = extract_markdown(APPENDIX)
     assert r"$\hwp{bar x}$" in md
     assert r"\hwp{bar x +- 1.96 times s / sqrt N = 68.0 +- 2.7}" in md
+
+
+def test_text_insert_rejects_display_math(tmp_path) -> None:
+    from hwp_agent.ops.text_edit import TextEditError, insert_markdown
+
+    with pytest.raises(TextEditError, match="수식"):
+        insert_markdown(tmp_path / "none.hwpx", "$$x^2$$", anchor="x")

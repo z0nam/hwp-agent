@@ -684,10 +684,12 @@ def latex_to_hwp(latex: str) -> EquationResult:
 # Markdown math spans
 
 #: ``$$…$$`` (display) or ``$…$`` (inline, pandoc rules: no space just inside the
-#: dollars, closing ``$`` not followed by a digit — so "$5 and $10" is not math)
+#: dollars, closing ``$`` not followed by a digit — so "$5 and $10" is not math).
+#: The opening ``$`` may follow a letter: Korean prose glues particles to math
+#: (``식$x^2$은``), and extract emits markers that way.
 _MATH_RE = re.compile(
     r"(?<![\\$])\$\$(?P<d>.+?)\$\$"
-    r"|(?<![\\$\w])\$(?P<i>[^\s$](?:[^$]*?[^\s\\$])?)\$(?![\d$])",
+    r"|(?<![\\$])\$(?P<i>[^\s$](?:[^$]*?[^\s\\$])?)\$(?![\d$])",
     re.S,
 )
 

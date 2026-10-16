@@ -1833,6 +1833,48 @@ def test_pick_reference_table_does_not_treat_total_row_as_note() -> None:
     assert picked is not None and picked[0] is p2
 
 
+def test_neutralize_reference_table_preserves_note_styling_on_existing_note() -> None:
+    """_neutralize_reference_table normalizes existing note rows to note_style so _table_format detects them (#30)."""
+    import importlib.util
+    from lxml import etree
+    from hwp_agent.ops.author import _table_format
+
+    spec = importlib.util.spec_from_file_location(
+        "refresh_house_forms", REPO_ROOT / "scripts" / "refresh-house-forms.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+    # Table with header, body, and trailing note that currently shares body styleIDRef="10"
+    xml = (
+        f'<hp:p xmlns:hp="{hp}"><hp:run><hp:tbl colCnt="2">'
+        f'<hp:tr><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>항목</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="1"><hp:subList><hp:p styleIDRef="5"><hp:run><hp:t>값</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>A</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc header="0"><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>10</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'<hp:tr><hp:tc header="0"><hp:cellSpan colSpan="2"/><hp:subList><hp:p styleIDRef="10"><hp:run><hp:t>주) 2024년 기준</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr>'
+        f'</hp:tbl></hp:run></hp:p>'
+    )
+    p = etree.fromstring(xml.encode("utf-8"))
+    tbl = p.find(f".//{{{hp}}}tbl")
+
+    # Neutralize with note_style = ("99", "88", "77")
+    mod._neutralize_reference_table(p, tbl, sibling_note_style=("99", "88", "77"))
+
+    # The existing note cell should now have styleIDRef="99" and blank text
+    trs = tbl.findall(f"{{{hp}}}tr")
+    note_tr = trs[-1]
+    p_note = note_tr.find(f".//{{{hp}}}p")
+    assert p_note is not None
+    assert p_note.get("styleIDRef") == "99"
+
+    # When _table_format reads this neutralized table, it successfully detects fmt.note!
+    fmt = _table_format(tbl)
+    assert fmt.note is not None
+    assert fmt.note.style == "99"
+
+
+
 
 
 

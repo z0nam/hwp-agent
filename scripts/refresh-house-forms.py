@@ -518,6 +518,18 @@ def _neutralize_reference_table(
             for tc in tr.findall(_hp("tc")):
                 tc.set("header", "0")
                 _set_cell_text_overwrite(tc, "")
+                if note_style is not None:
+                    n_sid, n_pid, n_cid = note_style
+                    for p in tc.findall(_hp("subList") + "/" + _hp("p")):
+                        if n_sid:
+                            p.set("styleIDRef", n_sid)
+                        if n_pid:
+                            p.set("paraPrIDRef", n_pid)
+                        for run in p.findall(_hp("run")):
+                            if n_cid:
+                                run.set("charPrIDRef", n_cid)
+                if borderless_bf:
+                    tc.set("borderFillIDRef", borderless_bf)
                 sz = tc.find(_hp("cellSz"))
                 if sz is not None:
                     sz.set("height", "0")

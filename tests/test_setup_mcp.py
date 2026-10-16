@@ -412,3 +412,66 @@ def test_unregister_matching_command_only(tmp_path: Path) -> None:
     )
     assert unreg_match[0].status == "removed"
     assert "hwp-agent" not in json.loads(desktop_cfg.read_text(encoding="utf-8"))["mcpServers"]
+
+
+def test_register_updates_inline_and_dotted_codex_toml(tmp_path: Path) -> None:
+    # 1. Inline table: hwp-agent = { command = "/old", args = ["mcp"] }
+    codex_cfg = config_path_for("codex", home=tmp_path, env={}, platform="darwin")
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    codex_cfg.write_text(
+        '[mcp_servers]\n'
+        'hwp-agent = { command = "/old/hwp-agent", args = ["mcp"] }\n'
+        'other = { command = "/bin/other" }\n',
+        encoding="utf-8",
+    )
+
+    new_cmd = "/new/hwp-agent"
+    actions = register_clients(
+        ("codex",), command=new_cmd, home=tmp_path, env={}, platform="darwin"
+    )
+    assert actions[0].status == "updated"
+    parsed = tomllib.loads(codex_cfg.read_text(encoding="utf-8"))
+    assert parsed["mcp_servers"]["hwp-agent"]["command"] == new_cmd
+    assert parsed["mcp_servers"]["hwp-agent"]["args"] == ["mcp"]
+    assert parsed["mcp_servers"]["other"]["command"] == "/bin/other"
+
+    # Unregister removes the inline table cleanly
+    unreg = unregister_clients(("codex",), home=tmp_path, env={}, platform="darwin")
+    assert unreg[0].status == "removed"
+    parsed_after = tomllib.loads(codex_cfg.read_text(encoding="utf-8"))
+    assert "hwp-agent" not in parsed_after["mcp_servers"]
+    assert "other" in parsed_after["mcp_servers"]
+
+
+def test_cli_setup_force_with_json_keeps_stdout_clean(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_CONFIG_FILE", str(tmp_path / ".claude.json"))
+
+    # Mock download_jar so we don't hit the network in test
+    fake_jar = tmp_path / "fake.jar"
+    fake_jar.write_bytes(b"jar")
+    monkeypatch.setattr(
+        "hwp_agent.convert.fetch_jar.download_jar", lambda **_kw: fake_jar
+    )
+
+    rc = cli_main(
+        [
+            "setup",
+            "--force",
+            "--json",
+            "--register",
+            "claude-code",
+            "--command",
+            "/bin/hwp-agent",
+        ]
+    )
+    assert rc == 0
+    captured = capsys.readouterr()
+    # stdout MUST be pure, valid JSON (no "downloading converter jar..." noise)
+    payload = json.loads(captured.out)
+    assert "registered" in payload
+    # Diagnostics must have gone to stderr
+    assert "downloading converter jar" in captured.err or "ok: jar ready" in captured.err

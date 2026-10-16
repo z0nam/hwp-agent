@@ -419,40 +419,76 @@ def _codex_section_text(command: str) -> str:
 _CODEX_MAIN_TABLE_RE = re.compile(
     r"(?m)^\[mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')\][ \t]*\r?$"
 )
+_CODEX_INLINE_RE = re.compile(
+    r"(?m)^([ \t]*(?:hwp-agent|\"hwp-agent\"|'hwp-agent')[ \t]*=[ \t]*\{)(.*?)(\}[ \t]*)$"
+)
+_CODEX_DOTTED_RE = re.compile(
+    r"(?m)^[ \t]*mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')"
+    r"(?:\.[a-zA-Z0-9_-]+)*[ \t]*=.*$\r?\n?"
+)
+
+
+def _update_inline_table(line: str, command: str) -> str:
+    cmd_str = f"command = {json.dumps(command)}"
+    args_str = 'args = ["mcp"]'
+    m = _CODEX_INLINE_RE.match(line)
+    if not m:
+        return line
+    prefix, inner, suffix = m.groups()
+    if re.search(r"\bcommand\s*=", inner):
+        inner = re.sub(
+            r"\bcommand\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s,}]+)",
+            lambda _: cmd_str,
+            inner,
+            count=1,
+        )
+    else:
+        inner = f" {cmd_str}," + inner
+    if re.search(r"\bargs\s*=", inner):
+        inner = re.sub(r"\bargs\s*=\s*\[[^\]]*\]", lambda _: args_str, inner, count=1)
+    else:
+        inner = inner.rstrip() + f", {args_str} "
+    return f"{prefix}{inner}{suffix}"
 
 
 def _update_codex_main_section(raw: str, command: str) -> str:
     match = _CODEX_MAIN_TABLE_RE.search(raw)
-    if not match:
-        sep = "" if raw.endswith("\n\n") else ("\n" if raw.endswith("\n") else "\n\n")
-        return raw + sep + _codex_section_text(command)
+    if match:
+        header_end = match.end()
+        next_match = re.search(r"(?m)^\[", raw[header_end:])
+        sec_end = header_end + next_match.start() if next_match else len(raw)
 
-    header_end = match.end()
-    next_match = re.search(r"(?m)^\[", raw[header_end:])
-    sec_end = header_end + next_match.start() if next_match else len(raw)
+        sec_body = raw[header_end:sec_end]
+        cmd_str = f"command = {json.dumps(command)}"
+        args_str = 'args = ["mcp"]'
 
-    sec_body = raw[header_end:sec_end]
-    cmd_str = f"command = {json.dumps(command)}"
-    args_str = 'args = ["mcp"]'
-
-    if re.search(r"(?m)^[ \t]*command[ \t]*=.*$", sec_body):
-        sec_body = re.sub(
-            r"(?m)^[ \t]*command[ \t]*=.*$", lambda _: cmd_str, sec_body, count=1
-        )
-    else:
-        sec_body = f"\n{cmd_str}" + sec_body
-
-    if re.search(r"(?m)^[ \t]*args[ \t]*=.*$", sec_body):
-        sec_body = re.sub(
-            r"(?m)^[ \t]*args[ \t]*=.*$", lambda _: args_str, sec_body, count=1
-        )
-    else:
-        if cmd_str in sec_body:
-            sec_body = sec_body.replace(cmd_str, f"{cmd_str}\n{args_str}", 1)
+        if re.search(r"(?m)^[ \t]*command[ \t]*=.*$", sec_body):
+            sec_body = re.sub(
+                r"(?m)^[ \t]*command[ \t]*=.*$", lambda _: cmd_str, sec_body, count=1
+            )
         else:
-            sec_body = f"\n{args_str}" + sec_body
+            sec_body = f"\n{cmd_str}" + sec_body
 
-    return raw[:header_end] + sec_body + raw[sec_end:]
+        if re.search(r"(?m)^[ \t]*args[ \t]*=.*$", sec_body):
+            sec_body = re.sub(
+                r"(?m)^[ \t]*args[ \t]*=.*$", lambda _: args_str, sec_body, count=1
+            )
+        else:
+            if cmd_str in sec_body:
+                sec_body = sec_body.replace(cmd_str, f"{cmd_str}\n{args_str}", 1)
+            else:
+                sec_body = f"\n{args_str}" + sec_body
+
+        return raw[:header_end] + sec_body + raw[sec_end:]
+
+    inline_match = _CODEX_INLINE_RE.search(raw)
+    if inline_match:
+        updated_line = _update_inline_table(inline_match.group(0), command)
+        return raw[: inline_match.start()] + updated_line + raw[inline_match.end() :]
+
+    cleaned = _CODEX_DOTTED_RE.sub("", raw)
+    sep = "" if cleaned.endswith("\n\n") else ("\n" if cleaned.endswith("\n") else "\n\n")
+    return cleaned + sep + _codex_section_text(command)
 
 
 def _register_codex_toml(path: Path, command: str, *, dry_run: bool = False) -> str:
@@ -520,6 +556,8 @@ def _unregister_codex_toml(
             return "noop"
 
     rebuilt = _CODEX_SECTION_RE.sub("", raw)
+    rebuilt = _CODEX_INLINE_RE.sub("", rebuilt)
+    rebuilt = _CODEX_DOTTED_RE.sub("", rebuilt)
     rebuilt = re.sub(r"\n{3,}", "\n\n", rebuilt)
     if rebuilt and not rebuilt.endswith("\n"):
         rebuilt += "\n"

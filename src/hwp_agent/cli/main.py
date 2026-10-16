@@ -139,11 +139,14 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     if not has_mcp_action or getattr(args, "force", False):
         from ..convert.fetch_jar import JAR_URL, download_jar, jar_dest
 
+        json_mode = getattr(args, "json", False)
+        diag_out = sys.stderr if json_mode else None
+
         dest = jar_dest()
         if dest.is_file() and not args.force:
-            print(f"converter jar already present: {dest}")
+            print(f"converter jar already present: {dest}", file=diag_out)
         else:
-            print(f"downloading converter jar\n  from {JAR_URL}\n  to   {dest}")
+            print(f"downloading converter jar\n  from {JAR_URL}\n  to   {dest}", file=diag_out)
             try:
                 dest = download_jar(force=args.force)
             except Exception as exc:  # noqa: BLE001 — surface any network/IO error plainly
@@ -154,11 +157,11 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            print(f"ok: jar ready at {dest}")
+            print(f"ok: jar ready at {dest}", file=diag_out)
 
         java = shutil.which("java")
         if java:
-            print(f"ok: java runtime found ({java})")
+            print(f"ok: java runtime found ({java})", file=diag_out)
         else:
             print(
                 "warn: no `java` on PATH — install a JRE 17+ to run conversions "

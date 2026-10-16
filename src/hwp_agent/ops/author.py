@@ -32,6 +32,7 @@ from pathlib import Path
 
 from hwpx.document import HwpxDocument
 
+from .equation import equation_run_xml, latex_to_hwp, math_pieces, unescape_dollars
 from .form import extract_placeholders
 from .links import link_inner_xml, link_pieces, link_run_xml, rendered_text
 from .styles import INSTRUCTION, bullet_glyph_name, read_style_system, role_map
@@ -154,6 +155,7 @@ class AuthorResult:
     inserted_at_marker: bool = False  # False = appended (no {{body}} marker found)
     target_section: int = -1  # index of the section the content went into
     links: int = 0  # hyperlink fields created ([text](url) / bare URLs)
+    equations: int = 0  # equation objects created ($…$ / $$…$$)
     warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -164,12 +166,37 @@ class AuthorResult:
             "inserted_at_marker": self.inserted_at_marker,
             "target_section": self.target_section,
             "links": self.links,
+            "equations": self.equations,
             "warnings": self.warnings,
         }
 
 
+def _mask_math(text: str) -> tuple[str, list[str]]:
+    """Replace ``$…$`` / ``$$…$$`` spans with private-use placeholders so ``*`` /
+    ``**`` inside math aren't read as emphasis (issue #5)."""
+    spans: list[str] = []
+    out: list[str] = []
+    for t, kind in math_pieces(text):
+        if kind is None:
+            out.append(t)
+        else:
+            out.append(f"\ue000{len(spans)}\ue001")
+            spans.append(f"$${t}$$" if kind == "display" else f"${t}$")
+    return "".join(out), spans
+
+
+def _unmask_math(text: str, spans: list[str]) -> str:
+    if not spans:
+        return text
+    return re.sub("\ue000(\\d+)\ue001", lambda m: spans[int(m.group(1))], text)
+
+
 def inline_segments(text: str) -> list[Segment]:
-    """Split inline ``**bold**`` / ``*italic*`` runs from plain text."""
+    """Split inline ``**bold**`` / ``*italic*`` runs from plain text.
+
+    Math spans (``$…$``) are opaque here — they stay verbatim inside a segment and
+    become equation objects at emit time."""
+    text, spans = _mask_math(text)
     segments: list[Segment] = []
     pos = 0
     for m in _INLINE_RE.finditer(text):
@@ -182,7 +209,10 @@ def inline_segments(text: str) -> list[Segment]:
         pos = m.end()
     if pos < len(text):
         segments.append(Segment(text[pos:]))
-    return segments or [Segment(text)]
+    segments = segments or [Segment(text)]
+    for seg in segments:
+        seg.text = _unmask_math(seg.text, spans)
+    return segments
 
 
 def plain_text(text: str) -> str:
@@ -341,13 +371,16 @@ def _build_footnote_run(
 
 
 def _split_table_row(line: str) -> list[str]:
-    """Split a pipe-table row into trimmed cells (outer pipes optional)."""
-    s = line.strip()
+    """Split a pipe-table row into trimmed cells (outer pipes optional).
+
+    A ``|`` inside ``$…$`` math (``\\left| x \\right|``) is part of the formula,
+    not a column break."""
+    s, spans = _mask_math(line.strip())
     if s.startswith("|"):
         s = s[1:]
     if s.endswith("|"):
         s = s[:-1]
-    return [c.strip() for c in s.split("|")]
+    return [_unmask_math(c.strip(), spans) for c in s.split("|")]
 
 
 def _delimiter_aligns(line: str) -> list[str] | None:
@@ -466,8 +499,11 @@ def _bullet_render_text(block: Block, role: str, info) -> str:
     return f"{glyph} {block.text}" if glyph else block.text
 
 
-def parse_markdown(markdown: str) -> list[Block | TableBlock]:
+def parse_markdown(markdown: str, *, math: bool = True) -> list[Block | TableBlock]:
     """Parse Markdown into headings, paragraphs, bullets, ordered lists, and tables.
+
+    With *math*, a ``$$ … $$`` block standing alone (one line or spread over
+    several) becomes a ``"math"`` block holding the LaTeX source (issue #5).
 
     Inline ``**bold**`` / ``*italic*`` markers are kept in ``Block.text`` and
     resolved into runs at fill time via :func:`inline_segments`. Pipe tables
@@ -539,6 +575,13 @@ def parse_markdown(markdown: str) -> list[Block | TableBlock]:
                 )
             )
             continue
+        if math and line.strip().startswith("$$"):
+            latex = _display_math(lines, i)
+            if latex is not None:
+                flush()
+                src, i = latex
+                emit(Block("math", 0, src))
+                continue
         if not line.strip():
             flush()
             pending_blanks += 1
@@ -569,6 +612,32 @@ def parse_markdown(markdown: str) -> list[Block | TableBlock]:
         i += 1
     flush()
     return blocks
+
+
+def _display_math(lines: list[str], i: int) -> tuple[str, int] | None:
+    """A ``$$`` display block starting at line *i*: ``(latex, next_line_index)``, or
+    None when the line is not a standalone display block (e.g. ``$$a$$ and text``)."""
+    first = lines[i].strip()[2:]
+    if "$$" in first:  # one line: $$ … $$ with nothing after
+        body, _, tail = first.partition("$$")
+        if tail.strip() or not body.strip():
+            return None
+        return body.strip(), i + 1
+    buf = [first]
+    j = i + 1
+    while j < len(lines):
+        ln = lines[j].rstrip()
+        if "$$" in ln:
+            body, _, tail = ln.partition("$$")
+            if tail.strip():
+                return None
+            buf.append(body)
+            return "\n".join(buf).strip(), j + 1
+        if not ln.strip():  # a blank line ends the paragraph — unclosed $$
+            return None
+        buf.append(ln)
+        j += 1
+    return None
 
 
 @dataclass
@@ -1404,6 +1473,7 @@ def fill_from_markdown(
     strip_other_markers: bool = False,
     links: bool = True,
     blue_links: bool = False,
+    math: bool = True,
 ) -> AuthorResult:
     """Fill a template from Markdown, styled with its own outline styles.
 
@@ -1423,6 +1493,10 @@ def fill_from_markdown(
     (issue #27); off keeps them as plain text. Link text takes the template's
     「하이퍼링크」 style char when it has one; ``blue_links`` forces a blue-underlined
     variant of the surrounding char instead.
+
+    ``math`` (default on) turns ``$…$`` (inline) and standalone ``$$…$$`` (display)
+    LaTeX into Hangul equation objects (issue #5); off keeps them as text.
+    Display equations take the template's 「수식」 style when it has one, else BODY.
     """
     roles = role_map(template)
     infos = {i.style_id: i for i in read_style_system(template)}
@@ -1558,7 +1632,47 @@ def fill_from_markdown(
             # with an empty run in the surrounding char
             para.add_run("", char_pr_id_ref=char)
 
+    char_height = _char_height_lookup(doc)
+    _eq_count = [sum(len(sec.element.findall(f".//{{{_HP}}}equation")) for sec in doc.sections)]
+
+    def emit_equation(para, latex: str, char) -> None:
+        """Append *latex* to *para* as a Hangul equation object (issue #5)."""
+        from lxml import etree
+
+        conv = latex_to_hwp(latex)
+        for w in conv.warnings:
+            msg = f"equation ${latex.strip()}$: {w}"
+            if msg not in result.warnings:
+                result.warnings.append(msg)
+        _eq_count[0] += 1
+        base = char_height(char) or 1000
+        para.element.append(etree.fromstring(equation_run_xml(
+            conv.script, 0x9E000000 + _eq_count[0], char,
+            base_unit=base, z_order=_eq_count[0],
+        )))
+        result.equations += 1
+
     def write_text(para, text: str, char, ref_char) -> None:
+        """Add *text* as runs; ``$…$`` math becomes equation objects (issue #5) and
+        the rest goes through :func:`write_plain`."""
+        if not math:
+            write_plain(para, text, char, ref_char)
+            return
+        pieces = math_pieces(text)
+        if len(pieces) == 1 and pieces[0][1] is None:
+            write_plain(para, unescape_dollars(text), char, ref_char)
+            return
+        for t, kind in pieces:
+            if kind is None:
+                if t:
+                    write_plain(para, unescape_dollars(t), char, ref_char)
+            else:
+                emit_equation(para, t, ref_char)
+        if pieces[-1][1] is not None:
+            # like links: keep the paragraph's last run a text run in the base char
+            para.add_run("", char_pr_id_ref=char)
+
+    def write_plain(para, text: str, char, ref_char) -> None:
         """Add *text* as runs, turning each ``[^id]`` into a footnote control in place.
 
         Text before/after a reference stays a normal run (in *char*); the reference
@@ -1625,7 +1739,7 @@ def fill_from_markdown(
             return explicit_chapter
         return str(chapter_count) if chapter_count else None
 
-    blocks = parse_markdown(markdown)
+    blocks = parse_markdown(markdown, math=math)
     _resolve_cross_refs(blocks, chapter_label(), result.warnings)
     if any(isinstance(b, TableBlock) for b in blocks) and not designated:
         result.warnings.append(
@@ -1682,6 +1796,23 @@ def fill_from_markdown(
                 text_writer=write_text,
             )
             place(table.paragraph.element)
+            result.placed += 1
+            continue
+
+        if block.kind == "math":
+            eq_sid = body_style
+            for i in infos.values():
+                if "수식" in (i.name or "") or "equation" in (i.name or "").lower():
+                    eq_sid = i.style_id
+                    break
+            eq_para_pr = infos[eq_sid].para_pr_id if eq_sid in infos else body_para
+            eq_char = doc.style(eq_sid).char_pr_id_ref if eq_sid is not None else None
+            eq_para = target_section.add_paragraph(
+                "", style_id_ref=eq_sid, para_pr_id_ref=eq_para_pr, include_run=False
+            )
+            emit_equation(eq_para, block.text, eq_char)
+            eq_para.add_run("", char_pr_id_ref=eq_char)
+            place(eq_para.element)
             result.placed += 1
             continue
 
@@ -1820,6 +1951,7 @@ def fill_sections(
     equal_columns: bool = False,
     links: bool = True,
     blue_links: bool = False,
+    math: bool = True,
 ) -> AuthorResult:
     """Fill several named markers, each from its own Markdown part.
 
@@ -1852,9 +1984,11 @@ def fill_sections(
                 equal_columns=equal_columns,
                 links=links,
                 blue_links=blue_links,
+                math=math,
             )
             agg.placed += res.placed
             agg.links += res.links
+            agg.equations += res.equations
             agg.instructions_removed += res.instructions_removed
             agg.unmapped_roles += [
                 r for r in res.unmapped_roles if r not in agg.unmapped_roles
@@ -1878,6 +2012,7 @@ def build_report(
     output: Path | str | None = None,
     links: bool | None = None,
     blue_links: bool | None = None,
+    math: bool | None = None,
 ) -> AuthorResult:
     """Assemble a multi-section report from a JSON manifest into one template.
 
@@ -1902,7 +2037,8 @@ def build_report(
     with a warning — surfaced in the result, prefixed by the marker.
 
     Optional manifest keys ``"links"`` (default true) / ``"blue_links"`` mirror the
-    ``write`` options; the *links* / *blue_links* arguments override them.
+    ``write`` options, as does ``"math"`` (default true); the *links* /
+    *blue_links* / *math* arguments override them.
     """
     import json
 
@@ -1942,4 +2078,5 @@ def build_report(
         equal_columns=data.get("equal_columns", False),
         links=data.get("links", True) if links is None else links,
         blue_links=data.get("blue_links", False) if blue_links is None else blue_links,
+        math=data.get("math", True) if math is None else math,
     )

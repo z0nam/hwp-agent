@@ -565,6 +565,16 @@ def _cmd_check(args: argparse.Namespace) -> int:
         if len(bare) > 5:
             print(f"  … +{len(bare) - 5}")
 
+    eqs = r.get("equations") or {}
+    if eqs.get("count") or eqs.get("latex_text"):
+        left = eqs.get("latex_text") or []
+        print(f"equations: {eqs.get('count', 0)} object(s), "
+              f"{len(left)} LaTeX span(s) left as text")
+        for t in left[:5]:
+            print(f"  · ${t}$")
+        if len(left) > 5:
+            print(f"  … +{len(left) - 5}")
+
     markers = r.get("markers") or []
     if markers:
         print("insertion markers (write/build 삽입 지점):")
@@ -810,11 +820,14 @@ def _cmd_write(args: argparse.Namespace) -> int:
         strip_other_markers=True,
         links=getattr(args, "links", True),
         blue_links=getattr(args, "blue_links", False),
+        math=getattr(args, "math", True),
     )
     _guard_finalize(gr)
     print(f"placed {result.placed} block(s) -> {gr.target}")
     if result.links:
         print(f"  linked {result.links} URL(s) as hyperlink fields")
+    if result.equations:
+        print(f"  converted {result.equations} LaTeX math span(s) to equations")
     if result.instructions_removed:
         print(f"  removed {result.instructions_removed} instruction paragraph(s)")
     if result.unmapped_roles:
@@ -849,6 +862,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
             args.manifest, output=gr.target,
             links=getattr(args, "links", None),
             blue_links=getattr(args, "blue_links", None),
+            math=getattr(args, "math", None),
         )
     except (OSError, ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -857,10 +871,28 @@ def _cmd_build(args: argparse.Namespace) -> int:
     print(f"assembled {result.placed} block(s) -> {gr.target}")
     if result.links:
         print(f"  linked {result.links} URL(s) as hyperlink fields")
+    if result.equations:
+        print(f"  converted {result.equations} LaTeX math span(s) to equations")
     if result.unmapped_roles:
         print(f"  unmapped (fell back to BODY): {', '.join(result.unmapped_roles)}")
     for warning in result.warnings:
         print(f"  warning: {warning}", file=sys.stderr)
+    return 0
+
+
+def _cmd_eq(args: argparse.Namespace) -> int:
+    """LaTeX → Hangul equation script, for pasting into 한글's 수식 편집기 (issue #5)."""
+    from ..ops.equation import latex_to_hwp, math_pieces
+
+    src = args.latex if args.latex is not None else sys.stdin.read()
+    # accept a bare formula or one still wrapped in $…$ / $$…$$
+    pieces = [t for t, k in math_pieces(src.strip()) if k is not None]
+    formulas = pieces or [src]
+    for latex in formulas:
+        res = latex_to_hwp(latex)
+        print(res.script)
+        for w in res.warnings:
+            print(f"  warning: {w}", file=sys.stderr)
     return 0
 
 
@@ -884,6 +916,13 @@ def _add_link_args(p: argparse.ArgumentParser, *, default_links) -> None:
         default=None if default_links is None else False,
         help="draw link text blue + underlined (default: the template's 하이퍼링크 "
         "style if it has one, else the surrounding text's look)",
+    )
+    p.add_argument(
+        "--no-math",
+        dest="math",
+        action="store_false",
+        default=default_links,
+        help="keep $…$ / $$…$$ as plain text (default: LaTeX → Hangul equation objects)",
     )
 
 
@@ -1251,6 +1290,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_link_args(wr, default_links=True)
     wr.add_argument("-o", "--output", type=Path, default=None, help="output file")
     wr.set_defaults(func=_cmd_write)
+
+    eq = sub.add_parser(
+        "eq",
+        help="convert LaTeX math to a Hangul equation script (paste into 수식 편집기)",
+    )
+    eq.add_argument(
+        "latex", nargs="?", default=None,
+        help="the formula (default: read stdin; $…$ wrappers are accepted)",
+    )
+    eq.set_defaults(func=_cmd_eq)
 
     bd = sub.add_parser(
         "build",

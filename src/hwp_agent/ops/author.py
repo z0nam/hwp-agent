@@ -1611,21 +1611,25 @@ def fill_from_markdown(
             return blue_cache[char]
         return hl_char if hl_char is not None else char
 
+    def emit_link(para, label: str, url: str, char) -> None:
+        from lxml import etree
+
+        para.element.append(etree.fromstring(link_run_xml(label, url, link_char(char))))
+        result.links += 1
+
     def emit_text(para, s: str, char) -> None:
         """Add *s* as a run, with each link in it as a hyperlink-field run."""
         pieces = link_pieces(s) if links else [(s, None)]
         if all(u is None for _, u in pieces):
             para.add_run(s, char_pr_id_ref=char)
             return
-        from lxml import etree
 
         for t, u in pieces:
             if u is None:
                 if t:
                     para.add_run(t, char_pr_id_ref=char)
             else:
-                para.element.append(etree.fromstring(link_run_xml(t, u, link_char(char))))
-                result.links += 1
+                emit_link(para, t, u, char)
         if pieces[-1][1] is not None:
             # Hangul draws the paragraph's bullet/number in the *last* run's char, so
             # a paragraph ending in a (blue) link would get a blue bullet — close it
@@ -1657,6 +1661,24 @@ def fill_from_markdown(
         the rest goes through :func:`write_plain`."""
         if not math:
             write_plain(para, text, char, ref_char)
+            return
+        lp = link_pieces(text) if links else [(text, None)]
+        if any(u is not None and "$" in t + u for t, u in lp):
+            # a link holding a $: links first, so math never splits it apart — a link
+            # is one field run, and math in its label stays text (an equation can't
+            # sit inside it)
+            for t, u in lp:
+                if u is None:
+                    if t:
+                        write_text(para, t, char, ref_char)
+                    continue
+                if any(k is not None for _, k in math_pieces(t)):
+                    msg = f"math in link label [{t}] kept as text"
+                    if msg not in result.warnings:
+                        result.warnings.append(msg)
+                emit_link(para, unescape_dollars(t), u, char)
+            if lp[-1][1] is not None:
+                para.add_run("", char_pr_id_ref=char)
             return
         pieces = math_pieces(text)
         if len(pieces) == 1 and pieces[0][1] is None:

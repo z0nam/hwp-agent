@@ -274,3 +274,23 @@ def test_text_insert_rejects_display_math(tmp_path) -> None:
 
     with pytest.raises(TextEditError, match="수식"):
         insert_markdown(tmp_path / "none.hwpx", "$$x^2$$", anchor="x")
+
+
+def test_nested_environment_keeps_its_own_rows() -> None:
+    src = (
+        r"\begin{aligned} f(x) &= \begin{cases} 1 & x>0 \\ 0 & x \le 0 \end{cases}"
+        r" \\ g &= 2 \end{aligned}"
+    )
+    assert conv(src) == "eqalign{f ( x ) & = cases{1 & x > 0 # 0 & x <= 0} # g & = 2}"
+
+
+@pytest.mark.skipif(not TPL.is_file(), reason="bundled default template missing")
+def test_math_does_not_split_link(tmp_path: Path) -> None:
+    out = tmp_path / "link.hwpx"
+    res = fill_from_markdown(
+        TPL, "# 제목\n\n[the $x$ model](https://example.com) 과 $y$ 끝\n", output=out
+    )
+    assert res.links == 1 and res.equations == 1 and _scripts(out) == ["y"]
+    xml = "".join(etree.tostring(r, encoding="unicode") for r in _sections(out))
+    assert "](https" not in xml and "the $x$ model" in xml
+    assert any("link label" in w for w in res.warnings)

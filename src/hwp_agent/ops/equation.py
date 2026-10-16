@@ -569,13 +569,24 @@ class _Parser:
 
 
 def _split_rows(src: str) -> list[str]:
-    """Split an environment body at top-level ``\\\\`` (dropping an empty last row)."""
+    """Split an environment body at top-level ``\\\\`` (dropping an empty last row).
+
+    Top level means outside braces *and* outside nested ``\\begin…\\end`` pairs, so a
+    ``cases`` inside ``aligned`` keeps its own rows."""
     rows, depth, buf, i = [], 0, [], 0
     while i < len(src):
         c = src[i]
         if c == "{":
             depth += 1
         elif c == "}":
+            depth -= 1
+        elif src.startswith("\\\\", i) and depth != 0:
+            buf.append("\\\\")  # nested row break: keep both chars together
+            i += 2
+            continue
+        elif _BEGIN_RE.match(src, i):
+            depth += 1
+        elif _END_RE.match(src, i):
             depth -= 1
         if depth == 0 and src.startswith("\\\\", i):
             rows.append("".join(buf))
@@ -597,12 +608,20 @@ def _split_rows(src: str) -> list[str]:
     return rows or [""]
 
 
+_BEGIN_RE = re.compile(r"\\begin(?![A-Za-z])")
+_END_RE = re.compile(r"\\end(?![A-Za-z])")
+
+
 def _split_cells(row: str) -> list[str]:
     cells, depth, buf = [], 0, []
     for i, c in enumerate(row):
         if c == "{":
             depth += 1
         elif c == "}":
+            depth -= 1
+        elif _BEGIN_RE.match(row, i) and (i == 0 or row[i - 1] != "\\"):
+            depth += 1
+        elif _END_RE.match(row, i) and (i == 0 or row[i - 1] != "\\"):
             depth -= 1
         if c == "&" and depth == 0 and (i == 0 or row[i - 1] != "\\"):
             cells.append("".join(buf))

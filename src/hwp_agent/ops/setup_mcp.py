@@ -85,7 +85,7 @@ _STATUS_KO: dict[str, str] = {
 # Matches [mcp_servers.hwp-agent] or [mcp_servers."hwp-agent"] (and any sub-tables)
 # up to the next top-level table header or end of file.
 _CODEX_SECTION_RE = re.compile(
-    r"(?ms)^\[mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')(?:\.[^\]]+)?\]\s*\n.*?(?=^\[|\Z)"
+    r"(?ms)^\[mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')(?:\.[^\]]+)?\][ \t]*(?:#[^\r\n]*)?\r?\n.*?(?=^\[|\Z)"
 )
 
 
@@ -422,7 +422,7 @@ def _codex_section_text(command: str) -> str:
 
 
 _CODEX_MAIN_TABLE_RE = re.compile(
-    r"(?m)^\[mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')\][ \t]*\r?$"
+    r"(?m)^\[mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')\][ \t]*(?:#[^\r\n]*)?\r?$"
 )
 _CODEX_INLINE_RE = re.compile(
     r"(?m)^([ \t]*(?:hwp-agent|\"hwp-agent\"|'hwp-agent')[ \t]*=[ \t]*\{)(.*?)(\}[ \t]*(?:#.*)?)\r?$"

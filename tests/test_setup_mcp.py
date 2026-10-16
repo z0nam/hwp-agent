@@ -530,3 +530,41 @@ def test_codex_toml_unicode_and_non_bmp_path(tmp_path: Path) -> None:
     parsed3 = tomllib.loads(raw3)
     assert parsed3["mcp_servers"]["hwp-agent"]["command"] == emoji_cmd
 
+
+def test_codex_toml_header_comment(tmp_path: Path) -> None:
+    """Comments following table headers (e.g. [mcp_servers.hwp-agent] # comment) must be handled."""
+    codex_cfg = tmp_path / ".codex" / "config.toml"
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    codex_cfg.write_text(
+        '[mcp_servers.hwp-agent] # installed manually\n'
+        'command = "/old/path"\n'
+        'args = ["mcp"]\n\n'
+        '[other]\n'
+        'key = "val"\n',
+        encoding="utf-8",
+    )
+
+    # 1. Update must recognize existing table and not duplicate
+    res = register_clients(
+        ("codex",),
+        home=tmp_path,
+        env={},
+        platform="darwin",
+        command="/new/path",
+    )
+    assert res[0].status == "updated"
+    raw = codex_cfg.read_text(encoding="utf-8")
+    assert "# installed manually" in raw
+    parsed = tomllib.loads(raw)
+    assert parsed["mcp_servers"]["hwp-agent"]["command"] == "/new/path"
+    assert parsed["other"]["key"] == "val"
+
+    # 2. Unregister removes the section and preserves subsequent tables
+    unreg = unregister_clients(("codex",), home=tmp_path, env={}, platform="darwin")
+    assert unreg[0].status == "removed"
+    raw_after = codex_cfg.read_text(encoding="utf-8")
+    parsed_after = tomllib.loads(raw_after)
+    assert "hwp-agent" not in parsed_after.get("mcp_servers", {})
+    assert parsed_after["other"]["key"] == "val"
+
+

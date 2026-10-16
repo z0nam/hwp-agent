@@ -37,11 +37,11 @@ fi
 # Editable install: hwp-agent resolves vendor/hwp2hwpx.jar relative to this
 # checkout, so `convert` works from any directory with no HWP2HWPX_JAR env var.
 if command -v uv >/dev/null 2>&1; then
-  log "Installing hwp-agent CLI with uv (editable)..."
-  uv tool install --editable "$REPO_ROOT" --force
+  log "Installing hwp-agent CLI with uv (editable, with MCP)..."
+  uv tool install --editable "${REPO_ROOT}[mcp]" --force
 elif command -v pipx >/dev/null 2>&1; then
-  log "Installing hwp-agent CLI with pipx (editable)..."
-  pipx install --editable "$REPO_ROOT" --force
+  log "Installing hwp-agent CLI with pipx (editable, with MCP)..."
+  pipx install --editable "${REPO_ROOT}[mcp]" --force
 else
   die "need 'uv' or 'pipx' to install the CLI on PATH.
        install uv:  curl -LsSf https://astral.sh/uv/install.sh | sh

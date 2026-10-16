@@ -71,6 +71,20 @@ from .profile import (
     match_slot,
     normalize_label,
 )
+from .setup_mcp import (
+    CLIENT_LABELS,
+    CLIENT_ORDER,
+    RegistrationAction,
+    config_path_for,
+    detect_installed_clients,
+    format_registration_report,
+    format_unregistration_report,
+    is_client_installed,
+    register_clients,
+    resolve_mcp_command,
+    resolve_targets,
+    unregister_clients,
+)
 from .styles import StyleInfo, classify_document, read_style_system, role_map
 from .template import (
     bundled_template_path,
@@ -162,4 +176,16 @@ __all__ = [
     "replace_image",
     "parse_alt_text",
     "read_image_size",
+    "CLIENT_ORDER",
+    "CLIENT_LABELS",
+    "RegistrationAction",
+    "config_path_for",
+    "is_client_installed",
+    "detect_installed_clients",
+    "resolve_targets",
+    "resolve_mcp_command",
+    "register_clients",
+    "unregister_clients",
+    "format_registration_report",
+    "format_unregistration_report",
 ]

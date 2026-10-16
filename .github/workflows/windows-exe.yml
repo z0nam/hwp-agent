@@ -31,11 +31,11 @@ jobs:
             -Uri "https://github.com/z0nam/hwp-agent/releases/download/converter-jar/hwp2hwpx.jar" `
             -OutFile "vendor/hwp2hwpx.jar"
 
-      - name: Install package + PyInstaller
+      - name: Install package + MCP + PyInstaller
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install . pyinstaller
+          pip install ".[mcp]" pyinstaller
 
       - name: Build single-file exe
         shell: pwsh
@@ -44,12 +44,14 @@ jobs:
             --add-data "vendor/hwp2hwpx.jar;." `
             --collect-all hwpx `
             --collect-all lxml `
+            --collect-all mcp `
             scripts/pyinstaller_entry.py
 
       - name: Smoke-test the exe
         shell: pwsh
         run: |
           .\dist\hwp-agent.exe --version
+          .\dist\hwp-agent.exe setup --register claude,codex,gemini --dry-run
 
       # --- Build the bundled-JRE installer (so .hwp convert needs no separate Java) ---
       - name: Download Temurin JRE 17 (private, bundled into the installer)

@@ -93,37 +93,34 @@ questions. Create one:
 
 ---
 
-## D. Claude / Codex — local MCP (true upload-free chat)
+## D. Claude / Codex / Gemini CLI — local MCP (true upload-free chat)
 
 On the user's own machine (file stays local, no server needed):
 
 ```bash
 pipx install "git+https://github.com/z0nam/hwp-agent[mcp]"
-hwp-agent setup           # only if they need .hwp conversion (JRE 17+)
+hwp-agent setup                                    # converter jar (needs JRE 17+ for .hwp)
+hwp-agent setup --register claude,codex,gemini     # idempotently register MCP across all 4 clients
 ```
 
-Then register the stdio server (all point at `hwp-agent mcp`):
+`hwp-agent setup --register` updates each client's config file in place without
+touching other MCP servers (`--unregister` removes only `hwp-agent`):
 
-```bash
-# Claude Code
-claude mcp add --transport stdio hwp-agent -- hwp-agent mcp
-```
-```jsonc
-// Claude Desktop — claude_desktop_config.json
-// macOS: ~/Library/Application Support/Claude/   Windows: %APPDATA%\Claude\
-{ "mcpServers": { "hwp-agent": { "command": "hwp-agent", "args": ["mcp"] } } }
-```
-```toml
-# Codex — ~/.codex/config.toml
-[mcp_servers.hwp-agent]
-command = "hwp-agent"
-args = ["mcp"]
-```
+- **Claude Desktop** (`claude-desktop`):
+  macOS `~/Library/Application Support/Claude/claude_desktop_config.json`,
+  Windows `%APPDATA%\Claude\claude_desktop_config.json`
+- **Claude Code** (`claude-code`): `~/.claude.json`
+- **Codex** (`codex`): `~/.codex/config.toml`
+- **Gemini CLI** (`gemini`): `~/.gemini/settings.json`
+
+On Windows, **`hwp-agent-setup.exe`** auto-detects installed AI clients, shows a
+checklist, and runs `hwp-agent setup --register` automatically.
 
 Restart the client, then chat: *"바탕화면의 등록신청서.hwpx를 내 프로필로 채워서
 등록신청서_채움.hwpx로 저장해줘."* Claude calls `fill_form_from_profile` on the
 local path. Tools exposed: `analyze_form_slots`, `fill_form_slots`,
-`fill_form_from_profile`, `convert_hwp_to_hwpx`, `extract_to_markdown`.
+`fill_form_from_profile`, `convert_hwp_to_hwpx`, `normalize_template`,
+`extract_to_markdown`.
 
-> ChatGPT does **not** support local stdio MCP (remote HTTPS only), which is why
-> ChatGPT uses the web link (C) and local MCP is Claude/Codex only.
+> ChatGPT and Gemini consumer web/mobile apps do **not** support local stdio MCP,
+> which is why they use the web link (`https://hwp.namun.net`, sections B/C).

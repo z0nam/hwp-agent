@@ -113,39 +113,162 @@ def _cmd_convert(args: argparse.Namespace) -> int:
 
 
 def _cmd_setup(args: argparse.Namespace) -> int:
-    """Fetch the converter jar and report runtime readiness (Windows-friendly)."""
+    """Fetch the converter jar and/or register the MCP server in AI clients."""
+    import json
     import shutil
 
-    from ..convert.fetch_jar import JAR_URL, download_jar, jar_dest
+    from ..ops import (
+        CLIENT_LABELS,
+        CLIENT_ORDER,
+        config_path_for,
+        detect_installed_clients,
+        format_registration_report,
+        format_unregistration_report,
+        register_clients,
+        resolve_targets,
+        unregister_clients,
+    )
 
-    dest = jar_dest()
-    if dest.is_file() and not args.force:
-        print(f"converter jar already present: {dest}")
-    else:
-        print(f"downloading converter jar\n  from {JAR_URL}\n  to   {dest}")
-        try:
-            dest = download_jar(force=args.force)
-        except Exception as exc:  # noqa: BLE001 — surface any network/IO error plainly
-            print(f"error: could not download jar: {exc}", file=sys.stderr)
+    has_mcp_action = bool(
+        getattr(args, "register", None)
+        or getattr(args, "unregister", None)
+        or getattr(args, "detect", False)
+    )
+
+    # 1. Converter jar download (default when no MCP flag is given, or when --force is passed).
+    if not has_mcp_action or getattr(args, "force", False):
+        from ..convert.fetch_jar import JAR_URL, download_jar, jar_dest
+
+        json_mode = getattr(args, "json", False)
+        diag_out = sys.stderr if json_mode else None
+
+        dest = jar_dest()
+        if dest.is_file() and not args.force:
+            print(f"converter jar already present: {dest}", file=diag_out)
+        else:
+            print(f"downloading converter jar\n  from {JAR_URL}\n  to   {dest}", file=diag_out)
+            try:
+                dest = download_jar(force=args.force)
+            except Exception as exc:  # noqa: BLE001 — surface any network/IO error plainly
+                print(f"error: could not download jar: {exc}", file=sys.stderr)
+                print(
+                    "  set HWP2HWPX_JAR_URL to a reachable mirror, or build with "
+                    "scripts/bootstrap.sh.",
+                    file=sys.stderr,
+                )
+                return 1
+            print(f"ok: jar ready at {dest}", file=diag_out)
+
+        java = shutil.which("java")
+        if java:
+            print(f"ok: java runtime found ({java})", file=diag_out)
+        else:
             print(
-                "  set HWP2HWPX_JAR_URL to a reachable mirror, or build with "
-                "scripts/bootstrap.sh.",
+                "warn: no `java` on PATH — install a JRE 17+ to run conversions "
+                "(e.g. Temurin: https://adoptium.net/).",
                 file=sys.stderr,
             )
-            return 1
-        print(f"ok: jar ready at {dest}")
+        if not has_mcp_action:
+            print("\nyou can now run:  hwp-agent convert input.hwp output.hwpx")
+            return 0
 
-    java = shutil.which("java")
-    if java:
-        print(f"ok: java runtime found ({java})")
-    else:
-        print(
-            "warn: no `java` on PATH — install a JRE 17+ to run conversions "
-            "(e.g. Temurin: https://adoptium.net/).",
-            file=sys.stderr,
-        )
-    print("\nyou can now run:  hwp-agent convert input.hwp output.hwpx")
-    return 0
+    # 2. Client detection (--detect)
+    if getattr(args, "detect", False) and not (
+        getattr(args, "register", None) or getattr(args, "unregister", None)
+    ):
+        detected = detect_installed_clients()
+        if getattr(args, "json", False):
+            payload = {
+                "detected": list(detected),
+                "clients": [
+                    {
+                        "client": c,
+                        "label": CLIENT_LABELS[c],
+                        "installed": c in detected,
+                        "config_path": str(config_path_for(c)),
+                    }
+                    for c in CLIENT_ORDER
+                ],
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print("[감지된 AI 클라이언트]")
+            for c in CLIENT_ORDER:
+                mark = "✓" if c in detected else " "
+                print(f"  [{mark}] {CLIENT_LABELS[c]} ({c}) -> {config_path_for(c)}")
+        return 0
+
+    # 3. Unregister (--unregister)
+    unreg_actions = []
+    if getattr(args, "unregister", None):
+        try:
+            targets = resolve_targets(args.unregister)
+            unreg_actions = unregister_clients(
+                targets,
+                matching_command=getattr(args, "matching_command", None),
+                dry_run=getattr(args, "dry_run", False),
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    # 4. Register (--register)
+    reg_actions = []
+    if getattr(args, "register", None):
+        try:
+            targets = resolve_targets(args.register)
+            if not targets:
+                msg = (
+                    "감지된 AI 클라이언트가 없습니다. "
+                    "직접 지정하려면 `hwp-agent setup --register claude,codex,gemini`를 실행하세요."
+                )
+                if getattr(args, "json", False):
+                    print(
+                        json.dumps(
+                            {"actions": [], "message": msg},
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                    )
+                else:
+                    print(msg)
+                return 0
+            reg_actions = register_clients(
+                targets,
+                command=getattr(args, "mcp_command", None),
+                dry_run=getattr(args, "dry_run", False),
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    report_parts: list[str] = []
+    if unreg_actions:
+        report_parts.append(format_unregistration_report(unreg_actions))
+    if reg_actions:
+        report_parts.append(format_registration_report(reg_actions))
+    report_text = "\n\n".join(report_parts)
+
+    guide_out = getattr(args, "guide_out", None)
+    if guide_out is not None:
+        Path(guide_out).parent.mkdir(parents=True, exist_ok=True)
+        # UTF-8 with BOM (utf-8-sig) so Windows Inno Setup LoadStringsFromFile
+        # decodes Korean text cleanly without CP949 mojibake.
+        Path(guide_out).write_text(report_text + "\n", encoding="utf-8-sig")
+
+    if getattr(args, "json", False):
+        payload: dict[str, object] = {}
+        if reg_actions:
+            payload["registered"] = [a.as_dict() for a in reg_actions]
+        if unreg_actions:
+            payload["unregistered"] = [a.as_dict() for a in unreg_actions]
+        payload["guide"] = report_text
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    elif report_text:
+        print(report_text)
+
+    has_error = any(a.status == "error" for a in reg_actions + unreg_actions)
+    return 2 if has_error else 0
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -948,10 +1071,68 @@ def build_parser() -> argparse.ArgumentParser:
     conv.set_defaults(func=_cmd_convert)
 
     setup = sub.add_parser(
-        "setup", help="download the converter jar + check the Java runtime"
+        "setup",
+        help="download the converter jar and/or register the MCP server in AI clients",
     )
     setup.add_argument(
         "--force", action="store_true", help="re-download even if the jar exists"
+    )
+    setup.add_argument(
+        "--register",
+        action="append",
+        nargs="?",
+        const="auto",
+        default=None,
+        metavar="CLIENTS",
+        help="register hwp-agent MCP server in AI client configs "
+        "(comma-separated: claude, claude-desktop, claude-code, codex, gemini, all, auto)",
+    )
+    setup.add_argument(
+        "--unregister",
+        action="append",
+        nargs="?",
+        const="all",
+        default=None,
+        metavar="CLIENTS",
+        help="remove hwp-agent MCP server from AI client configs "
+        "(default when no value given: all)",
+    )
+    setup.add_argument(
+        "--matching-command",
+        dest="matching_command",
+        default=None,
+        metavar="PATH",
+        help="only unregister entries whose command matches this path",
+    )
+    setup.add_argument(
+        "--detect",
+        action="store_true",
+        help="list detected AI clients on this machine",
+    )
+    setup.add_argument(
+        "--command",
+        dest="mcp_command",
+        default=None,
+        metavar="PATH",
+        help="explicit hwp-agent executable path to write into MCP configs",
+    )
+    setup.add_argument(
+        "--guide-out",
+        dest="guide_out",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="write the registration guide text (UTF-8 with BOM) to a file",
+    )
+    setup.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="preview MCP config changes without writing files",
+    )
+    setup.add_argument(
+        "--json",
+        action="store_true",
+        help="emit MCP registration/detection report as JSON",
     )
     setup.set_defaults(func=_cmd_setup)
 

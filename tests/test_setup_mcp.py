@@ -435,9 +435,7 @@ def test_register_updates_inline_and_dotted_codex_toml(tmp_path: Path) -> None:
     parsed = tomllib.loads(raw_updated)
     assert parsed["mcp_servers"]["hwp-agent"]["command"] == new_cmd
     assert parsed["mcp_servers"]["hwp-agent"]["args"] == ["mcp"]
-    assert parsed["mcp_servers"]["other"]["command"] == "/bin/other"
-
-    # Unregister removes the inline table and comment cleanly
+    # 1-b. Unregister removes the inline table and comment cleanly
     unreg = unregister_clients(("codex",), home=tmp_path, env={}, platform="darwin")
     assert unreg[0].status == "removed"
     raw_after = codex_cfg.read_text(encoding="utf-8")
@@ -445,6 +443,30 @@ def test_register_updates_inline_and_dotted_codex_toml(tmp_path: Path) -> None:
     parsed_after = tomllib.loads(raw_after)
     assert "hwp-agent" not in parsed_after["mcp_servers"]
     assert "other" in parsed_after["mcp_servers"]
+
+    # 2. Table-scoped dotted keys under [mcp_servers]: hwp-agent.command = ...
+    codex_cfg.write_text(
+        '[mcp_servers]\n'
+        'other = { command = "/bin/other" }\n'
+        'hwp-agent.command = "/old/hwp-agent"\n'
+        'hwp-agent.args = ["mcp"]\n',
+        encoding="utf-8",
+    )
+    actions2 = register_clients(
+        ("codex",), command=new_cmd, home=tmp_path, env={}, platform="darwin"
+    )
+    assert actions2[0].status == "updated"
+    parsed2 = tomllib.loads(codex_cfg.read_text(encoding="utf-8"))
+    assert parsed2["mcp_servers"]["hwp-agent"]["command"] == new_cmd
+    assert parsed2["mcp_servers"]["hwp-agent"]["args"] == ["mcp"]
+    assert parsed2["mcp_servers"]["other"]["command"] == "/bin/other"
+
+    # Unregister removes the scoped dotted keys cleanly
+    unreg2 = unregister_clients(("codex",), home=tmp_path, env={}, platform="darwin")
+    assert unreg2[0].status == "removed"
+    parsed_after2 = tomllib.loads(codex_cfg.read_text(encoding="utf-8"))
+    assert "hwp-agent" not in parsed_after2["mcp_servers"]
+    assert "other" in parsed_after2["mcp_servers"]
 
 
 def test_cli_setup_force_with_json_keeps_stdout_clean(

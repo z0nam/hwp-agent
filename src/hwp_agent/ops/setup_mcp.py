@@ -430,10 +430,30 @@ _CODEX_INLINE_RE = re.compile(
 _CODEX_INLINE_LINE_RE = re.compile(
     r"(?m)^[ \t]*(?:hwp-agent|\"hwp-agent\"|'hwp-agent')[ \t]*=[ \t]*\{.*?\}[ \t]*(?:#.*)?\r?\n?"
 )
-_CODEX_DOTTED_RE = re.compile(
+_CODEX_GLOBAL_DOTTED_RE = re.compile(
     r"(?m)^[ \t]*mcp_servers\.(?:hwp-agent|\"hwp-agent\"|'hwp-agent')"
     r"(?:\.[a-zA-Z0-9_-]+)*[ \t]*=.*$\r?\n?"
 )
+_CODEX_MCP_TABLE_RE = re.compile(
+    r"(?m)^\[mcp_servers\][ \t]*(?:#[^\r\n]*)?\r?$"
+)
+_CODEX_SCOPED_DOTTED_RE = re.compile(
+    r"(?m)^[ \t]*(?:hwp-agent|\"hwp-agent\"|'hwp-agent')"
+    r"(?:\.[a-zA-Z0-9_-]+)+[ \t]*=.*$\r?\n?"
+)
+
+
+def _clean_codex_dotted_keys(raw: str) -> str:
+    cleaned = _CODEX_GLOBAL_DOTTED_RE.sub("", raw)
+    m = _CODEX_MCP_TABLE_RE.search(cleaned)
+    if m:
+        header_end = m.end()
+        next_m = re.search(r"(?m)^\[", cleaned[header_end:])
+        sec_end = header_end + next_m.start() if next_m else len(cleaned)
+        sec_body = cleaned[header_end:sec_end]
+        cleaned_sec = _CODEX_SCOPED_DOTTED_RE.sub("", sec_body)
+        cleaned = cleaned[:header_end] + cleaned_sec + cleaned[sec_end:]
+    return cleaned
 
 
 def _update_inline_table(line: str, command: str) -> str:
@@ -494,7 +514,7 @@ def _update_codex_main_section(raw: str, command: str) -> str:
         updated_line = _update_inline_table(inline_match.group(0), command)
         return raw[: inline_match.start()] + updated_line + raw[inline_match.end() :]
 
-    cleaned = _CODEX_DOTTED_RE.sub("", raw)
+    cleaned = _clean_codex_dotted_keys(raw)
     sep = "" if cleaned.endswith("\n\n") else ("\n" if cleaned.endswith("\n") else "\n\n")
     return cleaned + sep + _codex_section_text(command)
 
@@ -569,7 +589,7 @@ def _unregister_codex_toml(
 
     rebuilt = _CODEX_SECTION_RE.sub("", raw)
     rebuilt = _CODEX_INLINE_LINE_RE.sub("", rebuilt)
-    rebuilt = _CODEX_DOTTED_RE.sub("", rebuilt)
+    rebuilt = _clean_codex_dotted_keys(rebuilt)
     rebuilt = re.sub(r"\n{3,}", "\n\n", rebuilt)
     if rebuilt and not rebuilt.endswith("\n"):
         rebuilt += "\n"

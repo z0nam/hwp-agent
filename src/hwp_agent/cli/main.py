@@ -338,16 +338,13 @@ def _cmd_form(args: argparse.Namespace) -> int:
     from ..ops import analyze_form, dump_grid, fill_form
 
     if args.action == "autofit":
-        from ..ops import autofit_table
+        from ..ops import autofit_table, parse_min_widths
 
-        mins: dict[int, int] = {}
-        for item in args.min_width or []:
-            k, _, v = item.partition("=")
-            try:
-                mins[int(k)] = int(v)
-            except ValueError:
-                print(f"error: --min-width expects COL=N, got {item!r}", file=sys.stderr)
-                return 2
+        try:
+            mins = parse_min_widths(args.min_width)
+        except ValueError as exc:
+            print(f"error: --{exc}", file=sys.stderr)
+            return 2
         gr = _guard_output(args.output or args.file)
         try:
             summary = autofit_table(
@@ -445,12 +442,10 @@ def _cmd_form(args: argparse.Namespace) -> int:
         key, value = item.split("=", 1)
         mapping[key.strip()] = value
 
-    from ..ops import RowOpError, parse_row_op
+    from ..ops import RowOpError, parse_row_ops
 
     try:
-        row_ops = [parse_row_op("delete", s) for s in args.delete_rows or []]
-        row_ops += [parse_row_op("append", s) for s in args.append_rows or []]
-        row_ops += [parse_row_op("repeat", s) for s in args.repeat_group or []]
+        row_ops = parse_row_ops(args.delete_rows, args.append_rows, args.repeat_group)
     except RowOpError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

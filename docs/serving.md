@@ -44,7 +44,30 @@ hwp-agent serve --host 0.0.0.0 --port 8765
 ```
 
 Endpoints: `GET /` (web UI), `POST /fill` (web form), `POST /api/analyze`,
-`POST /api/fill-profile`, `POST /api/convert`, `GET /openapi.json`, `GET /healthz`.
+`POST /api/fill`, `POST /api/autofit`, `POST /api/fill-profile`, `POST /api/convert`,
+`GET /openapi.json`, `GET /healthz`.
+
+The form endpoints mirror `hwp-agent form analyze/fill/autofit` (and the MCP tools)
+option-for-option — multipart fields named after the CLI flags in snake_case:
+
+| CLI | REST (multipart fields) |
+|---|---|
+| `form analyze [--grid]` | `POST /api/analyze` `file`, `grid` |
+| `form fill --set/--map … [--delete-rows] [--append-rows] [--repeat-group] [--allow-table-flow] [--no-precise]` | `POST /api/fill` `file`, `mapping_json`, `delete_rows`, `append_rows`, `repeat_group` (repeatable), `allow_table_flow`, `precise` |
+| `form autofit [--table] [--min-width]` | `POST /api/autofit` `file`, `table`, `min_width` (repeatable) |
+
+`/api/fill` and `/api/autofit` return the edited `.hwpx` as the body with a
+*bounded* summary in the `X-HWP-Agent-Report` header (list fields reduced to counts,
+e.g. `{"rows": 3, "filled": 140, "missing": 0, "warnings": 0}`). For the full report
+(which keys were missing, the new widths…) send `response=json`: the body is then
+`{"report": {...}, "filename": "...", "file_base64": "..."}`. A bad row spec, a vertical merge straddling a range
+boundary, or malformed `mapping_json` is a `422` with nothing returned.
+
+```bash
+curl -sS -H "X-API-Key: $HWP_AGENT_API_KEY" -D report.txt -o out.hwpx \
+  -F file=@신청서.hwpx -F delete_rows=cell:0:5-15 -F repeat_group=cell:0:2-4:+7 \
+  -F 'mapping_json={"cell:0:2:0":"Ⅰ. 서론"}' https://hwp.example.com/api/fill
+```
 
 ### Expose over HTTPS
 
@@ -126,7 +149,8 @@ The form tools mirror `hwp-agent form analyze/fill/autofit` option-for-option
 (parameter = CLI flag in snake_case): `analyze_form_slots(grid=…)`,
 `fill_form_slots(delete_rows=…, append_rows=…, repeat_group=…,
 allow_table_flow=…, precise=…)`, `autofit_table_columns(table=…, min_width=…)`.
-`tests/test_mcp_parity.py` fails when a new CLI flag lacks its MCP parameter.
+`tests/test_surface_parity.py` fails when a new CLI flag lacks its MCP parameter
+or REST field (see section A for the REST side).
 
 > ChatGPT and Gemini consumer web/mobile apps do **not** support local stdio MCP,
 > which is why they use the web link (`https://hwp.namun.net`, sections B/C).

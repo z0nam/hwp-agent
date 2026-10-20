@@ -275,3 +275,94 @@ def test_sample_big_converted_integration(tmp_path: Path) -> None:
 
     # 3. Integrity audit passes (no new issues introduced)
     assert audit_package(out) == audit_package(sample_big)
+
+
+def test_section_sorting_and_numbering() -> None:
+    from hwp_agent.ops.fit_tails import _section_number, _section_parts
+
+    names = [
+        "Contents/section10.xml",
+        "Contents/section2.xml",
+        "Contents/section1.xml",
+        "Contents/header.xml",
+    ]
+    sorted_sections = _section_parts(names)
+    assert sorted_sections == [
+        "Contents/section1.xml",
+        "Contents/section2.xml",
+        "Contents/section10.xml",
+    ]
+    assert _section_number("Contents/section10.xml") == 10
+    assert _section_number("Contents/section2.xml") == 2
+
+
+def test_char_pr_cloner_per_run_isolation() -> None:
+    from hwp_agent.ops.fit_tails import _CharPrCloner
+
+    raw = etree.fromstring(
+        b'<hh:charProperties xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" itemCnt="2">'
+        b'<hh:charPr id="0"><hh:spacing hangul="0"/><hh:ratio hangul="100"/></hh:charPr>'
+        b'<hh:charPr id="1"><hh:spacing hangul="2"/><hh:ratio hangul="105"/></hh:charPr>'
+        b"</hh:charProperties>"
+    )
+    cloner = _CharPrCloner(raw)
+
+    id_0_cloned = cloner.get_or_create("0", spacing=-3, ratio=98)
+    id_1_cloned = cloner.get_or_create("1", spacing=-3, ratio=98)
+
+    assert id_0_cloned != id_1_cloned
+    assert id_0_cloned == "2"
+    assert id_1_cloned == "3"
+
+    # Same request returns cached id
+    assert cloner.get_or_create("0", spacing=-3, ratio=98) == "2"
+
+    cloner.finalize()
+    assert raw.get("itemCnt") == "4"
+
+
+def test_detect_tail_fits_footnote_handling(tmp_path: Path) -> None:
+    import zipfile
+
+    src = Path("tests/fixtures/sample_hwpx.hwpx")
+    mod = tmp_path / "footnote_test.hwpx"
+
+    with zipfile.ZipFile(str(src)) as z_in:
+        names = z_in.namelist()
+        sec0_xml = z_in.read("Contents/section0.xml").decode("utf-8")
+
+        footnote_para = (
+            '<hp:p xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">'
+            '<hp:run charPrIDRef="0">'
+            '<hp:ctrl><hp:footNote number="1">'
+            '<hp:subList><hp:p>'
+            '<hp:run charPrIDRef="0">'
+            '<hp:t>각주 본문 내용 테스트 문단입니다. 두 번째 줄 꼬리</hp:t>'
+            '</hp:run>'
+            '<hp:linesegarray>'
+            '<hp:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" '
+            'baseline="850" spacing="600" horzpos="0" horzsize="40000" flags="0"/>'
+            '<hp:lineseg textpos="25" vertpos="1600" vertsize="1000" textheight="1000" '
+            'baseline="2450" spacing="600" horzpos="0" horzsize="40000" flags="0"/>'
+            '</hp:linesegarray>'
+            '</hp:p></hp:subList>'
+            '</hp:footNote></hp:ctrl>'
+            '</hp:run>'
+            '</hp:p>'
+        )
+        sec0_xml = sec0_xml.replace("</hs:sec>", footnote_para + "</hs:sec>", 1)
+
+        with zipfile.ZipFile(str(mod), "w") as z_out:
+            for name in names:
+                if name == "Contents/section0.xml":
+                    z_out.writestr(name, sec0_xml.encode("utf-8"))
+                else:
+                    z_out.writestr(name, z_in.read(name))
+
+    # Without include_footnotes -> 0 footnote candidates
+    cands_no_fn = detect_tail_fits(mod, max_chars=4, include_footnotes=False)
+    assert not any("각주 본문 내용" in c.text_preview for c in cands_no_fn)
+
+    # With include_footnotes=True -> candidate detected
+    cands_with_fn = detect_tail_fits(mod, max_chars=4, include_footnotes=True)
+    assert any("각주 본문 내용" in c.text_preview for c in cands_with_fn)

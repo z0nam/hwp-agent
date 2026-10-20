@@ -124,8 +124,14 @@ def _para_text(p: etree.Element) -> str:
     return "".join(parts)
 
 
+def _section_number(name: str) -> int:
+    m = re.search(r"section(\d+)\.xml$", name)
+    return int(m.group(1)) if m else 0
+
+
 def _section_parts(names: list[str]) -> list[str]:
-    return sorted(n for n in names if re.search(r"Contents/section\d+\.xml$", n))
+    parts = [n for n in names if re.search(r"Contents/section\d+\.xml$", n)]
+    return sorted(parts, key=_section_number)
 
 
 def _heading_identifiers(header_xml: str) -> tuple[set[str], set[str]]:
@@ -231,6 +237,35 @@ def _clone_char_pr(
     return clone
 
 
+class _CharPrCloner:
+    """Manages cloning of charPr elements preserving original font/size attributes."""
+
+    def __init__(self, char_props_elem: etree.Element):
+        self.char_props = char_props_elem
+        self.existing = char_props_elem.findall(_hh("charPr"))
+        self.by_id = {cp.get("id"): cp for cp in self.existing if cp.get("id")}
+        self.next_id = len(self.existing)
+        self.cache: dict[tuple[str, int, int], str] = {}
+
+    def get_or_create(self, orig_id: str, spacing: int, ratio: int) -> str:
+        key = (orig_id, spacing, ratio)
+        if key in self.cache:
+            return self.cache[key]
+        base_pr = self.by_id.get(orig_id)
+        if base_pr is None:
+            base_pr = self.existing[0] if self.existing else None
+        new_id_str = str(self.next_id)
+        new_pr = _clone_char_pr(base_pr, new_id_str, spacing, ratio)
+        self.char_props.append(new_pr)
+        self.by_id[new_id_str] = new_pr
+        self.cache[key] = new_id_str
+        self.next_id += 1
+        return new_id_str
+
+    def finalize(self) -> None:
+        self.char_props.set("itemCnt", str(self.next_id))
+
+
 def detect_tail_fits(
     src: str | Path,
     max_chars: int = 4,
@@ -270,10 +305,21 @@ def detect_tail_fits(
 
     raw_candidates: list[dict] = []
 
-    for s_idx, section_name in enumerate(sections):
+    for section_name in sections:
+        s_idx = _section_number(section_name)
         root = etree.fromstring(section_blobs[section_name])
         top_paragraphs = root.findall(_hp("p"))
-        for p_idx, p in enumerate(top_paragraphs):
+        top_pi_map = {id(p): pi for pi, p in enumerate(top_paragraphs)}
+
+        for p_idx, p in enumerate(root.iter(_hp("p"))):
+            # Exclude table cells
+            if any(anc.tag == _hp("tc") for anc in p.iterancestors()):
+                continue
+            # Exclude footnotes / subLists unless requested
+            if not include_footnotes and any(
+                anc.tag == _hp("subList") for anc in p.iterancestors()
+            ):
+                continue
             # Exclude headings
             st_ref = p.get("styleIDRef")
             pp_ref = p.get("paraPrIDRef")
@@ -319,9 +365,15 @@ def detect_tail_fits(
             if char_pr_id and char_pr_id in char_prs:
                 orig_spacing, orig_ratio = _char_pr_props(char_prs[char_pr_id])
 
-            orig_lines = baseline_lines.get((s_idx, p_idx), len(linesegs))
+            top_pi = top_pi_map.get(id(p))
+            if top_pi is not None and (s_idx, top_pi) in baseline_lines:
+                orig_lines = baseline_lines[(s_idx, top_pi)]
+            else:
+                orig_lines = len(linesegs)
+
             raw_candidates.append({
                 "s_idx": s_idx,
+                "top_pi": top_pi,
                 "section": section_name,
                 "para_index": p_idx,
                 "text_preview": text[:40].replace("\n", " "),
@@ -374,28 +426,24 @@ def detect_tail_fits(
         h_root = etree.fromstring(header_xml.encode("utf-8"))
         cps = h_root.find(".//" + _hh("charProperties"))
         if cps is not None:
-            max_id = str(len(cps.findall(_hh("charPr"))))
-            max_cp = _clone_char_pr(
-                cps.findall(_hh("charPr"))[0], max_id, min_spacing, min_ratio
-            )
-            cps.append(max_cp)
-            cps.set("itemCnt", str(int(max_id) + 1))
-            overrides = {
-                "Contents/header.xml": (
-                    b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-                    + etree.tostring(h_root, encoding="UTF-8")
-                )
-            }
-            by_sec: dict[str, list[int]] = {}
+            cloner_max = _CharPrCloner(cps)
+            overrides = {}
+            by_sec: dict[str, list[dict]] = {}
             for rc in raw_candidates:
-                by_sec.setdefault(rc["section"], []).append(rc["para_index"])
-            for sname, p_indices in by_sec.items():
+                by_sec.setdefault(rc["section"], []).append(rc)
+            for sname, cands in by_sec.items():
                 s_root = etree.fromstring(section_blobs[sname])
-                top_p = s_root.findall(_hp("p"))
-                for pi in p_indices:
-                    p = top_p[pi]
+                all_p = list(s_root.iter(_hp("p")))
+                cand_by_idx = {c["para_index"]: c for c in cands}
+                for pi, p in enumerate(all_p):
+                    if pi not in cand_by_idx:
+                        continue
                     for r in p.findall(_hp("run")):
-                        r.set("charPrIDRef", max_id)
+                        orig_cid = r.get("charPrIDRef") or "0"
+                        new_cid = cloner_max.get_or_create(
+                            orig_cid, min_spacing, min_ratio
+                        )
+                        r.set("charPrIDRef", new_cid)
                     lsa = p.find(_hp("linesegarray"))
                     if lsa is not None:
                         p.remove(lsa)
@@ -403,6 +451,11 @@ def detect_tail_fits(
                     b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
                     + etree.tostring(s_root, encoding="UTF-8")
                 )
+            cloner_max.finalize()
+            overrides["Contents/header.xml"] = (
+                b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                + etree.tostring(h_root, encoding="UTF-8")
+            )
             _rewrite_zip_preserving(src, tmp_max, overrides)
             max_lines = _get_rhwp_para_lines(tmp_max, resolved_rhwp)
         else:
@@ -412,9 +465,42 @@ def detect_tail_fits(
     # Identify survivors that reduce line count at max limit
     for c in raw_candidates:
         s_idx = c["s_idx"]
+        top_pi = c["top_pi"]
         p_idx = c["para_index"]
         orig_l = c["total_lines"]
-        at_max_l = max_lines.get((s_idx, p_idx), orig_l)
+
+        # If it's a footnote paragraph (top_pi is None), rhwp does not track it individually.
+        # Fall back to compute_tail_fit heuristic.
+        if top_pi is None:
+            target_sp, target_rat, fittable = compute_tail_fit(
+                total_chars=c["total_chars"],
+                tail_chars=c["tail_chars"],
+                orig_spacing=c["orig_spacing"],
+                orig_ratio=c["orig_ratio"],
+                min_spacing=min_spacing,
+                min_ratio=min_ratio,
+            )
+            target_lines = orig_l - 1 if fittable else orig_l
+            candidates.append(
+                TailFitCandidate(
+                    section=c["section"],
+                    para_index=p_idx,
+                    page_num=None,
+                    text_preview=c["text_preview"],
+                    total_lines=orig_l,
+                    target_lines=target_lines,
+                    total_chars=c["total_chars"],
+                    tail_chars=c["tail_chars"],
+                    orig_spacing=c["orig_spacing"],
+                    orig_ratio=c["orig_ratio"],
+                    target_spacing=target_sp,
+                    target_ratio=target_rat,
+                    fittable=fittable,
+                )
+            )
+            continue
+
+        at_max_l = max_lines.get((s_idx, top_pi), orig_l)
 
         if at_max_l >= orig_l:
             # Cannot reduce lines even at maximum allowed reduction
@@ -451,20 +537,19 @@ def detect_tail_fits(
                 tmp_step = Path(td) / "step.hwpx"
                 h_step = etree.fromstring(header_xml.encode("utf-8"))
                 cps_step = h_step.find(".//" + _hh("charProperties"))
-                step_id = str(len(cps_step.findall(_hh("charPr"))))
-                new_cp = _clone_char_pr(
-                    cps_step.findall(_hh("charPr"))[0], step_id, sp, rat
-                )
-                cps_step.append(new_cp)
-                cps_step.set("itemCnt", str(int(step_id) + 1))
+                cloner_step = _CharPrCloner(cps_step)
 
                 s_step = etree.fromstring(section_blobs[c["section"]])
-                p = s_step.findall(_hp("p"))[p_idx]
+                all_p = list(s_step.iter(_hp("p")))
+                p = all_p[p_idx]
                 for r in p.findall(_hp("run")):
-                    r.set("charPrIDRef", step_id)
+                    orig_cid = r.get("charPrIDRef") or "0"
+                    new_cid = cloner_step.get_or_create(orig_cid, sp, rat)
+                    r.set("charPrIDRef", new_cid)
                 lsa = p.find(_hp("linesegarray"))
                 if lsa is not None:
                     p.remove(lsa)
+                cloner_step.finalize()
 
                 ov = {
                     "Contents/header.xml": (
@@ -478,7 +563,7 @@ def detect_tail_fits(
                 }
                 _rewrite_zip_preserving(src, tmp_step, ov)
                 step_map = _get_rhwp_para_lines(tmp_step, resolved_rhwp)
-                cur_l = step_map.get((s_idx, p_idx), orig_l)
+                cur_l = step_map.get((s_idx, top_pi), orig_l)
                 if cur_l < orig_l:
                     found_sp = sp
                     found_rat = rat
@@ -596,36 +681,13 @@ def apply_tail_fits(
     if char_props is None:
         raise ValueError("Contents/header.xml missing charProperties")
 
-    existing_char_prs = char_props.findall(_hh("charPr"))
-    char_pr_by_id = {cp.get("id"): cp for cp in existing_char_prs if cp.get("id")}
-    next_id = len(existing_char_prs)
-
-    # Cache cloned charPr: (orig_id, target_spacing, target_ratio) -> new_id
-    cloned_cache: dict[tuple[str, int, int], str] = {}
-
-    def get_or_create_cloned_id(orig_id: str, spacing: int, ratio: int) -> str:
-        nonlocal next_id
-        key = (orig_id, spacing, ratio)
-        if key in cloned_cache:
-            return cloned_cache[key]
-        base_pr = char_pr_by_id.get(orig_id)
-        if base_pr is None:
-            base_pr = existing_char_prs[0]
-        new_id_str = str(next_id)
-        new_pr = _clone_char_pr(base_pr, new_id_str, spacing, ratio)
-        char_props.append(new_pr)
-        char_pr_by_id[new_id_str] = new_pr
-        cloned_cache[key] = new_id_str
-        next_id += 1
-        return new_id_str
-
+    cloner = _CharPrCloner(char_props)
     overrides: dict[str, bytes] = {}
     fitted_count = 0
 
     for section_name, cand_map in by_section.items():
         sec_root = etree.fromstring(section_blobs[section_name])
-        top_paragraphs = sec_root.findall(_hp("p"))
-        for p_idx, p in enumerate(top_paragraphs):
+        for p_idx, p in enumerate(sec_root.iter(_hp("p"))):
             if p_idx not in cand_map:
                 continue
             cand = cand_map[p_idx]
@@ -633,7 +695,7 @@ def apply_tail_fits(
             # Update runs with cloned charPr
             for run in p.findall(_hp("run")):
                 c_ref = run.get("charPrIDRef") or "0"
-                new_c_ref = get_or_create_cloned_id(
+                new_c_ref = cloner.get_or_create(
                     c_ref, cand.target_spacing, cand.target_ratio
                 )
                 run.set("charPrIDRef", new_c_ref)
@@ -651,7 +713,7 @@ def apply_tail_fits(
         )
 
     # Update itemCnt in header.xml
-    char_props.set("itemCnt", str(next_id))
+    cloner.finalize()
     decl = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
     overrides["Contents/header.xml"] = decl + etree.tostring(
         header_root, encoding="UTF-8", xml_declaration=False

@@ -85,6 +85,13 @@ _STATUS_KO: dict[str, str] = {
     "error": "실패",
 }
 
+# --dry-run 은 파일을 쓰지 않으므로 완료형("등록됨") 대신 예정형으로 보고한다.
+_STATUS_KO_DRY: dict[str, str] = {
+    "added": "등록 예정",
+    "updated": "갱신 예정",
+    "removed": "등록 해제 예정",
+}
+
 
 @dataclass(frozen=True)
 class RegistrationAction:
@@ -630,7 +637,7 @@ def _search_inline_table(text: str) -> tuple[int, int, str, str, str] | None:
 
 
 def _clean_codex_mcp_servers_table(raw: str) -> str:
-    """Remove scoped dotted keys and inline entries for hwp-agent ONLY within [mcp_servers]."""
+    """Remove hwp-agent dotted keys and inline table entries, scoped to [mcp_servers]."""
     cleaned = _CODEX_GLOBAL_DOTTED_RE.sub("", raw)
     m = _CODEX_MCP_TABLE_RE.search(cleaned)
     if m:
@@ -650,7 +657,7 @@ def _clean_codex_mcp_servers_table(raw: str) -> str:
 
 
 def _remove_codex_sections(raw: str) -> str:
-    """Remove [mcp_servers.hwp-agent] sections while preserving comments before next section."""
+    """Remove [mcp_servers.hwp-agent] sections, keeping comments before the next section."""
     while True:
         m = _CODEX_SECTION_HEADER_RE.search(raw)
         if not m:
@@ -1104,15 +1111,24 @@ def unregister_clients(
     return actions
 
 
-def format_registration_report(actions: Sequence[RegistrationAction]) -> str:
+def _status_label(act: RegistrationAction, dry_run: bool) -> str:
+    if dry_run and act.status in _STATUS_KO_DRY:
+        return _STATUS_KO_DRY[act.status]
+    return _STATUS_KO.get(act.status, act.status)
+
+
+def format_registration_report(
+    actions: Sequence[RegistrationAction], *, dry_run: bool = False
+) -> str:
     """Format the registration summary + client-specific usage guide.
 
     Shared by the CLI terminal output and the Windows Inno Setup completion page.
     Only the clients included in ``actions`` are shown in the usage guide.
     """
-    lines: list[str] = ["[MCP 등록 결과]"]
+    header = "[MCP 등록 미리보기 — --dry-run, 파일은 바꾸지 않음]" if dry_run else "[MCP 등록 결과]"
+    lines: list[str] = [header]
     for act in actions:
-        status_ko = _STATUS_KO.get(act.status, act.status)
+        status_ko = _status_label(act, dry_run)
         if act.status == "error" and act.detail:
             lines.append(f"  - {act.label}: {status_ko} — {act.detail} ({act.config_path})")
         else:
@@ -1134,11 +1150,18 @@ def format_registration_report(actions: Sequence[RegistrationAction]) -> str:
     return "\n".join(lines)
 
 
-def format_unregistration_report(actions: Sequence[RegistrationAction]) -> str:
+def format_unregistration_report(
+    actions: Sequence[RegistrationAction], *, dry_run: bool = False
+) -> str:
     """Format the unregistration summary."""
-    lines: list[str] = ["[MCP 등록 해제 결과]"]
+    header = (
+        "[MCP 등록 해제 미리보기 — --dry-run, 파일은 바꾸지 않음]"
+        if dry_run
+        else "[MCP 등록 해제 결과]"
+    )
+    lines: list[str] = [header]
     for act in actions:
-        status_ko = _STATUS_KO.get(act.status, act.status)
+        status_ko = _status_label(act, dry_run)
         if act.status == "error" and act.detail:
             lines.append(f"  - {act.label}: {status_ko} — {act.detail} ({act.config_path})")
         else:

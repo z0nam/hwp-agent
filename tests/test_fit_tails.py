@@ -366,3 +366,43 @@ def test_detect_tail_fits_footnote_handling(tmp_path: Path) -> None:
     # With include_footnotes=True -> candidate detected
     cands_with_fn = detect_tail_fits(mod, max_chars=4, include_footnotes=True)
     assert any("각주 본문 내용" in c.text_preview for c in cands_with_fn)
+
+
+def test_generate_fit_steps_preserves_already_tighter_properties() -> None:
+    from hwp_agent.ops.fit_tails import _generate_fit_steps
+
+    # If orig_spacing is already -8 (below min_spacing=-5), it should never expand to -5
+    steps = _generate_fit_steps(
+        orig_spacing=-8, orig_ratio=100, min_spacing=-5, min_ratio=95
+    )
+    # Since orig_spacing <= min_spacing, no spacing reduction steps needed
+    # Ratio reduction steps must hold base spacing at -8 (not -5)
+    for sp, rat in steps:
+        assert sp <= -8
+        assert rat <= 100
+
+    # compute_tail_fit with already tighter spacing
+    target_sp, target_rat, fittable = compute_tail_fit(
+        total_chars=100,
+        tail_chars=2,
+        orig_spacing=-8,
+        orig_ratio=100,
+        min_spacing=-5,
+        min_ratio=95,
+    )
+    assert fittable is True
+    assert target_sp == -8
+    assert target_rat == 98
+
+
+def test_detect_tail_fits_rhwp_failure_falls_back_to_heuristic(tmp_path: Path) -> None:
+    # When rhwp returns non-zero / fails, detect_tail_fits falls back to heuristic ratio
+    # rather than failing or returning 0 fittable candidates.
+    candidates = detect_tail_fits(
+        "tests/fixtures/sample_hwpx.hwpx",
+        max_chars=4,
+        rhwp_bin="/bin/false",
+    )
+    assert len(candidates) >= 1
+    # Fallback heuristic calculates candidates normally
+    assert any(c.fittable for c in candidates)

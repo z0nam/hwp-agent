@@ -62,12 +62,15 @@ def _generate_fit_steps(
 ) -> list[tuple[int, int]]:
     """Generate (spacing, ratio) steps reducing spacing first, then ratio."""
     steps: list[tuple[int, int]] = []
-    # 1. Reduce spacing (1% step) down to min_spacing
-    for sp in range(orig_spacing - 1, min_spacing - 1, -1):
+    eff_min_spacing = min(orig_spacing, min_spacing)
+    eff_min_ratio = min(orig_ratio, min_ratio)
+    # 1. Reduce spacing (1% step) down to eff_min_spacing
+    for sp in range(orig_spacing - 1, eff_min_spacing - 1, -1):
         steps.append((sp, orig_ratio))
-    # 2. Reduce ratio (1% step) down to min_ratio
-    for rat in range(orig_ratio - 1, min_ratio - 1, -1):
-        steps.append((min_spacing, rat))
+    # 2. Reduce ratio (1% step) down to eff_min_ratio
+    base_sp = eff_min_spacing
+    for rat in range(orig_ratio - 1, eff_min_ratio - 1, -1):
+        steps.append((base_sp, rat))
     return steps
 
 
@@ -86,19 +89,22 @@ def compute_tail_fit(
     if total_chars <= 0 or tail_chars <= 0:
         return orig_spacing, orig_ratio, False
 
+    eff_min_spacing = min(orig_spacing, min_spacing)
+    eff_min_ratio = min(orig_ratio, min_ratio)
+
     req_reduction = (tail_chars / total_chars) * 100.0
 
     target_spacing = orig_spacing
     target_ratio = orig_ratio
     curr_reduction = 0.0
 
-    # 1. Reduce spacing (1% step) down to min_spacing
-    while target_spacing > min_spacing and curr_reduction < req_reduction:
+    # 1. Reduce spacing (1% step) down to eff_min_spacing
+    while target_spacing > eff_min_spacing and curr_reduction < req_reduction:
         target_spacing -= 1
         curr_reduction += 1.0
 
-    # 2. Reduce ratio (1% step) down to min_ratio
-    while target_ratio > min_ratio and curr_reduction < req_reduction:
+    # 2. Reduce ratio (1% step) down to eff_min_ratio
+    while target_ratio > eff_min_ratio and curr_reduction < req_reduction:
         target_ratio -= 1
         curr_reduction += 1.0
 
@@ -193,11 +199,16 @@ def _char_pr_props(char_pr: etree.Element) -> tuple[int, int]:
     return spacing, ratio
 
 
-def _get_rhwp_para_lines(hwpx_path: str | Path, rhwp_bin: str) -> dict[tuple[int, int], int]:
-    """Parse paragraph visual line counts from `rhwp dump-pages`."""
+def _get_rhwp_para_lines(
+    hwpx_path: str | Path, rhwp_bin: str
+) -> dict[tuple[int, int], int] | None:
+    """Parse paragraph visual line counts from `rhwp dump-pages`.
+
+    Returns None if the rhwp subprocess fails or exits nonzero.
+    """
     res = subprocess.run([rhwp_bin, "dump-pages", str(hwpx_path)], capture_output=True, text=True)
     if res.returncode != 0:
-        return {}
+        return None
 
     sec_re = re.compile(r"section=(\d+)")
     p_re = re.compile(r"\b(?:FullParagraph|PartialParagraph)\s+pi=(\d+).*?\bls=(\d+)\[")
@@ -301,7 +312,15 @@ def detect_tail_fits(
                 char_prs[cid] = cp
 
     # Baseline line counts from rhwp if available
-    baseline_lines = _get_rhwp_para_lines(src, resolved_rhwp) if resolved_rhwp else {}
+    baseline_lines: dict[tuple[int, int], int] = {}
+    if resolved_rhwp:
+        lines_or_none = _get_rhwp_para_lines(src, resolved_rhwp)
+        if lines_or_none is not None:
+            baseline_lines = lines_or_none
+        else:
+            # dump-pages execution failed (renderer failure/incompatible binary):
+            # deliberately fall back to documented heuristic ratio
+            resolved_rhwp = None
 
     raw_candidates: list[dict] = []
 
@@ -438,11 +457,12 @@ def detect_tail_fits(
                 for pi, p in enumerate(all_p):
                     if pi not in cand_by_idx:
                         continue
+                    cand = cand_by_idx[pi]
+                    eff_sp = min(cand["orig_spacing"], min_spacing)
+                    eff_rat = min(cand["orig_ratio"], min_ratio)
                     for r in p.findall(_hp("run")):
                         orig_cid = r.get("charPrIDRef") or "0"
-                        new_cid = cloner_max.get_or_create(
-                            orig_cid, min_spacing, min_ratio
-                        )
+                        new_cid = cloner_max.get_or_create(orig_cid, eff_sp, eff_rat)
                         r.set("charPrIDRef", new_cid)
                     lsa = p.find(_hp("linesegarray"))
                     if lsa is not None:
@@ -457,7 +477,8 @@ def detect_tail_fits(
                 + etree.tostring(h_root, encoding="UTF-8")
             )
             _rewrite_zip_preserving(src, tmp_max, overrides)
-            max_lines = _get_rhwp_para_lines(tmp_max, resolved_rhwp)
+            max_lines_or_none = _get_rhwp_para_lines(tmp_max, resolved_rhwp)
+            max_lines = max_lines_or_none if max_lines_or_none is not None else {}
         else:
             max_lines = {}
 
@@ -563,6 +584,8 @@ def detect_tail_fits(
                 }
                 _rewrite_zip_preserving(src, tmp_step, ov)
                 step_map = _get_rhwp_para_lines(tmp_step, resolved_rhwp)
+                if step_map is None:
+                    continue
                 cur_l = step_map.get((s_idx, top_pi), orig_l)
                 if cur_l < orig_l:
                     found_sp = sp

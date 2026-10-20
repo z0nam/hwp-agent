@@ -94,9 +94,11 @@ class FillResult:
     filled: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    rows: list[str] = field(default_factory=list)  # row restructuring summary
 
     def as_dict(self) -> dict:
         return {
+            "rows": self.rows,
             "filled": self.filled,
             "missing": self.missing,
             "warnings": self.warnings,
@@ -430,6 +432,272 @@ def autofit_table(
     }
 
 
+# --------------------------------------------------------------------------- #
+# Row restructuring (issue #43): delete / append / repeat-group
+# --------------------------------------------------------------------------- #
+class RowOpError(ValueError):
+    """A row operation that would break the table (bad range, split merge)."""
+
+
+@dataclass
+class RowOp:
+    """One structural row edit on table ``table`` (rows are 0-based, inclusive).
+
+    * ``delete`` — remove rows ``start..end``.
+    * ``repeat`` — insert ``count`` blank copies of rows ``start..end`` right
+      after ``end``. ``--append-rows`` is a repeat of the last row
+      (``start``/``end`` left ``None`` and resolved against the live table).
+    """
+
+    kind: str  # "delete" | "repeat"
+    table: int
+    start: int | None
+    end: int | None
+    count: int = 1
+    source: str = ""  # the user's spec, for error messages
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+_ROW_SPEC_RE = re.compile(
+    r"^cell:(?P<t>\d+):(?:(?P<s>\d+)(?:-(?P<e>\d+))?)?(?::?\+(?P<n>\d+))?$"
+)
+
+
+def parse_row_op(kind: str, spec: str) -> RowOp:
+    """Parse a CLI row spec.
+
+    * ``delete``: ``cell:T:S-E`` or ``cell:T:R``
+    * ``append``: ``cell:T:+N``
+    * ``repeat``: ``cell:T:S-E:+N`` (``cell:T:R:+N`` for one row)
+    """
+    m = _ROW_SPEC_RE.match(spec.strip().replace(" ", ""))
+    usage = {
+        "delete": "cell:<table>:<start>-<end>",
+        "append": "cell:<table>:+<count>",
+        "repeat": "cell:<table>:<start>-<end>:+<count>",
+    }[kind]
+    if m is None:
+        raise RowOpError(f"{spec!r}: expected {usage}")
+    t, s, e, n = m.group("t", "s", "e", "n")
+    if kind == "append":
+        if s is not None or n is None:
+            raise RowOpError(f"{spec!r}: expected {usage}")
+        return RowOp("repeat", int(t), None, None, int(n), spec)
+    if s is None:
+        raise RowOpError(f"{spec!r}: expected {usage}")
+    start = int(s)
+    end = int(e) if e is not None else start
+    if end < start:
+        raise RowOpError(f"{spec!r}: range end {end} is before start {start}")
+    if kind == "delete":
+        if n is not None:
+            raise RowOpError(f"{spec!r}: expected {usage}")
+        return RowOp("delete", int(t), start, end, 1, spec)
+    if n is None:
+        raise RowOpError(f"{spec!r}: expected {usage}")
+    return RowOp("repeat", int(t), start, end, int(n), spec)
+
+
+def _table_element(doc: HwpxDocument, table_index: int):
+    """The live ``<hp:tbl>`` numbered like ``dump_grid`` / ``cell:`` paths."""
+    for it in _tn._collect_document_tables(doc):
+        if it.table_index == table_index:
+            return it.table.element
+    return None
+
+
+def _cell_rows(tc) -> tuple[int, int]:
+    """``(first_row, last_row)`` a cell covers."""
+    addr, span = tc.find(q("cellAddr")), tc.find(q("cellSpan"))
+    r0 = int(addr.get("rowAddr", "0"))
+    rs = int(span.get("rowSpan", "1")) if span is not None else 1
+    return r0, r0 + max(rs, 1) - 1
+
+
+def _table_rows(tbl) -> list:
+    """Direct ``<hp:tr>`` rows, checked to sit at ``rowAddr == index``."""
+    trs = tbl.findall(q("tr"))
+    for i, tr in enumerate(trs):
+        for tc in tr.findall(q("tc")):
+            if _cell_rows(tc)[0] != i:
+                raise RowOpError(
+                    f"row {i} holds a cell addressed to row {_cell_rows(tc)[0]} — "
+                    "unexpected table layout, refusing to restructure"
+                )
+    return trs
+
+
+def _check_range(tbl, start: int, end: int, op: RowOp) -> None:
+    """Refuse when a vertical merge straddles the ``start..end`` boundary."""
+    nrows = len(tbl.findall(q("tr")))
+    if not (0 <= start <= end < nrows):
+        raise RowOpError(
+            f"{op.source}: rows {start}-{end} out of range (table {op.table} has "
+            f"{nrows} rows: 0-{nrows - 1})"
+        )
+    for tr in tbl.findall(q("tr")):
+        for tc in tr.findall(q("tc")):
+            r0, r1 = _cell_rows(tc)
+            if r1 < start or r0 > end or (start <= r0 and r1 <= end):
+                continue  # outside, or fully inside the range
+            col = tc.find(q("cellAddr")).get("colAddr", "?")
+            raise RowOpError(
+                f"{op.source}: a vertically merged cell (rows {r0}-{r1}, col {col}) "
+                f"crosses the range boundary {start}-{end} — widen the range to "
+                f"cover rows {min(r0, start)}-{max(r1, end)} or unmerge it in Hangul"
+            )
+
+
+def _row_heights(tbl) -> list[int]:
+    """Per-row heights, solved from ``cellSz`` (merged cells fill the gaps)."""
+    trs = tbl.findall(q("tr"))
+    heights: list[int | None] = [None] * len(trs)
+    cells = []
+    for tr in trs:
+        for tc in tr.findall(q("tc")):
+            sz = tc.find(q("cellSz"))
+            r0, r1 = _cell_rows(tc)
+            cells.append((r0, r1, int(sz.get("height", "0")) if sz is not None else 0))
+    for r0, r1, h in cells:  # single-row cells define their row
+        if r0 == r1 and r0 < len(heights):
+            heights[r0] = max(heights[r0] or 0, h)
+    changed = True
+    while changed:  # a merged cell with one unknown row pins that row
+        changed = False
+        for r0, r1, h in sorted(cells, key=lambda c: c[1] - c[0]):
+            span = list(range(r0, min(r1, len(heights) - 1) + 1))
+            unknown = [r for r in span if heights[r] is None]
+            if len(unknown) == 1:
+                known = sum(heights[r] or 0 for r in span if r not in unknown)
+                heights[unknown[0]] = max(h - known, 0)
+                changed = True
+    # rows covered only by multi-row merges (e.g. one rowSpan=2 cell): split the
+    # merge's remaining height evenly so the table height still tracks the rows
+    for r0, r1, h in sorted(cells, key=lambda c: c[1] - c[0]):
+        span = list(range(r0, min(r1, len(heights) - 1) + 1))
+        unknown = [r for r in span if heights[r] is None]
+        if unknown:
+            known = sum(heights[r] or 0 for r in span if r not in unknown)
+            for r in unknown:
+                heights[r] = max(h - known, 0) // len(unknown)
+    return [h or 0 for h in heights]
+
+
+def _blank_cell(tc) -> None:
+    """Empty a cloned cell's text, keeping every format reference.
+
+    ``borderFillIDRef``/``cellSz``/``cellMargin`` and the first paragraph's
+    ``paraPrIDRef``/``styleIDRef`` and run ``charPrIDRef`` stay as they were. Extra
+    paragraphs go, inline objects (tabs, line breaks, controls) go, and the stale
+    ``<hp:linesegarray>`` is dropped so Hangul re-lays the empty line (issue #15).
+    """
+    sub = tc.find(q("subList"))
+    if sub is None:
+        return
+    ps = sub.findall(q("p"))
+    for extra in ps[1:]:
+        sub.remove(extra)
+    if not ps:
+        return
+    p = ps[0]
+    for lsa in p.findall(q("linesegarray")):
+        p.remove(lsa)
+    runs = p.findall(q("run"))
+    for extra in runs[1:]:
+        p.remove(extra)
+    for run in runs[:1]:
+        for child in list(run):
+            run.remove(child)
+
+
+def _shift_rows(trs, delta: int) -> None:
+    for tr in trs:
+        for tc in tr.findall(q("tc")):
+            addr = tc.find(q("cellAddr"))
+            addr.set("rowAddr", str(int(addr.get("rowAddr", "0")) + delta))
+
+
+def _resize_table(tbl, delta_rows: int, delta_height: int) -> None:
+    tbl.set("rowCnt", str(int(tbl.get("rowCnt", "0")) + delta_rows))
+    sz = tbl.find(q("sz"))
+    if sz is not None and sz.get("height") is not None:
+        sz.set("height", str(max(int(sz.get("height")) + delta_height, 0)))
+
+
+def _delete_rows(tbl, start: int, end: int) -> None:
+    trs = _table_rows(tbl)
+    heights = _row_heights(tbl)
+    for tr in trs[start : end + 1]:
+        tbl.remove(tr)
+    n = end - start + 1
+    _shift_rows(trs[end + 1 :], -n)
+    _resize_table(tbl, -n, -sum(heights[start : end + 1]))
+
+
+def _repeat_rows(tbl, start: int, end: int, count: int) -> None:
+    trs = _table_rows(tbl)
+    heights = _row_heights(tbl)
+    n = end - start + 1
+    _shift_rows(trs[end + 1 :], n * count)
+    anchor = trs[end]
+    for k in range(count):
+        for tr in trs[start : end + 1]:
+            clone = copy.deepcopy(tr)
+            for tc in clone.findall(q("tc")):
+                _blank_cell(tc)
+            _shift_rows([clone], n * (k + 1))
+            anchor.addnext(clone)
+            anchor = clone
+    _resize_table(tbl, n * count, sum(heights[start : end + 1]) * count)
+
+
+def restructure_rows(doc: HwpxDocument, ops: list[RowOp]) -> list[str]:
+    """Apply row ops in the fixed order **delete → append/repeat**.
+
+    Deletes address the original table; appends/repeats address the table *after*
+    the deletes. Within each phase ops run bottom-up so every spec keeps the
+    coordinates the user wrote. Overlapping ranges in one phase are refused, as is
+    any vertical merge that straddles a range boundary (fully-contained merges move
+    with their rows). Raises :class:`RowOpError` on the first op it can't apply
+    cleanly — callers then discard the document unsaved. Returns one summary line
+    per op.
+    """
+    done: list[str] = []
+    for kind in ("delete", "repeat"):
+        phase = [op for op in ops if op.kind == kind]
+        resolved: list[tuple[RowOp, object, int, int]] = []
+        for op in phase:
+            tbl = _table_element(doc, op.table)
+            if tbl is None:
+                raise RowOpError(f"{op.source}: table {op.table} not found")
+            start, end = op.start, op.end
+            if start is None:  # append: the last row
+                start = end = len(tbl.findall(q("tr"))) - 1
+            _table_rows(tbl)
+            _check_range(tbl, start, end, op)
+            resolved.append((op, tbl, start, end))
+        by_table: dict[int, list[tuple[int, int, str]]] = {}
+        for op, _tbl, s, e in resolved:
+            for s2, e2, src in by_table.get(op.table, []):
+                if s <= e2 and s2 <= e:
+                    raise RowOpError(f"{op.source}: overlaps {src} (rows {s2}-{e2})")
+            by_table.setdefault(op.table, []).append((s, e, op.source))
+        for op, tbl, s, e in sorted(resolved, key=lambda r: -r[2]):
+            if kind == "delete":
+                _delete_rows(tbl, s, e)
+                done.append(f"table {op.table}: deleted rows {s}-{e}")
+            else:
+                _repeat_rows(tbl, s, e, op.count)
+                n = e - s + 1
+                done.append(
+                    f"table {op.table}: rows {s}-{e} ×{op.count} → new rows "
+                    f"{e + 1}-{e + n * op.count}"
+                )
+    return done
+
+
 def _locate_cell_addr(doc: HwpxDocument, table_index: int, row: int, col: int):
     for it in _tn._collect_document_tables(doc):
         if it.table_index == table_index:
@@ -655,7 +923,13 @@ def _truthy(value: str) -> bool:
 
 
 def _apply_one(
-    doc: HwpxDocument, roots, key: str, value: str, by_name: dict[str, FormSlot]
+    doc: HwpxDocument,
+    roots,
+    key: str,
+    value: str,
+    by_name: dict[str, FormSlot],
+    *,
+    restructured: bool = False,
 ) -> bool:
     """Route a single mapping entry to the right edit. Returns success."""
     if key.startswith("cell:"):
@@ -685,7 +959,11 @@ def _apply_one(
     if slot is not None and slot.kind == "placeholder":
         return _replace_text_everywhere(roots, slot.locator, value) > 0
     if slot is not None and slot.kind == "cell":
-        tc = _locate_cell_addr(doc, slot.table_index, slot.row, slot.col)
+        if restructured:  # rows moved since analysis: resolve the label live
+            label, _, direction = slot.locator.partition(" > ")
+            tc = _locate_label_cell(doc, label, direction)
+        else:
+            tc = _locate_cell_addr(doc, slot.table_index, slot.row, slot.col)
         return _set_cell_text_overwrite(tc, value) if tc is not None else False
     if slot is not None and slot.kind == "checkbox":
         return _toggle_checkbox(roots, slot.name, on=_truthy(value))
@@ -741,6 +1019,7 @@ def fill_form(
     output: Path | str | None = None,
     precise: bool = True,
     allow_table_flow: bool = False,
+    row_ops: list[RowOp] | None = None,
 ) -> FillResult:
     """Fill slots by name/path, then save (in place unless ``output`` is given).
 
@@ -753,6 +1032,10 @@ def fill_form(
     * a ``{{placeholder}}`` name.
 
     Unrecognized / non-matching keys are reported in ``missing``.
+
+    ``row_ops`` (issue #43) restructure tables first — delete, then append/repeat
+    (see :func:`restructure_rows`) — so ``cell:`` keys address the *new* rows. A
+    bad row op raises :class:`RowOpError` and nothing is written.
     """
     by_name = {s.name: s for s in analyze_form(hwpx_path, precise=precise).slots}
 
@@ -761,8 +1044,10 @@ def fill_form(
     _heal_split_placeholders(roots)
 
     result = FillResult()
+    if row_ops:
+        result.rows = restructure_rows(doc, row_ops)
     for key, value in mapping.items():
-        ok = _apply_one(doc, roots, key, value, by_name)
+        ok = _apply_one(doc, roots, key, value, by_name, restructured=bool(row_ops))
         (result.filled if ok else result.missing).append(key)
 
     if allow_table_flow:

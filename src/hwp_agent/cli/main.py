@@ -444,16 +444,40 @@ def _cmd_form(args: argparse.Namespace) -> int:
             return 2
         key, value = item.split("=", 1)
         mapping[key.strip()] = value
-    if not mapping:
+
+    from ..ops import RowOpError, parse_row_op
+
+    try:
+        row_ops = [parse_row_op("delete", s) for s in args.delete_rows or []]
+        row_ops += [parse_row_op("append", s) for s in args.append_rows or []]
+        row_ops += [parse_row_op("repeat", s) for s in args.repeat_group or []]
+    except RowOpError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if not mapping and not row_ops:
         print("error: nothing to fill (use --map FILE or --set KEY=VALUE)", file=sys.stderr)
         return 2
 
     gr = _guard_output(args.output or args.file)
-    result = fill_form(
-        args.file, mapping, output=gr.target, precise=args.precise,
-        allow_table_flow=getattr(args, "allow_table_flow", False),
-    )
+    try:
+        result = fill_form(
+            args.file, mapping, output=gr.target, precise=args.precise,
+            allow_table_flow=getattr(args, "allow_table_flow", False),
+            row_ops=row_ops,
+        )
+    except RowOpError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        _guard_finalize(gr, quiet=True)
+        d = result.as_dict()
+        d["output"] = str(gr.target)
+        d["versioned"] = gr.versioned
+        print(json.dumps(d, ensure_ascii=False, indent=2))
+        return 1 if result.missing and not result.filled else 0
     _guard_finalize(gr)
+    for line in result.rows:
+        print(f"rows: {line}")
     print(f"filled {len(result.filled)} -> {gr.target}")
     if result.filled:
         print(f"  ok: {', '.join(result.filled)}")
@@ -1337,6 +1361,33 @@ def build_parser() -> argparse.ArgumentParser:
         dest="precise",
         action="store_false",
         help="emit every empty-neighbour cell as a slot (blank templates)",
+    )
+    ff.add_argument(
+        "--delete-rows",
+        dest="delete_rows",
+        action="append",
+        metavar="cell:T:S-E",
+        help="delete table T's rows S..E (0-based, inclusive; repeatable). Runs "
+        "first, on the original row numbers (issue #43)",
+    )
+    ff.add_argument(
+        "--append-rows",
+        dest="append_rows",
+        action="append",
+        metavar="cell:T:+N",
+        help="append N blank copies of table T's last row (format kept, text "
+        "cleared). Runs after --delete-rows and before --set, so --set can fill "
+        "the new rows (see `form analyze --grid`)",
+    )
+    ff.add_argument(
+        "--repeat-group",
+        dest="repeat_group",
+        action="append",
+        metavar="cell:T:S-E:+N",
+        help="insert N blank copies of table T's rows S..E right after row E "
+        "(e.g. a shaded category row + its detail rows). Same phase as "
+        "--append-rows; rows are numbered after --delete-rows. Ranges must not "
+        "overlap within one call",
     )
     ff.add_argument("--json", action="store_true", help="emit fill report as JSON")
     ff.add_argument("-o", "--output", type=Path, default=None, help="output file")

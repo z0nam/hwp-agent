@@ -78,6 +78,14 @@ output.
      also emitted as `cell_path` by `analyze`), a `checkbox:<label>` set `on`/`off`
      (□↔■), a `tab:<anchor>` inline field, or a `{{placeholder}}`. Fills overwrite
      (true SET), so re-running is safe.
+     **Sample table has too few/too many rows?** Restructure it in the same call:
+     `--delete-rows cell:0:2-13` (rows of the original table) and
+     `--append-rows cell:0:+20` (blank copies of the last row, format kept) run
+     *before* `--set`, so `--set` addresses the new rows. To copy a row group
+     (e.g. a shaded category row + its detail rows) use
+     `--repeat-group cell:0:2-4:+7` (rows 2-4, 7 more copies after row 4). Run
+     `form analyze --grid` on the result to see the final coordinates. A
+     vertical merge straddling a range boundary is refused — widen the range.
    - **Profile auto-fill** (the same person's standing data across many forms) —
      `hwp-agent form fill work.hwpx --profile ~/.config/hwp-agent/profile.json
      --date today -o out.hwpx`. Maps 성명/생년월일/주소/연락처/학력/경력/계좌 from a
@@ -319,6 +327,7 @@ reference **explicitly**:
 | `hwp-agent form analyze FILE.hwpx [--json]` | list fillable slots (label -> *empty* neighbour only) |
 | `hwp-agent form analyze FILE.hwpx --grid [--json]` | list every table cell with its `cell:<t>:<r>:<c>` fill path — use when the cell you want already has text |
 | `hwp-agent form fill FILE.hwpx --set K=V [-o OUT]` | fill slots by name |
+| `hwp-agent form fill FILE.hwpx [--delete-rows cell:T:S-E] [--append-rows cell:T:+N] [--repeat-group cell:T:S-E:+N] --set ...` | restructure table rows first (delete → append/repeat → set), cell formats kept (issue #43) |
 | `hwp-agent write C.md --template FILE.hwpx [--chapter N] [--table-template CAPTION] [--equal-columns] [-o OUT]` | write Markdown into a template (`author` = alias). Generated tables size columns by content by default; `--equal-columns` keeps them equal |
 | `hwp-agent build MANIFEST.json [-o OUT]` | assemble a multi-section report — a JSON manifest maps markers (`summary`/`intro`/`body`/`references`) to Markdown file(s) (a list is concatenated); each part fills its `{{marker}}` in its own section |
 | `hwp-agent image list FILE.hwpx [--json]` | list figure image slots (ref, format, px size, caption) |

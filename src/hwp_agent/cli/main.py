@@ -1065,8 +1065,8 @@ def _cmd_write(args: argparse.Namespace) -> int:
             print(f"  fitted {fitted} paragraph widow tail(s)")
         else:
             print(
-                "  note: --fit-tails requires layout caches (<hp:linesegarray>); "
-                "run 'hwp-agent fit tails' after saving in Hangul"
+                "  note: --fit-tails fitted nothing (without rhwp it needs layout "
+                "caches — run 'hwp-agent fit tails' after saving in Hangul)"
             )
     _guard_finalize(gr)
     print(f"placed {result.placed} block(s) -> {gr.target}")
@@ -1121,8 +1121,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
             print(f"  fitted {fitted} paragraph widow tail(s)")
         else:
             print(
-                "  note: --fit-tails requires layout caches (<hp:linesegarray>); "
-                "run 'hwp-agent fit tails' after saving in Hangul"
+                "  note: --fit-tails fitted nothing (without rhwp it needs layout "
+                "caches — run 'hwp-agent fit tails' after saving in Hangul)"
             )
     _guard_finalize(gr)
     print(f"assembled {result.placed} block(s) -> {gr.target}")
@@ -1684,7 +1684,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--fit-tails",
         action="store_true",
         default=False,
-        help="shorten widow tail lines (requires layout cache; else run fit tails after saving)",
+        help="shorten widow tail lines (verified with rhwp; without rhwp needs a layout cache)",
     )
     wr.add_argument("-o", "--output", type=Path, default=None, help="output file")
     wr.set_defaults(func=_cmd_write)
@@ -1714,7 +1714,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--fit-tails",
         action="store_true",
         default=False,
-        help="shorten widow tail lines (requires layout cache; else run fit tails after saving)",
+        help="shorten widow tail lines (verified with rhwp; without rhwp needs a layout cache)",
     )
     bd.set_defaults(func=_cmd_build)
 

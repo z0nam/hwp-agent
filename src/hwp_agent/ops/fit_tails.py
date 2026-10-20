@@ -236,6 +236,11 @@ def detect_tail_fits(
             if not (1 <= tail_chars <= max_chars):
                 continue
 
+            # Skip tails created by an explicit lineBreak — spacing/ratio adjustments
+            # cannot pull text across a forced hard break.
+            if text[:last_pos].endswith("\n") or "\n" in text[last_pos:]:
+                continue
+
             # Find paragraph's primary charPrIDRef
             char_pr_id = None
             for run in p.findall(_hp("run")):

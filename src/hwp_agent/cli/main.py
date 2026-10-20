@@ -1028,13 +1028,18 @@ def _cmd_write(args: argparse.Namespace) -> int:
         blue_links=getattr(args, "blue_links", False),
         math=getattr(args, "math", True),
     )
-    _guard_finalize(gr)
     if getattr(args, "fit_tails", False):
         from ..ops import apply_tail_fits
 
         fitted = apply_tail_fits(gr.target, gr.target)
         if fitted:
             print(f"  fitted {fitted} paragraph widow tail(s)")
+        else:
+            print(
+                "  note: --fit-tails requires layout caches (<hp:linesegarray>); "
+                "run 'hwp-agent fit tails' after saving in Hangul"
+            )
+    _guard_finalize(gr)
     print(f"placed {result.placed} block(s) -> {gr.target}")
     if result.links:
         print(f"  linked {result.links} URL(s) as hyperlink fields")
@@ -1079,13 +1084,18 @@ def _cmd_build(args: argparse.Namespace) -> int:
     except (OSError, ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    _guard_finalize(gr)
     if getattr(args, "fit_tails", False):
         from ..ops import apply_tail_fits
 
         fitted = apply_tail_fits(gr.target, gr.target)
         if fitted:
             print(f"  fitted {fitted} paragraph widow tail(s)")
+        else:
+            print(
+                "  note: --fit-tails requires layout caches (<hp:linesegarray>); "
+                "run 'hwp-agent fit tails' after saving in Hangul"
+            )
+    _guard_finalize(gr)
     print(f"assembled {result.placed} block(s) -> {gr.target}")
     if result.links:
         print(f"  linked {result.links} URL(s) as hyperlink fields")
@@ -1618,7 +1628,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--fit-tails",
         action="store_true",
         default=False,
-        help="post-process: shorten widow tail lines by slightly reducing spacing/ratio",
+        help="shorten widow tail lines (requires layout cache; else run fit tails after saving)",
     )
     wr.add_argument("-o", "--output", type=Path, default=None, help="output file")
     wr.set_defaults(func=_cmd_write)
@@ -1648,7 +1658,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--fit-tails",
         action="store_true",
         default=False,
-        help="post-process: shorten widow tail lines by slightly reducing spacing/ratio",
+        help="shorten widow tail lines (requires layout cache; else run fit tails after saving)",
     )
     bd.set_defaults(func=_cmd_build)
 

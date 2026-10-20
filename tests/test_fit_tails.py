@@ -149,3 +149,46 @@ def test_cli_fit_tails_output(tmp_path: Path, capsys) -> None:
     captured = capsys.readouterr().out
     assert "적용 완료" in captured
     assert audit_package(out) == []
+
+
+def test_detect_tail_fits_skips_hard_linebreak(tmp_path: Path) -> None:
+    # A paragraph where the short tail follows an explicit <hp:lineBreak/>
+    # must be skipped because tightening spacing cannot pull text across a hard break.
+    import zipfile
+
+    src = Path("tests/fixtures/sample_hwpx.hwpx")
+    mod = tmp_path / "hard_break.hwpx"
+
+    with zipfile.ZipFile(str(src)) as z_in:
+        names = z_in.namelist()
+        sec0_xml = z_in.read("Contents/section0.xml").decode("utf-8")
+
+        # Inject a multi-line paragraph with a hard break before the tail
+        injected = (
+            '<hp:p xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">'
+            '<hp:run charPrIDRef="0">'
+            "<hp:t>이것은 긴 본문 테스트 문단입니다. 첫째 줄이 여기에 있고"
+            "<hp:lineBreak/>"
+            "꼬리</hp:t>"
+            "</hp:run>"
+            "<hp:linesegarray>"
+            '<hp:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" '
+            'baseline="850" spacing="600" horzpos="0" horzsize="40000" flags="0"/>'
+            '<hp:lineseg textpos="33" vertpos="1600" vertsize="1000" textheight="1000" '
+            'baseline="2450" spacing="600" horzpos="0" horzsize="40000" flags="0"/>'
+            "</hp:linesegarray>"
+            "</hp:p>"
+        )
+        sec0_xml = sec0_xml.replace("</hp:sec>", injected + "</hp:sec>", 1)
+
+        with zipfile.ZipFile(str(mod), "w") as z_out:
+            for name in names:
+                if name == "Contents/section0.xml":
+                    z_out.writestr(name, sec0_xml.encode("utf-8"))
+                else:
+                    z_out.writestr(name, z_in.read(name))
+
+    candidates = detect_tail_fits(mod, max_chars=4)
+    # Ensure none of the candidates has the hard break text preview
+    assert not any("첫째 줄이 여기에 있고" in c.text_preview for c in candidates)
+

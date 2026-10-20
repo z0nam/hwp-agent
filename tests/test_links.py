@@ -417,3 +417,28 @@ def test_left_para_pr_skips_non_justify() -> None:
         # 재사용 확인
         assert _left_para_pr(doc, jid, cache) == res
 
+
+@pytest.mark.skipif(not TPL.is_file(), reason="bundled default template missing")
+def test_generic_table_cell_fallback_to_cp_para_pr(tmp_path: Path) -> None:
+    """When a table zone has no paraPr (generic table), fall back to cell paragraph property."""
+    long_url = "https://example.com/very/long/url/without/spaces/that/exceeds/thirty/chars"
+    md = f"""# 제목
+
+| A | B |
+| --- | --- |
+| 항목 | {long_url} |
+"""
+    out = tmp_path / "generic_tbl.hwpx"
+    fill_from_markdown(TPL, md, output=out, link_align="auto")
+    with zipfile.ZipFile(out) as zf:
+        header_xml = etree.fromstring(zf.read("Contents/header.xml"))
+        sec_xml = etree.fromstring(zf.read("Contents/section0.xml"))
+
+    for p in sec_xml.findall(f".//{_HP}tc/{_HP}subList/{_HP}p"):
+        txt = "".join(p.itertext())
+        if "without/spaces" in txt:
+            pr_id = p.get("paraPrIDRef")
+            pp = header_xml.find(f".//{_HH}paraPr[@id='{pr_id}']")
+            al = pp.find(f"{_HH}align")
+            assert al is not None and al.get("horizontal") == "LEFT"
+

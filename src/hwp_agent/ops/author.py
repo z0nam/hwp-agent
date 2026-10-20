@@ -1027,7 +1027,7 @@ def _style_cell(
     cp = cell.paragraphs[0]
     if zone.style is not None:
         cp.style_id_ref = zone.style
-    chosen_para = zone.para
+    chosen_para = zone.para if zone.para is not None else cp.para_pr_id_ref
     if para_resolver is not None:
         chosen_para = para_resolver(chosen_para, text)
     if chosen_para is not None:

@@ -8,12 +8,15 @@ from __future__ import annotations
 import copy
 import re
 import shutil
+import subprocess
+import tempfile
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from lxml import etree
 
+from ..render.rhwp import resolve_rhwp
 from .container import _rewrite_zip_preserving
 
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
@@ -34,20 +37,41 @@ _LANG_ATTRS = ("hangul", "latin", "hanja", "japanese", "other", "symbol", "user"
 @dataclass(frozen=True)
 class TailFitCandidate:
     section: str  # e.g. "Contents/section0.xml"
-    para_index: int  # 0-based index of <hp:p> in its section
+    para_index: int  # 0-based top-level index of <hp:p> in its section
     page_num: int | None  # 1-based page number if available
     text_preview: str  # first 40 chars of paragraph
     total_lines: int  # visual lines count (>= 2)
+    target_lines: int  # fitted lines count (if fittable, total_lines - 1)
     total_chars: int  # total character count of paragraph
     tail_chars: int  # character count of the last line (1..max_chars)
     orig_spacing: int  # original spacing (e.g. 0)
     orig_ratio: int  # original ratio (e.g. 100)
     target_spacing: int  # fitted spacing (e.g. -3)
     target_ratio: int  # fitted ratio (e.g. 100)
-    fittable: bool  # True if fits within (min_spacing, min_ratio)
+    fittable: bool  # True if fits within (min_spacing, min_ratio) and reduces line count
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+def _generate_fit_steps(
+    orig_spacing: int = 0,
+    orig_ratio: int = 100,
+    min_spacing: int = -5,
+    min_ratio: int = 95,
+) -> list[tuple[int, int]]:
+    """Generate (spacing, ratio) steps reducing spacing first, then ratio."""
+    steps: list[tuple[int, int]] = []
+    eff_min_spacing = min(orig_spacing, min_spacing)
+    eff_min_ratio = min(orig_ratio, min_ratio)
+    # 1. Reduce spacing (1% step) down to eff_min_spacing
+    for sp in range(orig_spacing - 1, eff_min_spacing - 1, -1):
+        steps.append((sp, orig_ratio))
+    # 2. Reduce ratio (1% step) down to eff_min_ratio
+    base_sp = eff_min_spacing
+    for rat in range(orig_ratio - 1, eff_min_ratio - 1, -1):
+        steps.append((base_sp, rat))
+    return steps
 
 
 def compute_tail_fit(
@@ -58,14 +82,15 @@ def compute_tail_fit(
     min_spacing: int = -5,
     min_ratio: int = 95,
 ) -> tuple[int, int, bool]:
-    """Compute (target_spacing, target_ratio, fittable) to pull back the widow tail.
+    """Compute (target_spacing, target_ratio, fittable) using heuristic ratio.
 
-    The required reduction ratio is tail_chars / total_chars (as percentage).
-    We reduce spacing first (down to min_spacing), then ratio (down to min_ratio).
-    Returns (target_spacing, target_ratio, fittable).
+    Used as fallback when rhwp binary is unavailable.
     """
     if total_chars <= 0 or tail_chars <= 0:
         return orig_spacing, orig_ratio, False
+
+    eff_min_spacing = min(orig_spacing, min_spacing)
+    eff_min_ratio = min(orig_ratio, min_ratio)
 
     req_reduction = (tail_chars / total_chars) * 100.0
 
@@ -73,13 +98,13 @@ def compute_tail_fit(
     target_ratio = orig_ratio
     curr_reduction = 0.0
 
-    # 1. Reduce spacing (1% step) down to min_spacing
-    while target_spacing > min_spacing and curr_reduction < req_reduction:
+    # 1. Reduce spacing (1% step) down to eff_min_spacing
+    while target_spacing > eff_min_spacing and curr_reduction < req_reduction:
         target_spacing -= 1
         curr_reduction += 1.0
 
-    # 2. Reduce ratio (1% step) down to min_ratio
-    while target_ratio > min_ratio and curr_reduction < req_reduction:
+    # 2. Reduce ratio (1% step) down to eff_min_ratio
+    while target_ratio > eff_min_ratio and curr_reduction < req_reduction:
         target_ratio -= 1
         curr_reduction += 1.0
 
@@ -105,12 +130,22 @@ def _para_text(p: etree.Element) -> str:
     return "".join(parts)
 
 
+def _section_number(name: str) -> int:
+    m = re.search(r"section(\d+)\.xml$", name)
+    return int(m.group(1)) if m else 0
+
+
 def _section_parts(names: list[str]) -> list[str]:
-    return sorted(n for n in names if re.search(r"Contents/section\d+\.xml$", n))
+    parts = [n for n in names if re.search(r"Contents/section\d+\.xml$", n)]
+    return sorted(parts, key=_section_number)
 
 
 def _heading_identifiers(header_xml: str) -> tuple[set[str], set[str]]:
-    """Return (heading_style_ids, heading_para_pr_ids) from header XML."""
+    """Return (heading_style_ids, heading_para_pr_ids) from header XML.
+
+    Only OUTLINE (structural headings) are excluded. BULLET paragraphs are
+    institutional body lists and MUST be included in fitting.
+    """
     if not header_xml:
         return set(), set()
     root = etree.fromstring(header_xml.encode("utf-8"))
@@ -121,7 +156,7 @@ def _heading_identifiers(header_xml: str) -> tuple[set[str], set[str]]:
         heading = pp.find(_hh("heading"))
         if heading is not None:
             htype = heading.get("type", "NONE")
-            if htype in ("OUTLINE", "BULLET"):
+            if htype == "OUTLINE":
                 if pp_id:
                     heading_para_pr_ids.add(pp_id)
 
@@ -136,7 +171,7 @@ def _heading_identifiers(header_xml: str) -> tuple[set[str], set[str]]:
         elif any(
             k in name.lower()
             for k in ("개요", "제목", "heading", "title", "ai:h", "ai:heading")
-        ):
+        ) and not any(k in name.lower() for k in ("bullet", "글머리")):
             if st_id:
                 heading_style_ids.add(st_id)
 
@@ -164,16 +199,95 @@ def _char_pr_props(char_pr: etree.Element) -> tuple[int, int]:
     return spacing, ratio
 
 
+def _get_rhwp_para_lines(
+    hwpx_path: str | Path, rhwp_bin: str
+) -> dict[tuple[int, int], int] | None:
+    """Parse paragraph visual line counts from `rhwp dump-pages`.
+
+    Returns None if the rhwp subprocess fails or exits nonzero.
+    """
+    res = subprocess.run([rhwp_bin, "dump-pages", str(hwpx_path)], capture_output=True, text=True)
+    if res.returncode != 0:
+        return None
+
+    sec_re = re.compile(r"section=(\d+)")
+    p_re = re.compile(r"\b(?:FullParagraph|PartialParagraph)\s+pi=(\d+).*?\bls=(\d+)\[")
+    cur_sec = 0
+    lines_map: dict[tuple[int, int], int] = {}
+    for line in res.stdout.splitlines():
+        sm = sec_re.search(line)
+        if sm and "=== 페이지" in line:
+            cur_sec = int(sm.group(1))
+        pm = p_re.search(line)
+        if pm:
+            pi = int(pm.group(1))
+            ls = int(pm.group(2))
+            lines_map[(cur_sec, pi)] = lines_map.get((cur_sec, pi), 0) + ls
+    return lines_map
+
+
+def _clone_char_pr(
+    char_pr: etree.Element, new_id: str, spacing: int, ratio: int
+) -> etree.Element:
+    """Deep-copy charPr, set new id, and update spacing/ratio attributes."""
+    clone = copy.deepcopy(char_pr)
+    clone.set("id", str(new_id))
+
+    sp = clone.find(_hh("spacing"))
+    if sp is None:
+        sp = etree.SubElement(clone, _hh("spacing"))
+    for attr in _LANG_ATTRS:
+        sp.set(attr, str(spacing))
+
+    rat = clone.find(_hh("ratio"))
+    if rat is None:
+        rat = etree.SubElement(clone, _hh("ratio"))
+    for attr in _LANG_ATTRS:
+        rat.set(attr, str(ratio))
+
+    return clone
+
+
+class _CharPrCloner:
+    """Manages cloning of charPr elements preserving original font/size attributes."""
+
+    def __init__(self, char_props_elem: etree.Element):
+        self.char_props = char_props_elem
+        self.existing = char_props_elem.findall(_hh("charPr"))
+        self.by_id = {cp.get("id"): cp for cp in self.existing if cp.get("id")}
+        self.next_id = len(self.existing)
+        self.cache: dict[tuple[str, int, int], str] = {}
+
+    def get_or_create(self, orig_id: str, spacing: int, ratio: int) -> str:
+        key = (orig_id, spacing, ratio)
+        if key in self.cache:
+            return self.cache[key]
+        base_pr = self.by_id.get(orig_id)
+        if base_pr is None:
+            base_pr = self.existing[0] if self.existing else None
+        new_id_str = str(self.next_id)
+        new_pr = _clone_char_pr(base_pr, new_id_str, spacing, ratio)
+        self.char_props.append(new_pr)
+        self.by_id[new_id_str] = new_pr
+        self.cache[key] = new_id_str
+        self.next_id += 1
+        return new_id_str
+
+    def finalize(self) -> None:
+        self.char_props.set("itemCnt", str(self.next_id))
+
+
 def detect_tail_fits(
     src: str | Path,
     max_chars: int = 4,
     min_spacing: int = -5,
     min_ratio: int = 95,
     include_footnotes: bool = False,
+    rhwp_bin: str | None = None,
 ) -> list[TailFitCandidate]:
-    """Find paragraphs with widow tail lines eligible for compression."""
-    candidates: list[TailFitCandidate] = []
+    """Find paragraphs with widow tail lines and verify reduction with rhwp."""
     src = Path(src)
+    resolved_rhwp = resolve_rhwp(rhwp_bin)
 
     with zipfile.ZipFile(str(src)) as z:
         names = z.namelist()
@@ -197,8 +311,25 @@ def detect_tail_fits(
             if cid:
                 char_prs[cid] = cp
 
+    # Baseline line counts from rhwp if available
+    baseline_lines: dict[tuple[int, int], int] = {}
+    if resolved_rhwp:
+        lines_or_none = _get_rhwp_para_lines(src, resolved_rhwp)
+        if lines_or_none is not None:
+            baseline_lines = lines_or_none
+        else:
+            # dump-pages execution failed (renderer failure/incompatible binary):
+            # deliberately fall back to documented heuristic ratio
+            resolved_rhwp = None
+
+    raw_candidates: list[dict] = []
+
     for section_name in sections:
+        s_idx = _section_number(section_name)
         root = etree.fromstring(section_blobs[section_name])
+        top_paragraphs = root.findall(_hp("p"))
+        top_pi_map = {id(p): pi for pi, p in enumerate(top_paragraphs)}
+
         for p_idx, p in enumerate(root.iter(_hp("p"))):
             # Exclude table cells
             if any(anc.tag == _hp("tc") for anc in p.iterancestors()):
@@ -236,12 +367,11 @@ def detect_tail_fits(
             if not (1 <= tail_chars <= max_chars):
                 continue
 
-            # Skip tails created by an explicit lineBreak — spacing/ratio adjustments
-            # cannot pull text across a forced hard break.
+            # Skip tails created by an explicit lineBreak
             if text[:last_pos].endswith("\n") or "\n" in text[last_pos:]:
                 continue
 
-            # Find paragraph's primary charPrIDRef
+            # Primary charPrIDRef
             char_pr_id = None
             for run in p.findall(_hp("run")):
                 c_ref = run.get("charPrIDRef")
@@ -254,32 +384,233 @@ def detect_tail_fits(
             if char_pr_id and char_pr_id in char_prs:
                 orig_spacing, orig_ratio = _char_pr_props(char_prs[char_pr_id])
 
-            target_spacing, target_ratio, fittable = compute_tail_fit(
-                total_chars=total_chars,
-                tail_chars=tail_chars,
-                orig_spacing=orig_spacing,
-                orig_ratio=orig_ratio,
+            top_pi = top_pi_map.get(id(p))
+            if top_pi is not None and (s_idx, top_pi) in baseline_lines:
+                orig_lines = baseline_lines[(s_idx, top_pi)]
+            else:
+                orig_lines = len(linesegs)
+
+            raw_candidates.append({
+                "s_idx": s_idx,
+                "top_pi": top_pi,
+                "section": section_name,
+                "para_index": p_idx,
+                "text_preview": text[:40].replace("\n", " "),
+                "total_lines": orig_lines,
+                "total_chars": total_chars,
+                "tail_chars": tail_chars,
+                "orig_spacing": orig_spacing,
+                "orig_ratio": orig_ratio,
+            })
+
+    if not raw_candidates:
+        return []
+
+    # If rhwp is not available, fall back to heuristic ratio
+    if not resolved_rhwp:
+        candidates: list[TailFitCandidate] = []
+        for c in raw_candidates:
+            target_sp, target_rat, fittable = compute_tail_fit(
+                total_chars=c["total_chars"],
+                tail_chars=c["tail_chars"],
+                orig_spacing=c["orig_spacing"],
+                orig_ratio=c["orig_ratio"],
                 min_spacing=min_spacing,
                 min_ratio=min_ratio,
             )
-
-            preview = text[:40].replace("\n", " ")
+            target_lines = c["total_lines"] - 1 if fittable else c["total_lines"]
             candidates.append(
                 TailFitCandidate(
-                    section=section_name,
-                    para_index=p_idx,
+                    section=c["section"],
+                    para_index=c["para_index"],
                     page_num=None,
-                    text_preview=preview,
-                    total_lines=len(linesegs),
-                    total_chars=total_chars,
-                    tail_chars=tail_chars,
-                    orig_spacing=orig_spacing,
-                    orig_ratio=orig_ratio,
-                    target_spacing=target_spacing,
-                    target_ratio=target_ratio,
+                    text_preview=c["text_preview"],
+                    total_lines=c["total_lines"],
+                    target_lines=target_lines,
+                    total_chars=c["total_chars"],
+                    tail_chars=c["tail_chars"],
+                    orig_spacing=c["orig_spacing"],
+                    orig_ratio=c["orig_ratio"],
+                    target_spacing=target_sp,
+                    target_ratio=target_rat,
                     fittable=fittable,
                 )
             )
+        return candidates
+
+    # RHWP-driven step-wise simulation
+    # Step 1: Fast batch scan at max limit (min_spacing, min_ratio) to filter unfittable paras
+    with tempfile.TemporaryDirectory() as td:
+        tmp_max = Path(td) / "batch_max.hwpx"
+        h_root = etree.fromstring(header_xml.encode("utf-8"))
+        cps = h_root.find(".//" + _hh("charProperties"))
+        if cps is not None:
+            cloner_max = _CharPrCloner(cps)
+            overrides = {}
+            by_sec: dict[str, list[dict]] = {}
+            for rc in raw_candidates:
+                by_sec.setdefault(rc["section"], []).append(rc)
+            for sname, cands in by_sec.items():
+                s_root = etree.fromstring(section_blobs[sname])
+                all_p = list(s_root.iter(_hp("p")))
+                cand_by_idx = {c["para_index"]: c for c in cands}
+                for pi, p in enumerate(all_p):
+                    if pi not in cand_by_idx:
+                        continue
+                    cand = cand_by_idx[pi]
+                    eff_sp = min(cand["orig_spacing"], min_spacing)
+                    eff_rat = min(cand["orig_ratio"], min_ratio)
+                    for r in p.findall(_hp("run")):
+                        orig_cid = r.get("charPrIDRef") or "0"
+                        new_cid = cloner_max.get_or_create(orig_cid, eff_sp, eff_rat)
+                        r.set("charPrIDRef", new_cid)
+                    lsa = p.find(_hp("linesegarray"))
+                    if lsa is not None:
+                        p.remove(lsa)
+                overrides[sname] = (
+                    b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                    + etree.tostring(s_root, encoding="UTF-8")
+                )
+            cloner_max.finalize()
+            overrides["Contents/header.xml"] = (
+                b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                + etree.tostring(h_root, encoding="UTF-8")
+            )
+            _rewrite_zip_preserving(src, tmp_max, overrides)
+            max_lines_or_none = _get_rhwp_para_lines(tmp_max, resolved_rhwp)
+            max_lines = max_lines_or_none if max_lines_or_none is not None else {}
+        else:
+            max_lines = {}
+
+    candidates = []
+    # Identify survivors that reduce line count at max limit
+    for c in raw_candidates:
+        s_idx = c["s_idx"]
+        top_pi = c["top_pi"]
+        p_idx = c["para_index"]
+        orig_l = c["total_lines"]
+
+        # If it's a footnote paragraph (top_pi is None), rhwp does not track it individually.
+        # Fall back to compute_tail_fit heuristic.
+        if top_pi is None:
+            target_sp, target_rat, fittable = compute_tail_fit(
+                total_chars=c["total_chars"],
+                tail_chars=c["tail_chars"],
+                orig_spacing=c["orig_spacing"],
+                orig_ratio=c["orig_ratio"],
+                min_spacing=min_spacing,
+                min_ratio=min_ratio,
+            )
+            target_lines = orig_l - 1 if fittable else orig_l
+            candidates.append(
+                TailFitCandidate(
+                    section=c["section"],
+                    para_index=p_idx,
+                    page_num=None,
+                    text_preview=c["text_preview"],
+                    total_lines=orig_l,
+                    target_lines=target_lines,
+                    total_chars=c["total_chars"],
+                    tail_chars=c["tail_chars"],
+                    orig_spacing=c["orig_spacing"],
+                    orig_ratio=c["orig_ratio"],
+                    target_spacing=target_sp,
+                    target_ratio=target_rat,
+                    fittable=fittable,
+                )
+            )
+            continue
+
+        at_max_l = max_lines.get((s_idx, top_pi), orig_l)
+
+        if at_max_l >= orig_l:
+            # Cannot reduce lines even at maximum allowed reduction
+            candidates.append(
+                TailFitCandidate(
+                    section=c["section"],
+                    para_index=p_idx,
+                    page_num=None,
+                    text_preview=c["text_preview"],
+                    total_lines=orig_l,
+                    target_lines=orig_l,
+                    total_chars=c["total_chars"],
+                    tail_chars=c["tail_chars"],
+                    orig_spacing=c["orig_spacing"],
+                    orig_ratio=c["orig_ratio"],
+                    target_spacing=min_spacing,
+                    target_ratio=min_ratio,
+                    fittable=False,
+                )
+            )
+            continue
+
+        # Step 2: Search minimum step for this survivor
+        steps = _generate_fit_steps(
+            c["orig_spacing"], c["orig_ratio"], min_spacing, min_ratio
+        )
+        found_sp = min_spacing
+        found_rat = min_ratio
+        found_lines = at_max_l
+        is_fitted = False
+
+        for sp, rat in steps:
+            with tempfile.TemporaryDirectory() as td:
+                tmp_step = Path(td) / "step.hwpx"
+                h_step = etree.fromstring(header_xml.encode("utf-8"))
+                cps_step = h_step.find(".//" + _hh("charProperties"))
+                cloner_step = _CharPrCloner(cps_step)
+
+                s_step = etree.fromstring(section_blobs[c["section"]])
+                all_p = list(s_step.iter(_hp("p")))
+                p = all_p[p_idx]
+                for r in p.findall(_hp("run")):
+                    orig_cid = r.get("charPrIDRef") or "0"
+                    new_cid = cloner_step.get_or_create(orig_cid, sp, rat)
+                    r.set("charPrIDRef", new_cid)
+                lsa = p.find(_hp("linesegarray"))
+                if lsa is not None:
+                    p.remove(lsa)
+                cloner_step.finalize()
+
+                ov = {
+                    "Contents/header.xml": (
+                        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                        + etree.tostring(h_step, encoding="UTF-8")
+                    ),
+                    c["section"]: (
+                        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                        + etree.tostring(s_step, encoding="UTF-8")
+                    ),
+                }
+                _rewrite_zip_preserving(src, tmp_step, ov)
+                step_map = _get_rhwp_para_lines(tmp_step, resolved_rhwp)
+                if step_map is None:
+                    continue
+                cur_l = step_map.get((s_idx, top_pi), orig_l)
+                if cur_l < orig_l:
+                    found_sp = sp
+                    found_rat = rat
+                    found_lines = cur_l
+                    is_fitted = True
+                    break
+
+        candidates.append(
+            TailFitCandidate(
+                section=c["section"],
+                para_index=p_idx,
+                page_num=None,
+                text_preview=c["text_preview"],
+                total_lines=orig_l,
+                target_lines=found_lines if is_fitted else orig_l,
+                total_chars=c["total_chars"],
+                tail_chars=c["tail_chars"],
+                orig_spacing=c["orig_spacing"],
+                orig_ratio=c["orig_ratio"],
+                target_spacing=found_sp,
+                target_ratio=found_rat,
+                fittable=is_fitted,
+            )
+        )
 
     return candidates
 
@@ -290,7 +621,7 @@ def format_tail_fit_report(
     min_spacing: int = -5,
     min_ratio: int = 95,
 ) -> str:
-    """Format human-readable dry-run / audit report."""
+    """Format human-readable dry-run / audit report with before/after line counts."""
     if not candidates:
         return "꼬리 줄 압축(widow-tail fitting) 대상 문단 없음."
 
@@ -302,42 +633,27 @@ def format_tail_fit_report(
         f"(적용 가능: {fittable_count}건, 한도 초과: {unfittable_count}건)"
     ]
     for idx, c in enumerate(candidates, start=1):
-        status = (
-            f"자간 {c.target_spacing}%, 장평 {c.target_ratio}% (적용 가능)"
-            if c.fittable
-            else f"한도 초과 (자간 {min_spacing}%, 장평 {min_ratio}%로 부족, 미적용)"
-        )
+        diff = c.target_lines - c.total_lines
+        diff_str = f" ({diff}줄)" if diff != 0 else ""
+        if c.fittable:
+            status = (
+                f"총 {c.total_lines}줄 -> {c.target_lines}줄{diff_str}, "
+                f"자간 {c.target_spacing}%, 장평 {c.target_ratio}% (적용 가능)"
+            )
+        else:
+            status = (
+                f"총 {c.total_lines}줄 -> 한도 초과 "
+                f"(자간 {min_spacing}%, 장평 {min_ratio}%로도 줄 수 유지, 미적용)"
+            )
         page_info = f" (쪽 {c.page_num})" if c.page_num is not None else ""
         lines.append(
             f"  [{idx}] {c.section} #{c.para_index}{page_info}: \"{c.text_preview}\""
         )
         lines.append(
-            f"      총 {c.total_lines}줄, 마지막 줄: {c.tail_chars}글자 -> {status}"
+            f"      마지막 줄: {c.tail_chars}글자 -> {status}"
         )
 
     return "\n".join(lines)
-
-
-def _clone_char_pr(
-    char_pr: etree.Element, new_id: str, spacing: int, ratio: int
-) -> etree.Element:
-    """Deep-copy charPr, set new id, and update spacing/ratio attributes."""
-    clone = copy.deepcopy(char_pr)
-    clone.set("id", str(new_id))
-
-    sp = clone.find(_hh("spacing"))
-    if sp is None:
-        sp = etree.SubElement(clone, _hh("spacing"))
-    for attr in _LANG_ATTRS:
-        sp.set(attr, str(spacing))
-
-    rat = clone.find(_hh("ratio"))
-    if rat is None:
-        rat = etree.SubElement(clone, _hh("ratio"))
-    for attr in _LANG_ATTRS:
-        rat.set(attr, str(ratio))
-
-    return clone
 
 
 def apply_tail_fits(
@@ -348,12 +664,13 @@ def apply_tail_fits(
     min_spacing: int = -5,
     min_ratio: int = 95,
     include_footnotes: bool = False,
+    rhwp_bin: str | None = None,
 ) -> int:
     """Apply widow-tail fitting to the HWPX document.
 
-    Only applies to fittable candidates. Clones charPr elements at the end
-    of charProperties with updated itemCnt, updates run charPrIDRef, and drops
-    the paragraph's linesegarray (issue #15).
+    Only applies to fittable candidates verified to reduce lines.
+    Clones charPr elements at the end of charProperties with updated itemCnt,
+    updates run charPrIDRef, and drops the paragraph's linesegarray (issue #15).
     Returns number of paragraphs fitted.
     """
     src, dst = Path(src), Path(dst)
@@ -364,6 +681,7 @@ def apply_tail_fits(
             min_spacing=min_spacing,
             min_ratio=min_ratio,
             include_footnotes=include_footnotes,
+            rhwp_bin=rhwp_bin,
         )
 
     to_fit = [c for c in candidates if c.fittable]
@@ -386,30 +704,7 @@ def apply_tail_fits(
     if char_props is None:
         raise ValueError("Contents/header.xml missing charProperties")
 
-    existing_char_prs = char_props.findall(_hh("charPr"))
-    char_pr_by_id = {cp.get("id"): cp for cp in existing_char_prs if cp.get("id")}
-    next_id = len(existing_char_prs)
-
-    # Cache cloned charPr: (orig_id, target_spacing, target_ratio) -> new_id
-    cloned_cache: dict[tuple[str, int, int], str] = {}
-
-    def get_or_create_cloned_id(orig_id: str, spacing: int, ratio: int) -> str:
-        nonlocal next_id
-        key = (orig_id, spacing, ratio)
-        if key in cloned_cache:
-            return cloned_cache[key]
-        base_pr = char_pr_by_id.get(orig_id)
-        if base_pr is None:
-            # Fallback: clone first charPr if orig_id missing
-            base_pr = existing_char_prs[0]
-        new_id_str = str(next_id)
-        new_pr = _clone_char_pr(base_pr, new_id_str, spacing, ratio)
-        char_props.append(new_pr)
-        char_pr_by_id[new_id_str] = new_pr
-        cloned_cache[key] = new_id_str
-        next_id += 1
-        return new_id_str
-
+    cloner = _CharPrCloner(char_props)
     overrides: dict[str, bytes] = {}
     fitted_count = 0
 
@@ -423,7 +718,7 @@ def apply_tail_fits(
             # Update runs with cloned charPr
             for run in p.findall(_hp("run")):
                 c_ref = run.get("charPrIDRef") or "0"
-                new_c_ref = get_or_create_cloned_id(
+                new_c_ref = cloner.get_or_create(
                     c_ref, cand.target_spacing, cand.target_ratio
                 )
                 run.set("charPrIDRef", new_c_ref)
@@ -441,7 +736,7 @@ def apply_tail_fits(
         )
 
     # Update itemCnt in header.xml
-    char_props.set("itemCnt", str(next_id))
+    cloner.finalize()
     decl = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
     overrides["Contents/header.xml"] = decl + etree.tostring(
         header_root, encoding="UTF-8", xml_declaration=False

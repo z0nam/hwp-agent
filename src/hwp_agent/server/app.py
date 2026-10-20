@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -24,7 +25,7 @@ from ..ops import (
 )
 
 API_KEY_ENV = "HWP_AGENT_API_KEY"  # optional; if set, REST API requires X-API-Key
-REPORT_HEADER = "X-HWP-Agent-Report"  # JSON summary riding along a file download
+REPORT_HEADER = "X-HWP-Agent-Report"  # bounded JSON summary riding along a download
 _API_KEY_HEADER = Header(default=None, alias="X-API-Key")
 
 
@@ -62,13 +63,23 @@ def _save_upload(upload: UploadFile, workdir: Path) -> Path:
     return dest
 
 
+def _header_summary(report: dict) -> str:
+    """Bounded header form of a report: list fields collapse to their counts.
+
+    Headers have per-header/total size limits at clients and proxies, and a fill
+    report grows with every mapping key — the full report goes in the body
+    (``response=json``), never in a header. ASCII-escaped: headers are latin-1.
+    """
+    return json.dumps(
+        {k: (len(v) if isinstance(v, list) else v) for k, v in report.items()},
+        ensure_ascii=True,
+    )
+
+
 def _download(
     path: Path, workdir: Path, filename: str, report: dict | None = None
 ) -> FileResponse:
-    headers = (
-        # ASCII-escaped JSON: HTTP header values must be latin-1
-        {REPORT_HEADER: json.dumps(report, ensure_ascii=True)} if report is not None else None
-    )
+    headers = {REPORT_HEADER: _header_summary(report)} if report is not None else None
     return FileResponse(
         path,
         filename=filename,
@@ -78,8 +89,12 @@ def _download(
     )
 
 
-def _process_upload(upload: UploadFile, suffix: str, edit) -> FileResponse:
-    """Save → (convert) → ``edit(hwpx, out) -> report`` → download ``out``.
+def _process_upload(upload: UploadFile, suffix: str, edit, response: str = "file"):
+    """Save → (convert) → ``edit(hwpx, out) -> report`` → return ``out``.
+
+    ``response="file"`` downloads the .hwpx with a bounded summary header;
+    ``response="json"`` returns ``{"report", "filename", "file_base64"}`` so the
+    complete report travels in the body.
 
     ``ValueError`` from ``edit`` (bad row spec, split merge, bad mapping JSON…)
     becomes a 422 with nothing returned; the temp dir is always cleaned up.
@@ -89,7 +104,17 @@ def _process_upload(upload: UploadFile, suffix: str, edit) -> FileResponse:
         src = _save_upload(upload, workdir)
         hwpx = _ensure_hwpx(src, workdir)
         out = workdir / (Path(upload.filename or "form").stem + suffix)
+        if response not in ("file", "json"):
+            raise ValueError(f"response must be 'file' or 'json', got {response!r}")
         report = edit(hwpx, out)
+        if response == "json":
+            payload = {
+                "report": report,
+                "filename": out.name,
+                "file_base64": base64.b64encode(out.read_bytes()).decode("ascii"),
+            }
+            shutil.rmtree(workdir, ignore_errors=True)
+            return JSONResponse(payload)
         return _download(out, workdir, out.name, report)
     except HTTPException:
         shutil.rmtree(workdir, ignore_errors=True)
@@ -210,6 +235,7 @@ def create_app() -> FastAPI:
         repeat_group: list[str] | None = Form(None),
         allow_table_flow: bool = Form(False),
         precise: bool = Form(True),
+        response: str = Form("file"),
         x_api_key: str | None = _API_KEY_HEADER,
     ):
         """Fill slots and/or restructure table rows (= `form fill`); returns the .hwpx.
@@ -219,8 +245,9 @@ def create_app() -> FastAPI:
         delete_rows ["cell:T:S-E"], append_rows ["cell:T:+N"], repeat_group
         ["cell:T:S-E:+N"] run first (delete → append/repeat → fill), so "cell:"
         keys address the restructured rows. A vertical merge straddling a range
-        boundary → 422. The fill report (rows/filled/missing/warnings) is in the
-        X-HWP-Agent-Report response header.
+        boundary → 422. response="file" (default) returns the .hwpx with counts
+        in the X-HWP-Agent-Report header; response="json" returns the full report
+        (rows/filled/missing/warnings) plus the file as base64 in the body.
         """
         _require_key(x_api_key)
 
@@ -235,19 +262,21 @@ def create_app() -> FastAPI:
             )
             return res.as_dict()
 
-        return _process_upload(file, "_채움.hwpx", edit)
+        return _process_upload(file, "_채움.hwpx", edit, response)
 
     @app.post("/api/autofit")
     def api_autofit(
         file: UploadFile = File(...),
         table: int = Form(0),
         min_width: list[str] | None = Form(None),
+        response: str = Form("file"),
         x_api_key: str | None = _API_KEY_HEADER,
     ):
         """Rebalance a table's column widths by content (= `form autofit`).
 
-        min_width: ["COL=N", ...] pins a column's minimum width (HWPUNIT). Returns
-        the .hwpx; the width summary is in the X-HWP-Agent-Report header.
+        min_width: ["COL=N", ...] pins a column's minimum width (HWPUNIT).
+        response="file" returns the .hwpx (summary header); "json" returns the
+        width summary plus the file as base64 in the body.
         """
         _require_key(x_api_key)
 
@@ -256,7 +285,7 @@ def create_app() -> FastAPI:
                 hwpx, table, min_widths=parse_min_widths(min_width) or None, output=out
             )
 
-        return _process_upload(file, "_autofit.hwpx", edit)
+        return _process_upload(file, "_autofit.hwpx", edit, response)
 
     @app.post("/api/fill-profile")
     def api_fill_profile(

@@ -9,6 +9,7 @@ MCP parameter or REST field fails here, so the surfaces can't silently drift apa
 from __future__ import annotations
 
 import argparse
+import base64
 import inspect
 import json
 from pathlib import Path
@@ -17,6 +18,7 @@ import pytest
 
 from hwp_agent import mcp_server
 from hwp_agent.cli.main import build_parser
+from hwp_agent.ops import dump_grid
 
 # CLI dest -> why the MCP tool / REST endpoint has no parameter of that name
 CLI_ONLY = {
@@ -168,8 +170,8 @@ def test_rest_fill_restructures_rows_then_fills(client, form: Path, tmp_path: Pa
         },
     )
     assert r.status_code == 200, r.text
-    report = json.loads(r.headers["X-HWP-Agent-Report"])
-    assert report["missing"] == [] and len(report["rows"]) == 3
+    summary = json.loads(r.headers["X-HWP-Agent-Report"])  # bounded: counts only
+    assert summary == {"rows": 3, "filled": 1, "missing": 0, "warnings": 0}
     out = tmp_path / "out.hwpx"
     out.write_bytes(r.content)
     g = client.post("/api/analyze", files=_upload(out), data={"grid": "true"}).json()["cells"]
@@ -189,7 +191,32 @@ def test_rest_autofit(client, form: Path) -> None:
     r = client.post("/api/autofit", files=_upload(form), data={"min_width": ["0=3000"]})
     assert r.status_code == 200, r.text
     summary = json.loads(r.headers["X-HWP-Agent-Report"])
-    assert summary["ncols"] == 3 and sum(summary["new_widths"]) == summary["total"]
+    assert summary["ncols"] == 3 and summary["new_widths"] == 3  # lists → counts
+    full = client.post("/api/autofit", files=_upload(form), data={"response": "json"}).json()
+    assert sum(full["report"]["new_widths"]) == full["report"]["total"]
     assert client.post(
         "/api/autofit", files=_upload(form), data={"min_width": ["x"]}
     ).status_code == 422
+
+
+def test_rest_fill_json_response_carries_full_report(client, form: Path, tmp_path: Path) -> None:
+    """Many/long keys must not bloat a header (PR #49 review): full report in body."""
+    mapping = {f"cell:0:{r}:1": "가" * 50 for r in range(2, 7)}
+    mapping |= {f"없는키{i}" * 10: "x" for i in range(50)}
+    r = client.post(
+        "/api/fill", files=_upload(form),
+        data={"mapping_json": json.dumps(mapping, ensure_ascii=False)},
+    )
+    assert r.status_code == 200
+    assert len(r.headers["X-HWP-Agent-Report"]) < 200
+    j = client.post(
+        "/api/fill", files=_upload(form),
+        data={"mapping_json": json.dumps(mapping, ensure_ascii=False), "response": "json"},
+    ).json()
+    assert len(j["report"]["filled"]) == 5 and len(j["report"]["missing"]) == 50
+    out = tmp_path / j["filename"]
+    out.write_bytes(base64.b64decode(j["file_base64"]))
+    grid = {c.cell_path: c.text for c in dump_grid(out)}
+    assert grid["cell:0:2:1"] == "가" * 50
+    bad = client.post("/api/fill", files=_upload(form), data={"response": "xml"})
+    assert bad.status_code == 422

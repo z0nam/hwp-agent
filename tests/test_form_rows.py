@@ -313,3 +313,21 @@ def test_cli_repeat_group(form: Path, tmp_path: Path, capsys) -> None:
     assert rc == 2
     assert "crosses the range boundary" in capsys.readouterr().err
     assert not (tmp_path / "bad.hwpx").exists()
+
+
+def test_row_heights_resolved_when_rows_are_only_merged() -> None:
+    """A row covered solely by a multi-row merge still gets a height (PR #46 review)."""
+    from hwp_agent.ops.form import _row_heights
+
+    def tc(row: int, span: int, h: int) -> str:
+        return (
+            f'<hp:tc><hp:cellAddr colAddr="0" rowAddr="{row}"/>'
+            f'<hp:cellSpan colSpan="1" rowSpan="{span}"/>'
+            f'<hp:cellSz width="100" height="{h}"/></hp:tc>'
+        )
+
+    _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    tbl = etree.fromstring(
+        f'<hp:tbl xmlns:hp="{_HP}"><hp:tr>{tc(0, 2, 3000)}</hp:tr><hp:tr/></hp:tbl>'.encode()
+    )
+    assert _row_heights(tbl) == [1500, 1500]

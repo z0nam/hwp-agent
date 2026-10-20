@@ -573,6 +573,15 @@ def _row_heights(tbl) -> list[int]:
                 known = sum(heights[r] or 0 for r in span if r not in unknown)
                 heights[unknown[0]] = max(h - known, 0)
                 changed = True
+    # rows covered only by multi-row merges (e.g. one rowSpan=2 cell): split the
+    # merge's remaining height evenly so the table height still tracks the rows
+    for r0, r1, h in sorted(cells, key=lambda c: c[1] - c[0]):
+        span = list(range(r0, min(r1, len(heights) - 1) + 1))
+        unknown = [r for r in span if heights[r] is None]
+        if unknown:
+            known = sum(heights[r] or 0 for r in span if r not in unknown)
+            for r in unknown:
+                heights[r] = max(h - known, 0) // len(unknown)
     return [h or 0 for h in heights]
 
 

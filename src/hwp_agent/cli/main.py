@@ -450,6 +450,7 @@ def _cmd_form(args: argparse.Namespace) -> int:
     try:
         row_ops = [parse_row_op("delete", s) for s in args.delete_rows or []]
         row_ops += [parse_row_op("append", s) for s in args.append_rows or []]
+        row_ops += [parse_row_op("repeat", s) for s in args.repeat_group or []]
     except RowOpError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -1377,6 +1378,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="append N blank copies of table T's last row (format kept, text "
         "cleared). Runs after --delete-rows and before --set, so --set can fill "
         "the new rows (see `form analyze --grid`)",
+    )
+    ff.add_argument(
+        "--repeat-group",
+        dest="repeat_group",
+        action="append",
+        metavar="cell:T:S-E:+N",
+        help="insert N blank copies of table T's rows S..E right after row E "
+        "(e.g. a shaded category row + its detail rows). Same phase as "
+        "--append-rows; rows are numbered after --delete-rows. Ranges must not "
+        "overlap within one call",
     )
     ff.add_argument("--json", action="store_true", help="emit fill report as JSON")
     ff.add_argument("-o", "--output", type=Path, default=None, help="output file")

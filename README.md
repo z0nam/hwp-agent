@@ -126,6 +126,11 @@ hwp-agent form fill 자문의견서.hwpx --set "cell:0:1:2=$(cat long.txt)" --al
 hwp-agent form fill 신청서.hwpx --delete-rows cell:0:2-13 --append-rows cell:0:+20 \
                     --set "cell:0:2:1=1. 연구 배경" -o out.hwpx
 
+# or copy a whole row group (shaded category row + its detail rows) as a unit:
+# rows 2-4 ×7 more → 8 groups; --set then fills cell:0:5:0, cell:0:8:0, …
+hwp-agent form fill 신청서.hwpx --repeat-group cell:0:2-4:+7 \
+                    --set "cell:0:5:0=Ⅱ. 이론적 검토" -o out.hwpx
+
 # rebalance equal columns by how much content each holds (no text change; total width kept)
 hwp-agent form autofit 자문의견서.hwpx --table 0 -o out.hwpx      # add --min-width 0=7000 to pin a column
 
@@ -163,7 +168,11 @@ writable. `form analyze --grid` enumerates each cell with the
 them.
 
 Table rows (issue #43): `--delete-rows cell:<t>:<start>-<end>` removes rows and
-`--append-rows cell:<t>:+<n>` appends blank copies of the last row — every cell keeps
+`--append-rows cell:<t>:+<n>` appends blank copies of the last row, and
+`--repeat-group cell:<t>:<start>-<end>:+<n>` inserts n blank copies of rows
+start..end right after end (the range is always given explicitly — no group
+auto-detection). Appends and repeats are numbered after the deletes; within one call
+their ranges must not overlap (run a second `form fill` to nest). Every cell keeps
 its border/fill, size, margins and paragraph/character style; only the text is
 cleared. `rowAddr`, the table's `rowCnt` and height are rewritten to match, so
 `form analyze --grid` shows the new rows. A vertical merge that straddles a range

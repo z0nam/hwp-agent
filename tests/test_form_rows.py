@@ -238,3 +238,78 @@ def test_delete_then_append_then_set(form: Path, tmp_path: Path) -> None:
     assert grid["cell:0:3:0"] == ""
     assert grid["cell:0:4:0"] == "추가2"
     assert "cell:0:5:0" not in grid
+
+
+# --- repeat-group ---------------------------------------------------------- #
+def test_repeat_group_copies_rows_and_contained_merge(form: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out.hwpx"
+    res = fill_form(form, {}, output=out, row_ops=[parse_row_op("repeat", "cell:0:2-4:+2")])
+    assert res.rows == ["table 0: rows 2-4 ×2 → new rows 5-10"]
+    _assert_consistent(out)
+    cells = _cells(_table(out))
+    src = sorted((c[0] - 2, c[1], c[2], c[3]) for c in cells if 2 <= c[0] <= 4)
+    for k in (1, 2):
+        copy_ = sorted(
+            (c[0] - 2 - 3 * k, c[1], c[2], c[3]) for c in cells if 2 + 3 * k <= c[0] <= 4 + 3 * k
+        )
+        assert copy_ == src  # same shape: shaded header + the 2-row merge
+        assert all(c[4] == "" for c in cells if 2 + 3 * k <= c[0] <= 4 + 3 * k)
+    # the rows after the group moved down by 6, text intact
+    assert [c[4] for c in sorted(cells) if c[0] == 11] == ["Ⅱ. 대분류", "2행", "b"]
+    assert [c[4] for c in sorted(cells) if c[0] == 12] == ["끝", "마지막", "z"]
+
+
+def test_repeat_single_row_inserts_after_it(form: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out.hwpx"
+    fill_form(form, {"cell:0:3:1": "새 소분류"}, output=out,
+              row_ops=[parse_row_op("repeat", "cell:0:2:+1")])
+    _assert_consistent(out)
+    grid = {c.cell_path: c.text for c in dump_grid(out)}
+    assert grid["cell:0:2:0"] == "Ⅰ. 대분류"
+    assert grid["cell:0:3:1"] == "새 소분류"
+    assert grid["cell:0:4:0"] == "소"
+
+
+@pytest.mark.parametrize("spec", ["cell:0:2-3:+1", "cell:0:4-5:+1", "cell:0:0:+1"])
+def test_repeat_refuses_split_merge(form: Path, tmp_path: Path, spec: str) -> None:
+    with pytest.raises(RowOpError, match="vertically merged cell"):
+        fill_form(form, {}, output=tmp_path / "o.hwpx",
+                  row_ops=[parse_row_op("repeat", spec)])
+
+
+def test_repeat_and_append_together_keep_coordinates(form: Path, tmp_path: Path) -> None:
+    """Bottom-up within a phase: the group spec addresses the post-delete table."""
+    out = tmp_path / "out.hwpx"
+    ops = [
+        parse_row_op("repeat", "cell:0:2-4:+1"),
+        parse_row_op("append", "cell:0:+1"),
+        parse_row_op("delete", "cell:0:5"),
+    ]
+    fill_form(form, {"cell:0:5:0": "Ⅱ. 복제"}, output=out, row_ops=ops)
+    _assert_consistent(out)
+    firsts = [c.text for c in dump_grid(out) if c.col == 0]
+    assert firsts == ["구분", "구분", "Ⅰ. 대분류", "소", "소", "Ⅱ. 복제", "", "", "끝", ""]
+
+
+def test_overlapping_repeat_and_append_refused(form: Path, tmp_path: Path) -> None:
+    ops = [parse_row_op("repeat", "cell:0:5-6:+1"), parse_row_op("append", "cell:0:+1")]
+    with pytest.raises(RowOpError, match="overlaps"):
+        fill_form(form, {}, output=tmp_path / "o.hwpx", row_ops=ops)
+
+
+def test_cli_repeat_group(form: Path, tmp_path: Path, capsys) -> None:
+    from hwp_agent.cli.main import main
+
+    out = tmp_path / "cli.hwpx"
+    rc = main([
+        "form", "fill", str(form), "--repeat-group", "cell:0:2-4:+1",
+        "--set", "cell:0:5:0=Ⅱ. 둘째", "-o", str(out),
+    ])
+    assert rc == 0
+    assert "rows 2-4 ×1 → new rows 5-7" in capsys.readouterr().out
+    _assert_consistent(out)
+    rc = main(["form", "fill", str(form), "--repeat-group", "cell:0:2-3:+1",
+               "-o", str(tmp_path / "bad.hwpx")])
+    assert rc == 2
+    assert "crosses the range boundary" in capsys.readouterr().err
+    assert not (tmp_path / "bad.hwpx").exists()

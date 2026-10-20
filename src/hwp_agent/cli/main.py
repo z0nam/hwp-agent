@@ -800,6 +800,89 @@ def _cmd_normalize(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_fit_tails(args: argparse.Namespace) -> int:
+    import json
+
+    from ..ops import (
+        apply_tail_fits,
+        detect_tail_fits,
+        format_tail_fit_report,
+    )
+
+    src = Path(args.file)
+    max_chars = getattr(args, "max_chars", 4)
+    min_spacing = getattr(args, "min_spacing", -5)
+    min_ratio = getattr(args, "min_ratio", 95)
+    include_footnotes = getattr(args, "include_footnotes", False)
+    dry_run = getattr(args, "dry_run", False)
+    as_json = getattr(args, "json", False)
+
+    candidates = detect_tail_fits(
+        src,
+        max_chars=max_chars,
+        min_spacing=min_spacing,
+        min_ratio=min_ratio,
+        include_footnotes=include_footnotes,
+    )
+
+    if as_json:
+        payload = {
+            "file": str(src),
+            "max_chars": max_chars,
+            "min_spacing": min_spacing,
+            "min_ratio": min_ratio,
+            "candidates": [c.as_dict() for c in candidates],
+            "fittable_count": sum(1 for c in candidates if c.fittable),
+            "total_candidates": len(candidates),
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        if not dry_run and any(c.fittable for c in candidates):
+            out = getattr(args, "output", None) or src
+            gr = _guard_output(out)
+            apply_tail_fits(
+                src,
+                gr.target,
+                candidates=candidates,
+                max_chars=max_chars,
+                min_spacing=min_spacing,
+                min_ratio=min_ratio,
+                include_footnotes=include_footnotes,
+            )
+            _guard_finalize(gr)
+        return 0
+
+    report = format_tail_fit_report(
+        candidates,
+        max_chars=max_chars,
+        min_spacing=min_spacing,
+        min_ratio=min_ratio,
+    )
+    print(report)
+
+    if dry_run:
+        print("\n(--dry-run: 실제 변경은 적용되지 않았습니다)")
+        return 0
+
+    to_fit = [c for c in candidates if c.fittable]
+    if not to_fit:
+        return 0
+
+    out = getattr(args, "output", None) or src
+    gr = _guard_output(out)
+    fitted = apply_tail_fits(
+        src,
+        gr.target,
+        candidates=candidates,
+        max_chars=max_chars,
+        min_spacing=min_spacing,
+        min_ratio=min_ratio,
+        include_footnotes=include_footnotes,
+    )
+    _guard_finalize(gr)
+    print(f"\n적용 완료: {fitted}개 문단 꼬리 줄 압축 -> {gr.target}")
+    return 0
+
+
 def _cmd_image(args: argparse.Namespace) -> int:
     import json
 
@@ -950,6 +1033,17 @@ def _cmd_write(args: argparse.Namespace) -> int:
         blue_links=getattr(args, "blue_links", False),
         math=getattr(args, "math", True),
     )
+    if getattr(args, "fit_tails", False):
+        from ..ops import apply_tail_fits
+
+        fitted = apply_tail_fits(gr.target, gr.target)
+        if fitted:
+            print(f"  fitted {fitted} paragraph widow tail(s)")
+        else:
+            print(
+                "  note: --fit-tails requires layout caches (<hp:linesegarray>); "
+                "run 'hwp-agent fit tails' after saving in Hangul"
+            )
     _guard_finalize(gr)
     print(f"placed {result.placed} block(s) -> {gr.target}")
     if result.links:
@@ -995,6 +1089,17 @@ def _cmd_build(args: argparse.Namespace) -> int:
     except (OSError, ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    if getattr(args, "fit_tails", False):
+        from ..ops import apply_tail_fits
+
+        fitted = apply_tail_fits(gr.target, gr.target)
+        if fitted:
+            print(f"  fitted {fitted} paragraph widow tail(s)")
+        else:
+            print(
+                "  note: --fit-tails requires layout caches (<hp:linesegarray>); "
+                "run 'hwp-agent fit tails' after saving in Hangul"
+            )
     _guard_finalize(gr)
     print(f"assembled {result.placed} block(s) -> {gr.target}")
     if result.links:
@@ -1349,6 +1454,56 @@ def build_parser() -> argparse.ArgumentParser:
     norm.add_argument("--json", action="store_true", help="emit the report as JSON")
     norm.set_defaults(func=_cmd_normalize)
 
+    fit = sub.add_parser("fit", help="layout-fitting adjustments (tails, pages)")
+    fit_sub = fit.add_subparsers(dest="fit_subcommand", required=True)
+
+    ft = fit_sub.add_parser(
+        "tails",
+        help="shorten paragraph widow tail lines by slightly reducing spacing/ratio",
+    )
+    ft.add_argument("file", type=Path, help="HWPX file to inspect or adjust")
+    ft.add_argument(
+        "-o", "--output", type=Path, default=None,
+        help="output path (default: in-place)",
+    )
+    ft.add_argument(
+        "--max-chars",
+        type=int,
+        default=4,
+        help="maximum characters on the last line to consider a widow tail (default: 4)",
+    )
+    ft.add_argument(
+        "--min-spacing",
+        type=int,
+        default=-5,
+        help="minimum letter-spacing percentage (default: -5)",
+    )
+    ft.add_argument(
+        "--min-ratio",
+        type=int,
+        default=95,
+        help="minimum character ratio percentage (default: 95)",
+    )
+    ft.add_argument(
+        "--include-footnotes",
+        action="store_true",
+        default=False,
+        help="also fit footnote paragraphs (default: False)",
+    )
+    ft.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="show candidates and adjustments without modifying the file",
+    )
+    ft.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="emit the report as JSON",
+    )
+    ft.set_defaults(func=_cmd_fit_tails)
+
     ins = sub.add_parser(
         "instructions", help="show a template's AI:INSTRUCTION directions and {{slots}}"
     )
@@ -1474,6 +1629,12 @@ def build_parser() -> argparse.ArgumentParser:
         "(default: {{body}} if present, else the first marker)",
     )
     _add_link_args(wr, default_links=True)
+    wr.add_argument(
+        "--fit-tails",
+        action="store_true",
+        default=False,
+        help="shorten widow tail lines (requires layout cache; else run fit tails after saving)",
+    )
     wr.add_argument("-o", "--output", type=Path, default=None, help="output file")
     wr.set_defaults(func=_cmd_write)
 
@@ -1498,6 +1659,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="output file (overrides the manifest's 'output')",
     )
     _add_link_args(bd, default_links=None)
+    bd.add_argument(
+        "--fit-tails",
+        action="store_true",
+        default=False,
+        help="shorten widow tail lines (requires layout cache; else run fit tails after saving)",
+    )
     bd.set_defaults(func=_cmd_build)
 
     return parser

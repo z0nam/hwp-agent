@@ -27,6 +27,13 @@ from .bands import (
 )
 from .doctor import diagnose_template
 from .extract import extract_markdown
+from .fit_tails import (
+    TailFitCandidate,
+    apply_tail_fits,
+    compute_tail_fit,
+    detect_tail_fits,
+    format_tail_fit_report,
+)
 from .form import (
     FillResult,
     FormSlot,
@@ -156,6 +163,11 @@ __all__ = [
     "apply_normalization",
     "apply_style_roles",
     "extract_markdown",
+    "TailFitCandidate",
+    "compute_tail_fit",
+    "detect_tail_fits",
+    "format_tail_fit_report",
+    "apply_tail_fits",
     "drop_stale_linesegarrays",
     "iter_mismatches",
     "PageIssue",

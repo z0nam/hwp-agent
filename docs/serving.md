@@ -119,8 +119,14 @@ checklist, and runs `hwp-agent setup --register` automatically.
 Restart the client, then chat: *"바탕화면의 등록신청서.hwpx를 내 프로필로 채워서
 등록신청서_채움.hwpx로 저장해줘."* Claude calls `fill_form_from_profile` on the
 local path. Tools exposed: `analyze_form_slots`, `fill_form_slots`,
-`fill_form_from_profile`, `convert_hwp_to_hwpx`, `normalize_template`,
-`extract_to_markdown`.
+`autofit_table_columns`, `fill_form_from_profile`, `convert_hwp_to_hwpx`,
+`normalize_template`, `extract_to_markdown`.
+
+The form tools mirror `hwp-agent form analyze/fill/autofit` option-for-option
+(parameter = CLI flag in snake_case): `analyze_form_slots(grid=…)`,
+`fill_form_slots(delete_rows=…, append_rows=…, repeat_group=…,
+allow_table_flow=…, precise=…)`, `autofit_table_columns(table=…, min_width=…)`.
+`tests/test_mcp_parity.py` fails when a new CLI flag lacks its MCP parameter.
 
 > ChatGPT and Gemini consumer web/mobile apps do **not** support local stdio MCP,
 > which is why they use the web link (`https://hwp.namun.net`, sections B/C).

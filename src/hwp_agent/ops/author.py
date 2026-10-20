@@ -34,7 +34,13 @@ from hwpx.document import HwpxDocument
 
 from .equation import equation_run_xml, latex_to_hwp, math_pieces, unescape_dollars
 from .form import extract_placeholders
-from .links import link_inner_xml, link_pieces, link_run_xml, rendered_text
+from .links import (
+    link_inner_xml,
+    link_pieces,
+    link_run_xml,
+    rendered_text,
+    should_left_align,
+)
 from .styles import INSTRUCTION, bullet_glyph_name, read_style_system, role_map
 from .tablewidth import CHAR_W, compute_column_widths
 
@@ -1002,7 +1008,8 @@ def _clone_caption(ref_el, title: str, chapter: str | None):
 
 
 def _style_cell(
-    cell, zone: Zone, col: int, ncols: int, text: str, text_writer=None
+    cell, zone: Zone, col: int, ncols: int, text: str, text_writer=None,
+    *, para_resolver=None,
 ) -> None:
     tc = cell.element
     if (bf := zone.border(col, ncols)) is not None:
@@ -1020,8 +1027,11 @@ def _style_cell(
     cp = cell.paragraphs[0]
     if zone.style is not None:
         cp.style_id_ref = zone.style
-    if zone.para is not None:
-        cp.para_pr_id_ref = zone.para
+    chosen_para = zone.para
+    if para_resolver is not None:
+        chosen_para = para_resolver(chosen_para, text)
+    if chosen_para is not None:
+        cp.para_pr_id_ref = chosen_para
     cp.clear_text()
     # cell text is plain (no inline-bold variant): ensure_run_style ignores the cell
     # base size and would blow up the font, so cells keep their content char style.
@@ -1212,7 +1222,7 @@ def _fit_table_height(table_el) -> None:
 
 def _build_table(
     doc, section, block: TableBlock, fmt, body_style, body_para, ref_el, chapter=None,
-    *, equal_columns: bool = False, text_writer=None,
+    *, equal_columns: bool = False, text_writer=None, para_resolver=None,
 ):
     """Create a table sized to *block*, styled by *fmt*'s zones, and fill its cells.
 
@@ -1272,7 +1282,8 @@ def _build_table(
             if is_header:
                 cell.element.set("header", "1")  # repeat across page breaks
             _style_cell(
-                cell, zone, c, ncols, row[c] if c < len(row) else "", text_writer
+                cell, zone, c, ncols, row[c] if c < len(row) else "", text_writer,
+                para_resolver=para_resolver,
             )
 
     if has_note:  # note/source row: one merged, hidden-bordered cell (kept if empty)
@@ -1291,7 +1302,10 @@ def _build_table(
             for extra in tcs[1:]:
                 note_tr.remove(extra)
         note_text = block.note.replace("\n", "  ") if block.note else ""
-        _style_cell(table.cell(note_r, 0), fmt.note, 0, 1, note_text, text_writer)
+        _style_cell(
+            table.cell(note_r, 0), fmt.note, 0, 1, note_text, text_writer,
+            para_resolver=para_resolver,
+        )
         # a populated note row needs real height: the reference's (empty) note row
         # often stores height 0, which rhwp would draw as a clipped zero-height row
         note_sz = table.cell(note_r, 0).element.find(f"{{{_HP}}}cellSz")
@@ -1438,6 +1452,75 @@ def _blue_link_char(doc: HwpxDocument, base_char):
         return base_char
 
 
+def _left_para_pr(
+    doc: HwpxDocument,
+    base_para_pr_id: str | int | None,
+    cache: dict[str, str],
+) -> str | None:
+    """Return a LEFT-aligned variant of *base_para_pr_id*, reusing variants when possible.
+
+    Issue #35:
+    - If base_para_pr_id is None, returns None.
+    - If already cached, returns the cached id.
+    - If the base paraPr already has horizontal="LEFT" or is not JUSTIFY (e.g. CENTER, RIGHT),
+      returns the base id without duplicating.
+    - Otherwise clones the base paraPr, sets <hh:align horizontal="LEFT">,
+      appends it to the end of <hh:paraProperties> with max(existing_id)+1,
+      updates itemCnt, marks the header dirty, and caches the new id.
+    """
+    if base_para_pr_id is None:
+        return None
+    key = str(base_para_pr_id)
+    if key in cache:
+        return cache[key]
+
+    try:
+        header = doc._root._headers[0]
+        pps = header._para_properties_element(create=False)
+        if pps is None:
+            cache[key] = key
+            return key
+        base_el = pps.find(f"{{{_HH}}}paraPr[@id='{key}']")
+        if base_el is None:
+            cache[key] = key
+            return key
+
+        align_el = base_el.find(f"{{{_HH}}}align")
+        # Rule (4): only JUSTIFY is modified. Existing LEFT or CENTER/RIGHT are untouched.
+        if align_el is not None and align_el.get("horizontal") != "JUSTIFY":
+            cache[key] = key
+            return key
+
+        existing_ids = [
+            int(p.get("id"))
+            for p in pps.findall(f"{{{_HH}}}paraPr")
+            if p.get("id") and p.get("id").isdigit()
+        ]
+        next_id = str(max(existing_ids, default=-1) + 1)
+
+        new_el = copy.deepcopy(base_el)
+        new_el.set("id", next_id)
+        new_align = new_el.find(f"{{{_HH}}}align")
+        if new_align is not None:
+            new_align.set("horizontal", "LEFT")
+        else:
+            new_align = new_el.makeelement(
+                f"{{{_HH}}}align",
+                {"horizontal": "LEFT", "vertical": "BASELINE"},
+            )
+            new_el.insert(0, new_align)
+
+        pps.append(new_el)
+        pps.set("itemCnt", str(len(pps.findall(f"{{{_HH}}}paraPr"))))
+        header.mark_dirty()
+
+        cache[key] = next_id
+        return next_id
+    except Exception:
+        cache[key] = key
+        return key
+
+
 def _find_insertion_marker(doc: HwpxDocument, marker_token: str | None = None):
     """Locate the paragraph holding an insertion marker, if any.
 
@@ -1546,6 +1629,7 @@ def fill_from_markdown(
     links: bool = True,
     blue_links: bool = False,
     math: bool = True,
+    link_align: str = "auto",
 ) -> AuthorResult:
     """Fill a template from Markdown, styled with its own outline styles.
 
@@ -1683,6 +1767,15 @@ def fill_from_markdown(
             return blue_cache[char]
         return hl_char if hl_char is not None else char
 
+    left_para_cache: dict[str, str] = {}
+
+    def resolve_para(base_para, txt: str):
+        if not links or link_align == "keep" or not txt:
+            return base_para
+        if should_left_align(txt, mode=link_align):
+            return _left_para_pr(doc, base_para, left_para_cache)
+        return base_para
+
     def emit_link(para, label: str, url: str, char) -> None:
         from lxml import etree
 
@@ -1808,9 +1901,10 @@ def fill_from_markdown(
         note = " " + note_text.strip()
         if links:
             result.links += sum(1 for _, u in link_pieces(note) if u is not None)
+        effective_fn_para = resolve_para(fn_para, note_text)
         run_el = _build_footnote_run(
             _fn_count[0], 0xA0000000 + _fn_count[0], note,
-            fn_sid, fn_para, fn_char, body_char, fn_format,
+            fn_sid, effective_fn_para, fn_char, body_char, fn_format,
             links=links, link_char=link_char(fn_char) if links else None,
         )
         para.element.append(run_el)
@@ -1888,6 +1982,7 @@ def fill_from_markdown(
                 doc, target_section, block, table_fmt, body_style, body_para,
                 ref_element, chapter_label(), equal_columns=equal_columns,
                 text_writer=write_text,
+                para_resolver=resolve_para,
             )
             place(table.paragraph.element)
             result.placed += 1
@@ -1949,12 +2044,6 @@ def fill_from_markdown(
         para_pr = infos[style_id].para_pr_id if style_id in infos else None
         base_char = doc.style(style_id).char_pr_id_ref if style_id is not None else None
 
-        # build the paragraph empty, then add one run per inline segment so
-        # **bold** / *italic* become real runs (bold uses the same font family's
-        # bold weight via ensure_run_style); plain text is a single run.
-        para = target_section.add_paragraph(
-            "", style_id_ref=style_id, para_pr_id_ref=para_pr, include_run=False
-        )
         info = infos.get(style_id)
         if block.kind == "heading":
             text = _heading_render_text(block, info)
@@ -1962,6 +2051,14 @@ def fill_from_markdown(
             text = _bullet_render_text(block, role, info)
         else:
             text = block.text
+
+        effective_para = resolve_para(para_pr, text)
+        # build the paragraph empty, then add one run per inline segment so
+        # **bold** / *italic* become real runs (bold uses the same font family's
+        # bold weight via ensure_run_style); plain text is a single run.
+        para = target_section.add_paragraph(
+            "", style_id_ref=style_id, para_pr_id_ref=effective_para, include_run=False
+        )
         add_runs(para, text, base_char)
         # headings: clone a linesegarray from a real same-style heading so Hangul
         # keeps them as outline headings (item C) — only when one isn't already there
@@ -2050,6 +2147,7 @@ def fill_sections(
     links: bool = True,
     blue_links: bool = False,
     math: bool = True,
+    link_align: str = "auto",
 ) -> AuthorResult:
     """Fill several named markers, each from its own Markdown part.
 
@@ -2084,6 +2182,7 @@ def fill_sections(
                 links=links,
                 blue_links=blue_links,
                 math=math,
+                link_align=link_align,
             )
             agg.placed += res.placed
             agg.links += res.links
@@ -2112,6 +2211,7 @@ def build_report(
     links: bool | None = None,
     blue_links: bool | None = None,
     math: bool | None = None,
+    link_align: str | None = None,
 ) -> AuthorResult:
     """Assemble a multi-section report from a JSON manifest into one template.
 
@@ -2178,4 +2278,5 @@ def build_report(
         links=data.get("links", True) if links is None else links,
         blue_links=data.get("blue_links", False) if blue_links is None else blue_links,
         math=data.get("math", True) if math is None else math,
+        link_align=data.get("link_align", "auto") if link_align is None else link_align,
     )

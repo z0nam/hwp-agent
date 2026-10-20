@@ -1056,6 +1056,7 @@ def _cmd_write(args: argparse.Namespace) -> int:
         links=getattr(args, "links", True),
         blue_links=getattr(args, "blue_links", False),
         math=getattr(args, "math", True),
+        link_align=getattr(args, "link_align", "auto"),
     )
     if getattr(args, "fit_tails", False):
         from ..ops import apply_tail_fits
@@ -1109,6 +1110,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
             links=getattr(args, "links", None),
             blue_links=getattr(args, "blue_links", None),
             math=getattr(args, "math", None),
+            link_align=getattr(args, "link_align", None),
         )
     except (OSError, ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -1180,6 +1182,14 @@ def _add_link_args(p: argparse.ArgumentParser, *, default_links) -> None:
         action="store_false",
         default=default_links,
         help="keep $…$ / $$…$$ as plain text (default: LaTeX → Hangul equation objects)",
+    )
+    p.add_argument(
+        "--link-align",
+        dest="link_align",
+        choices=["auto", "left", "keep"],
+        default=None if default_links is None else "auto",
+        help="paragraph alignment for URLs: auto (left-align if unbroken URL >= 30 chars), "
+        "left (always left-align links), keep (keep template alignment, default: auto)",
     )
 
 

@@ -134,6 +134,40 @@ def rendered_text(text: str) -> str:
     return "".join(t for t, _ in link_pieces(text))
 
 
+#: Minimum unbroken (whitespace-free) character length in a hyperlink's visible
+#: label that triggers left alignment under ``--link-align auto`` (issue #35).
+DEFAULT_LINK_ALIGN_THRESHOLD = 30
+
+
+def should_left_align(
+    text: str,
+    mode: str = "auto",
+    threshold: int = DEFAULT_LINK_ALIGN_THRESHOLD,
+) -> bool:
+    """Return True if paragraph *text* should be left-aligned under *mode*.
+
+    - ``"keep"``: never re-align (preserve current behavior).
+    - ``"left"``: left-align if *text* contains any hyperlink.
+    - ``"auto"``: left-align if any hyperlink's visible text contains a
+      whitespace-free sequence of *threshold* or more characters. Short labels
+      like ``[짧은 한글](https://...)`` do not trigger re-alignment.
+    """
+    if mode == "keep":
+        return False
+    pieces = link_pieces(text)
+    if not any(u is not None for _, u in pieces):
+        return False
+    if mode == "left":
+        return True
+    if mode == "auto":
+        for label, url in pieces:
+            if url is None:
+                continue
+            if any(len(chunk) >= threshold for chunk in label.split()):
+                return True
+    return False
+
+
 def _escape_xml(s: str) -> str:
     return (
         s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

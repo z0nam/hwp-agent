@@ -39,10 +39,13 @@ from .form import (
     FormSlot,
     FormSpec,
     GridCell,
+    RowOp,
+    RowOpError,
     analyze_form,
     autofit_table,
     dump_grid,
     fill_form,
+    parse_row_op,
 )
 from .guard import (
     GuardResult,
@@ -120,6 +123,9 @@ __all__ = [
     "dump_grid",
     "autofit_table",
     "fill_form",
+    "parse_row_op",
+    "RowOp",
+    "RowOpError",
     "Profile",
     "ProfileMatch",
     "ProfileFillResult",

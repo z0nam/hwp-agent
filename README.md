@@ -120,6 +120,12 @@ hwp-agent form fill 자문의견서.hwpx --set "cell:0:1:2=□ 적정  ■ 보�
 # long content in a page-trapped table (treatAsChar=1) is truncated — let it flow
 hwp-agent form fill 자문의견서.hwpx --set "cell:0:1:2=$(cat long.txt)" --allow-table-flow -o out.hwpx
 
+# a sample table with too few rows: delete the sample rows, append blank copies
+# of the last row (format kept, text cleared), then --set the new coordinates.
+# Order is fixed: --delete-rows (original rows) → --append-rows → --set (final rows)
+hwp-agent form fill 신청서.hwpx --delete-rows cell:0:2-13 --append-rows cell:0:+20 \
+                    --set "cell:0:2:1=1. 연구 배경" -o out.hwpx
+
 # rebalance equal columns by how much content each holds (no text change; total width kept)
 hwp-agent form autofit 자문의견서.hwpx --table 0 -o out.hwpx      # add --min-width 0=7000 to pin a column
 
@@ -155,6 +161,14 @@ therefore lists few or no slots, even though every one of those cells is
 writable. `form analyze --grid` enumerates each cell with the
 `cell:<table>:<row>:<col>` key that `form fill` takes, which is the way to reach
 them.
+
+Table rows (issue #43): `--delete-rows cell:<t>:<start>-<end>` removes rows and
+`--append-rows cell:<t>:+<n>` appends blank copies of the last row — every cell keeps
+its border/fill, size, margins and paragraph/character style; only the text is
+cleared. `rowAddr`, the table's `rowCnt` and height are rewritten to match, so
+`form analyze --grid` shows the new rows. A vertical merge that straddles a range
+boundary is refused with an error rather than broken; a merge entirely inside the
+range is deleted/copied with it.
 
 Point at a jar elsewhere with `--jar /path/to/hwp2hwpx.jar` or the
 `HWP2HWPX_JAR` environment variable (rarely needed — the editable install

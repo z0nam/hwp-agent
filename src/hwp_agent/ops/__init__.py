@@ -45,7 +45,9 @@ from .form import (
     autofit_table,
     dump_grid,
     fill_form,
+    parse_min_widths,
     parse_row_op,
+    parse_row_ops,
 )
 from .guard import (
     GuardResult,
@@ -123,7 +125,9 @@ __all__ = [
     "dump_grid",
     "autofit_table",
     "fill_form",
+    "parse_min_widths",
     "parse_row_op",
+    "parse_row_ops",
     "RowOp",
     "RowOpError",
     "Profile",

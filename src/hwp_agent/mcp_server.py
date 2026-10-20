@@ -28,7 +28,7 @@ import sys
 # --------------------------------------------------------------------------- #
 # Tool bodies — plain functions so they are testable without the `mcp` package.
 # The form tools mirror `hwp-agent form …` option-for-option (parameter names are
-# the CLI flags in snake_case); tests/test_mcp_parity.py keeps the two in step.
+# the CLI flags in snake_case); tests/test_surface_parity.py keeps the two in step.
 # --------------------------------------------------------------------------- #
 def analyze_form_slots(path: str, grid: bool = False) -> str:
     """List the fillable slots in an HWPX form (labels, checkboxes, cell paths).
@@ -85,13 +85,11 @@ def fill_form_slots(
     Returns: JSON {"rows": [...], "filled": [...], "missing": [...],
       "warnings": [...]} or {"error": "..."}.
     """
-    from .ops import RowOpError, fill_form, parse_row_op
+    from .ops import RowOpError, fill_form, parse_row_ops
 
     mapping = json.loads(mapping_json or "{}")
     try:
-        row_ops = [parse_row_op("delete", s) for s in delete_rows or []]
-        row_ops += [parse_row_op("append", s) for s in append_rows or []]
-        row_ops += [parse_row_op("repeat", s) for s in repeat_group or []]
+        row_ops = parse_row_ops(delete_rows, append_rows, repeat_group)
         res = fill_form(
             path, mapping, output=output, precise=precise,
             allow_table_flow=allow_table_flow, row_ops=row_ops,
@@ -116,16 +114,10 @@ def autofit_table_columns(
     Returns: JSON {"table_index", "ncols", "old_widths", "new_widths", "total"}
       or {"error": "..."}.
     """
-    from .ops import autofit_table
+    from .ops import autofit_table, parse_min_widths
 
-    mins: dict[int, int] = {}
-    for item in min_width or []:
-        k, _, v = item.partition("=")
-        try:
-            mins[int(k)] = int(v)
-        except ValueError:
-            return json.dumps({"error": f"min_width expects COL=N, got {item!r}"})
     try:
+        mins = parse_min_widths(min_width)
         summary = autofit_table(path, table, min_widths=mins or None, output=output)
     except ValueError as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)

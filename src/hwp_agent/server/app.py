@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
@@ -11,9 +12,19 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.background import BackgroundTask
 
-from ..ops import analyze_form, fill_from_profile, load_profile
+from ..ops import (
+    analyze_form,
+    autofit_table,
+    dump_grid,
+    fill_form,
+    fill_from_profile,
+    load_profile,
+    parse_min_widths,
+    parse_row_ops,
+)
 
 API_KEY_ENV = "HWP_AGENT_API_KEY"  # optional; if set, REST API requires X-API-Key
+REPORT_HEADER = "X-HWP-Agent-Report"  # JSON summary riding along a file download
 _API_KEY_HEADER = Header(default=None, alias="X-API-Key")
 
 
@@ -51,13 +62,44 @@ def _save_upload(upload: UploadFile, workdir: Path) -> Path:
     return dest
 
 
-def _download(path: Path, workdir: Path, filename: str) -> FileResponse:
+def _download(
+    path: Path, workdir: Path, filename: str, report: dict | None = None
+) -> FileResponse:
+    headers = (
+        # ASCII-escaped JSON: HTTP header values must be latin-1
+        {REPORT_HEADER: json.dumps(report, ensure_ascii=True)} if report is not None else None
+    )
     return FileResponse(
         path,
         filename=filename,
         media_type="application/octet-stream",
+        headers=headers,
         background=BackgroundTask(shutil.rmtree, workdir, ignore_errors=True),
     )
+
+
+def _process_upload(upload: UploadFile, suffix: str, edit) -> FileResponse:
+    """Save → (convert) → ``edit(hwpx, out) -> report`` → download ``out``.
+
+    ``ValueError`` from ``edit`` (bad row spec, split merge, bad mapping JSON…)
+    becomes a 422 with nothing returned; the temp dir is always cleaned up.
+    """
+    workdir = Path(tempfile.mkdtemp(prefix="hwpsrv-"))
+    try:
+        src = _save_upload(upload, workdir)
+        hwpx = _ensure_hwpx(src, workdir)
+        out = workdir / (Path(upload.filename or "form").stem + suffix)
+        report = edit(hwpx, out)
+        return _download(out, workdir, out.name, report)
+    except HTTPException:
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise
+    except ValueError as exc:  # RowOpError, json.JSONDecodeError, …
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 _PAGE = """<!doctype html>
@@ -138,16 +180,83 @@ def create_app() -> FastAPI:
             shutil.rmtree(workdir, ignore_errors=True)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    # The form endpoints mirror `hwp-agent form analyze/fill/autofit` option-for-
+    # option (field = CLI flag in snake_case); tests/test_surface_parity.py checks it.
     @app.post("/api/analyze")
-    def api_analyze(file: UploadFile = File(...), x_api_key: str | None = _API_KEY_HEADER):
+    def api_analyze(
+        file: UploadFile = File(...),
+        grid: bool = Form(False),
+        x_api_key: str | None = _API_KEY_HEADER,
+    ):
+        """List fillable slots, or with grid=true every table cell and its
+        cell:<table>:<row>:<col> path (= `form analyze --grid`)."""
         _require_key(x_api_key)
         workdir = Path(tempfile.mkdtemp(prefix="hwpsrv-"))
         try:
             src = _save_upload(file, workdir)
             hwpx = _ensure_hwpx(src, workdir)
+            if grid:
+                return JSONResponse({"cells": [c.as_dict() for c in dump_grid(hwpx)]})
             return JSONResponse(analyze_form(hwpx).as_dict())
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
+
+    @app.post("/api/fill")
+    def api_fill(
+        file: UploadFile = File(...),
+        mapping_json: str = Form("{}"),
+        delete_rows: list[str] | None = Form(None),
+        append_rows: list[str] | None = Form(None),
+        repeat_group: list[str] | None = Form(None),
+        allow_table_flow: bool = Form(False),
+        precise: bool = Form(True),
+        x_api_key: str | None = _API_KEY_HEADER,
+    ):
+        """Fill slots and/or restructure table rows (= `form fill`); returns the .hwpx.
+
+        mapping_json: {slot_key: value} — a label, "label > right",
+        "cell:<t>:<r>:<c>", "checkbox:<label>", "tab:<anchor>" or a placeholder.
+        delete_rows ["cell:T:S-E"], append_rows ["cell:T:+N"], repeat_group
+        ["cell:T:S-E:+N"] run first (delete → append/repeat → fill), so "cell:"
+        keys address the restructured rows. A vertical merge straddling a range
+        boundary → 422. The fill report (rows/filled/missing/warnings) is in the
+        X-HWP-Agent-Report response header.
+        """
+        _require_key(x_api_key)
+
+        def edit(hwpx: Path, out: Path) -> dict:
+            mapping = json.loads(mapping_json or "{}")
+            if not isinstance(mapping, dict):
+                raise ValueError("mapping_json must be a JSON object")
+            row_ops = parse_row_ops(delete_rows, append_rows, repeat_group)
+            res = fill_form(
+                hwpx, {str(k): str(v) for k, v in mapping.items()}, output=out,
+                precise=precise, allow_table_flow=allow_table_flow, row_ops=row_ops,
+            )
+            return res.as_dict()
+
+        return _process_upload(file, "_채움.hwpx", edit)
+
+    @app.post("/api/autofit")
+    def api_autofit(
+        file: UploadFile = File(...),
+        table: int = Form(0),
+        min_width: list[str] | None = Form(None),
+        x_api_key: str | None = _API_KEY_HEADER,
+    ):
+        """Rebalance a table's column widths by content (= `form autofit`).
+
+        min_width: ["COL=N", ...] pins a column's minimum width (HWPUNIT). Returns
+        the .hwpx; the width summary is in the X-HWP-Agent-Report header.
+        """
+        _require_key(x_api_key)
+
+        def edit(hwpx: Path, out: Path) -> dict:
+            return autofit_table(
+                hwpx, table, min_widths=parse_min_widths(min_width) or None, output=out
+            )
+
+        return _process_upload(file, "_autofit.hwpx", edit)
 
     @app.post("/api/fill-profile")
     def api_fill_profile(

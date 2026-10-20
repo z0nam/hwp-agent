@@ -500,6 +500,30 @@ def parse_row_op(kind: str, spec: str) -> RowOp:
     return RowOp("repeat", int(t), start, end, int(n), spec)
 
 
+def parse_row_ops(
+    delete_rows: list[str] | None = None,
+    append_rows: list[str] | None = None,
+    repeat_group: list[str] | None = None,
+) -> list[RowOp]:
+    """All row specs of one fill call — shared by the CLI, MCP and REST surfaces."""
+    ops = [parse_row_op("delete", s) for s in delete_rows or []]
+    ops += [parse_row_op("append", s) for s in append_rows or []]
+    ops += [parse_row_op("repeat", s) for s in repeat_group or []]
+    return ops
+
+
+def parse_min_widths(items: list[str] | None) -> dict[int, int]:
+    """``["COL=N", ...]`` → ``{col: hwpunit}`` for :func:`autofit_table`."""
+    mins: dict[int, int] = {}
+    for item in items or []:
+        k, _, v = item.partition("=")
+        try:
+            mins[int(k)] = int(v)
+        except ValueError:
+            raise ValueError(f"min-width expects COL=N, got {item!r}") from None
+    return mins
+
+
 def _table_element(doc: HwpxDocument, table_index: int):
     """The live ``<hp:tbl>`` numbered like ``dump_grid`` / ``cell:`` paths."""
     for it in _tn._collect_document_tables(doc):

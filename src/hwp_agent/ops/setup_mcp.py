@@ -508,7 +508,10 @@ def _toml_key(k: str) -> str:
 
 
 def _toml_format_value(v: object) -> str:
-    """Recursively format a value for TOML inline serialization, raising ValueError on unsupported types."""
+    """Recursively format a value for TOML inline serialization.
+
+    Raises ValueError on unsupported types.
+    """
     if isinstance(v, (datetime.datetime, datetime.date, datetime.time)):
         return v.isoformat()
     if isinstance(v, str):
@@ -627,7 +630,7 @@ def _search_inline_table(text: str) -> tuple[int, int, str, str, str] | None:
 
 
 def _clean_codex_mcp_servers_table(raw: str) -> str:
-    """Remove scoped dotted keys and inline table entries for hwp-agent ONLY within [mcp_servers]."""
+    """Remove scoped dotted keys and inline entries for hwp-agent ONLY within [mcp_servers]."""
     cleaned = _CODEX_GLOBAL_DOTTED_RE.sub("", raw)
     m = _CODEX_MCP_TABLE_RE.search(cleaned)
     if m:
@@ -647,7 +650,7 @@ def _clean_codex_mcp_servers_table(raw: str) -> str:
 
 
 def _remove_codex_sections(raw: str) -> str:
-    """Remove [mcp_servers.hwp-agent] sections while preserving comments that precede next section."""
+    """Remove [mcp_servers.hwp-agent] sections while preserving comments before next section."""
     while True:
         m = _CODEX_SECTION_HEADER_RE.search(raw)
         if not m:

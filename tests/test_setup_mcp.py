@@ -1014,7 +1014,8 @@ def test_codex_quoted_toml_path_segments(tmp_path: Path) -> None:
     # Unregistration removes quoted table cleanly
     unreg = unregister_clients(("codex",), home=tmp_path, env={}, platform="darwin")
     assert unreg[0].status == "removed"
-    parsed_after = tomllib.loads(codex_cfg.read_text(encoding="utf-8")) if codex_cfg.read_text(encoding="utf-8").strip() else {}
+    raw_cfg = codex_cfg.read_text(encoding="utf-8")
+    parsed_after = tomllib.loads(raw_cfg) if raw_cfg.strip() else {}
     assert "hwp-agent" not in parsed_after.get("mcp_servers", {})
 
 
@@ -1023,7 +1024,8 @@ def test_codex_inline_table_with_braces_in_comment(tmp_path: Path) -> None:
     codex_cfg.parent.mkdir(parents=True, exist_ok=True)
     content = (
         "[mcp_servers]\n"
-        'hwp-agent = { command = "/old/hwp-agent", args = ["mcp"] } # note: { some_template_key } and { extra }\n'
+        'hwp-agent = { command = "/old/hwp-agent", args = ["mcp"] } '
+        "# note: { some_template_key } and { extra }\n"
         'other = { command = "/bin/other" }\n'
     )
     codex_cfg.write_text(content, encoding="utf-8")

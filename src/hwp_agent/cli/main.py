@@ -225,7 +225,11 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 if getattr(args, "json", False):
                     print(
                         json.dumps(
-                            {"actions": [], "message": msg},
+                            {
+                                "dry_run": bool(getattr(args, "dry_run", False)),
+                                "actions": [],
+                                "message": msg,
+                            },
                             ensure_ascii=False,
                             indent=2,
                         )
@@ -242,11 +246,12 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
 
+    dry_run = bool(getattr(args, "dry_run", False))
     report_parts: list[str] = []
     if unreg_actions:
-        report_parts.append(format_unregistration_report(unreg_actions))
+        report_parts.append(format_unregistration_report(unreg_actions, dry_run=dry_run))
     if reg_actions:
-        report_parts.append(format_registration_report(reg_actions))
+        report_parts.append(format_registration_report(reg_actions, dry_run=dry_run))
     report_text = "\n\n".join(report_parts)
 
     guide_out = getattr(args, "guide_out", None)
@@ -257,7 +262,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         Path(guide_out).write_text(report_text + "\n", encoding="utf-8-sig")
 
     if getattr(args, "json", False):
-        payload: dict[str, object] = {}
+        payload: dict[str, object] = {"dry_run": dry_run}
         if reg_actions:
             payload["registered"] = [a.as_dict() for a in reg_actions]
         if unreg_actions:

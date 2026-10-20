@@ -65,6 +65,10 @@ from .images import (
     replace_image,
 )
 from .linesegs import drop_stale_linesegarrays, iter_mismatches
+from .links import (
+    DEFAULT_LINK_ALIGN_THRESHOLD,
+    should_left_align,
+)
 from .metadata import Metadata, read_metadata, update_metadata
 from .normalize import (
     NormalizeAction,
@@ -186,6 +190,8 @@ __all__ = [
     "verify_pdf",
     "verify_hwp",
     "verify_document",
+    "DEFAULT_LINK_ALIGN_THRESHOLD",
+    "should_left_align",
     "PicInfo",
     "ReplaceOutcome",
     "ImageReplaceResult",

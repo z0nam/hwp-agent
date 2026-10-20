@@ -21,11 +21,22 @@ DEFAULT_RHWP = "rhwp"
 
 
 def resolve_rhwp(explicit: str | None = None) -> str | None:
-    """Find the rhwp CLI: explicit arg > ``$RHWP_BIN`` > PATH. None if absent."""
-    cand = explicit or os.environ.get("RHWP_BIN") or DEFAULT_RHWP
+    """Find the rhwp CLI: explicit arg > ``$RHWP_BIN`` > PATH > local fallback.
+
+    Returns None if absent.
+    """
+    if explicit:
+        return explicit if Path(explicit).is_file() else shutil.which(explicit)
+    cand = os.environ.get("RHWP_BIN") or DEFAULT_RHWP
     if Path(cand).is_file():
         return cand
-    return shutil.which(cand)
+    found = shutil.which(cand)
+    if found:
+        return found
+    local_vendor = Path.home() / "dev" / "hwp-preview-slack-bot" / "vendor" / "rhwp" / "rhwp"
+    if local_vendor.is_file():
+        return str(local_vendor)
+    return None
 
 
 def rhwp_render_fn(rhwp_bin: str) -> RenderFn:

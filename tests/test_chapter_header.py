@@ -142,3 +142,38 @@ def test_build_cli_sets_wings_unless_disabled(tmp_path: Path) -> None:
     assert len(_headers(_sections(on / "out.hwpx")["Contents/section4.xml"])) == len(TITLES)
     assert main(["build", str(_manifest(off, chapter_header=False))]) == 0
     assert not any(_headers(x) for x in _sections(off / "out.hwpx").values())
+
+
+def _with_part(src: Path, dst: Path, part: str, edit) -> None:
+    from hwp_agent.ops.container import _rewrite_zip_preserving
+
+    with zipfile.ZipFile(src) as z:
+        data = edit(z.read(part).decode("utf-8")).encode("utf-8")
+    _rewrite_zip_preserving(src, dst, {part: data})
+
+
+def test_page_wide_banner_is_not_taken_for_a_side_wing(tmp_path: Path) -> None:
+    """A full-width but short picture (banner/logo) on the odd master is left alone."""
+    build_report(_manifest(tmp_path))
+    banner = tmp_path / "banner.hwpx"
+    _with_part(
+        tmp_path / "out.hwpx", banner, "Contents/masterpage9.xml",
+        lambda x: re.sub(
+            r'(<hp:sz width="\d+" widthRelTo="ABSOLUTE" height=")\d+', r"\g<1>5000", x
+        ),
+    )
+    dst = tmp_path / "res.hwpx"
+    res = apply_chapter_headers(banner, dst)
+    assert res.count == 0 and res.skipped == ["Contents/section4.xml"]
+    assert dst.read_bytes() == banner.read_bytes()
+
+
+def test_other_paper_size_is_left_alone(tmp_path: Path) -> None:
+    """The wing geometry is only meaningful on the paper it was measured on."""
+    from hwp_agent.ops import WingSpec
+
+    build_report(_manifest(tmp_path))
+    dst = tmp_path / "res.hwpx"
+    res = apply_chapter_headers(tmp_path / "out.hwpx", dst, spec=WingSpec(paper_width=59528))
+    assert res.count == 0
+    assert dst.read_bytes() == (tmp_path / "out.hwpx").read_bytes()

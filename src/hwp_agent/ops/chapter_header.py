@@ -81,6 +81,9 @@ class WingSpec:
     #: glyph height of the wing title (HWPUNIT, 100 = 1pt)
     char_height: int = 800
     fill: str = "#FFFFFF"
+    #: paper the geometry was measured on; other paper sizes are left alone
+    paper_width: int = 53858
+    paper_height: int = 73700
 
 
 @dataclass
@@ -112,10 +115,21 @@ def _section_parts(names) -> list[str]:
     return sorted(parts, key=lambda n: int(re.search(r"(\d+)", n).group(1)))
 
 
-def _odd_master_has_background(zf: zipfile.ZipFile, sec_pr, names: set[str]) -> bool:
-    """True if the section's odd (or both-sides) master page is a full-page picture."""
+def _has_picture_wing(zf: zipfile.ZipFile, sec_pr, names: set[str], spec: WingSpec) -> bool:
+    """True if the section looks like the JI 과제 forms the wing geometry was measured on.
+
+    The odd (or both-sides) master page must hold a picture laid behind the text
+    that covers the whole paper, and the paper must be the size *spec* was measured
+    on — its coordinates mean nothing on other paper, and a page-wide banner or logo
+    on some other template must not get a white box painted over it.
+    """
     page_pr = sec_pr.find(_hp("pagePr"))
-    paper_w = int(page_pr.get("width", "0")) if page_pr is not None else 0
+    if page_pr is None:
+        return False
+    paper_w, paper_h = int(page_pr.get("width", "0")), int(page_pr.get("height", "0"))
+    if (abs(paper_w - spec.paper_width) > spec.paper_width * 0.01
+            or abs(paper_h - spec.paper_height) > spec.paper_height * 0.01):
+        return False
     for ref in sec_pr.findall(_hp("masterPage")):
         part = f"Contents/{ref.get('idRef')}.xml"
         if part not in names:
@@ -125,7 +139,12 @@ def _odd_master_has_background(zf: zipfile.ZipFile, sec_pr, names: set[str]) -> 
             continue
         for pic in mp.iter(_hp("pic")):
             sz = pic.find(_hp("sz"))
-            if sz is not None and paper_w and int(sz.get("width", "0")) >= paper_w * 0.9:
+            if (
+                sz is not None
+                and pic.get("textWrap") == "BEHIND_TEXT"
+                and int(sz.get("width", "0")) >= paper_w * 0.95
+                and int(sz.get("height", "0")) >= paper_h * 0.95
+            ):
                 return True
     return False
 
@@ -293,7 +312,7 @@ def apply_chapter_headers(
                 if not heads:
                     continue
                 sec_pr = root.find(f".//{_hp('secPr')}")
-                if sec_pr is None or not _odd_master_has_background(zf, sec_pr, names):
+                if sec_pr is None or not _has_picture_wing(zf, sec_pr, names, spec):
                     result.skipped.append(part)
                     continue
                 page_pr = sec_pr.find(_hp("pagePr"))

@@ -1110,6 +1110,11 @@ def _cmd_build(args: argparse.Namespace) -> int:
     except (OSError, ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    wings = None
+    if mdata.get("chapter_header", True):
+        from ..ops import apply_chapter_headers
+
+        wings = apply_chapter_headers(gr.target)
     if getattr(args, "fit_tails", False):
         from ..ops import apply_tail_fits
 
@@ -1127,6 +1132,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
         print(f"  linked {result.links} URL(s) as hyperlink fields")
     if result.equations:
         print(f"  converted {result.equations} LaTeX math span(s) to equations")
+    if wings is not None and wings.count:
+        print(f"  set the side wing (쪽날개) of {wings.count} chapter(s)")
     if result.unmapped_roles:
         print(f"  unmapped (fell back to BODY): {', '.join(result.unmapped_roles)}")
     for warning in result.warnings:

@@ -25,6 +25,7 @@ from .bands import (
     detect_document_bands,
     detect_section_bands,
 )
+from .chapter_header import ChapterHeaderResult, WingSpec, apply_chapter_headers
 from .doctor import diagnose_template
 from .extract import extract_markdown
 from .fit_tails import (
@@ -182,6 +183,9 @@ __all__ = [
     "detect_tail_fits",
     "format_tail_fit_report",
     "apply_tail_fits",
+    "apply_chapter_headers",
+    "ChapterHeaderResult",
+    "WingSpec",
     "drop_stale_linesegarrays",
     "iter_mismatches",
     "PageIssue",

@@ -43,6 +43,12 @@ from .links import (
 )
 from .styles import INSTRUCTION, bullet_glyph_name, read_style_system, role_map
 from .tablewidth import CHAR_W, compute_column_widths
+from .template import (
+    FIGURE_TOKEN_RE,
+    INSERTION_MARKERS,
+    RESIDUAL_TOKEN_RE,
+    TABLE_TOKEN_RE,
+)
 
 #: tokens marking where authored content is inserted (each on a paragraph of its
 #: own); the marker paragraph is consumed (removed) on fill. A full report has
@@ -54,16 +60,19 @@ INTRO_MARKER = "{{intro}}"
 BODY_MARKER = "{{body}}"
 REFERENCES_MARKER = "{{references}}"
 APPENDIX_MARKER = "{{appendix}}"
-INSERTION_MARKERS = (
-    SUMMARY_MARKER,
-    INTRO_MARKER,
-    BODY_MARKER,
-    REFERENCES_MARKER,
-    APPENDIX_MARKER,
-)
+
 #: a table whose caption carries a ``{{table…}}`` token (e.g. ``{{table}}``,
 #: ``{{table_template}}``) is the format reference for generated tables.
-_TABLE_TOKEN_RE = re.compile(r"\{\{\s*table[\w:-]*\s*\}\}", re.IGNORECASE)
+_TABLE_TOKEN_RE = TABLE_TOKEN_RE
+_FIGURE_TOKEN_RE = FIGURE_TOKEN_RE
+_RESIDUAL_TOKEN_RE = RESIDUAL_TOKEN_RE
+
+#: Minimal 1x1 white PNG bytes to replace Preview/PrvImage.png (69 bytes)
+_MINIMAL_WHITE_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xff\xff?"
+    b"\x00\x05\xfe\x02\xfe\r\xefF\xb8\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 #: a table designated with an explicit sample modifier (e.g. ``{{table_template:sample}}``)
 #: is a dummy format placeholder and is dropped after fill completes.
 _TABLE_SAMPLE_RE = re.compile(
@@ -72,6 +81,7 @@ _TABLE_SAMPLE_RE = re.compile(
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 _HH = "http://www.hancom.co.kr/hwpml/2011/head"
 _HC = "http://www.hancom.co.kr/hwpml/2011/core"
+_HS = "http://www.hancom.co.kr/hwpml/2011/section"
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
 # a thematic break / horizontal rule: 3+ of -, *, or _ (optionally spaced), alone
@@ -929,33 +939,157 @@ def _is_sample_reference_table(tbl_element) -> bool:
     return _is_neutralized_reference_table(tbl_element)
 
 
-def _drop_sample_tables(doc: HwpxDocument) -> int:
-    """Drop any dummy :sample format reference tables from the document.
+def _find_top_sec_paragraph(el):
+    """Find the top-level section paragraph enclosing *el*, or *el* itself if it is one."""
+    cur = el
+    while cur is not None:
+        parent = cur.getparent()
+        if parent is not None and parent.tag == f"{{{_HS}}}sec":
+            return cur if cur.tag == f"{{{_HP}}}p" else None
+        cur = parent
+    return None
 
-    A table tagged with an explicit sample modifier (e.g. {{table_template:sample}})
-    and having only placeholder cells was created solely to hold house styles in a stripped
-    template. On final build completion, drop it so it never remains in the final document,
-    even if the user explicitly specified a different reference table via --table-template.
+
+def _remove_top_paragraph_safely(p, section) -> None:
+    """Remove *p* from *section*, preserving any <hp:secPr> if present."""
+    if p.find(f".//{{{_HP}}}secPr") is not None:
+        # Paragraph carries section property: keep the secPr run, strip other children
+        for child in list(p):
+            if child.tag != f"{{{_HP}}}run" or child.find(f"{{{_HP}}}secPr") is None:
+                p.remove(child)
+    else:
+        parent = p.getparent()
+        if parent is not None:
+            parent.remove(p)
+    section.mark_dirty()
+
+
+def _drop_reference_tables(doc: HwpxDocument) -> int:
+    """Drop format-reference and dummy template tables from the document.
+
+    Any table designated with {{table_template}} (with or without a modifier like :sample)
+    was used solely as a styling reference and must not survive in the final output.
     """
     dropped = 0
+    top_ps_to_drop = []
     for section in doc.sections:
         for tbl in list(section.element.iter(f"{{{_HP}}}tbl")):
-            if _is_sample_reference_table(tbl):
-                p = tbl.getparent()
-                while p is not None and p.tag != f"{{{_HP}}}p":
-                    p = p.getparent()
-                if p is not None:
-                    if p.find(f".//{{{_HP}}}secPr") is not None:
-                        tbl_parent = tbl.getparent()
-                        if tbl_parent is not None:
-                            tbl_parent.remove(tbl)
-                    else:
-                        parent = p.getparent()
-                        if parent is not None:
-                            parent.remove(p)
-                    section.mark_dirty()
-                    dropped += 1
+            cap_txt = _caption_text(tbl)
+            if _TABLE_TOKEN_RE.search(cap_txt) or _is_sample_reference_table(tbl):
+                tp = _find_top_sec_paragraph(tbl)
+                if tp is not None and tp not in [item[1] for item in top_ps_to_drop]:
+                    top_ps_to_drop.append((section, tp))
+
+    for section, p in top_ps_to_drop:
+        _remove_top_paragraph_safely(p, section)
+        dropped += 1
     return dropped
+
+
+def _drop_sample_tables(doc: HwpxDocument) -> int:
+    """Drop any dummy format reference tables from the document (kept for backwards compatibility).
+    """
+    return _drop_reference_tables(doc)
+
+
+def _drop_figure_template_paragraphs(doc: HwpxDocument) -> int:
+    """Remove {{figure_template}} reference paragraphs and unreferenced BinData."""
+    dropped = 0
+    top_ps_to_drop = []
+    for section in doc.sections:
+        for p in list(section.element.iter(f"{{{_HP}}}p")):
+            text = "".join(p.itertext())
+            if _FIGURE_TOKEN_RE.search(text):
+                tp = _find_top_sec_paragraph(p)
+                if tp is not None and tp not in [item[1] for item in top_ps_to_drop]:
+                    top_ps_to_drop.append((section, tp))
+
+    if not top_ps_to_drop:
+        return 0
+
+    dropped_refs: set[str] = set()
+    for section, p in top_ps_to_drop:
+        for img in p.iter(f"{{{_HC}}}img"):
+            bid = img.get("binaryItemIDRef")
+            if bid:
+                dropped_refs.add(bid)
+        _remove_top_paragraph_safely(p, section)
+        dropped += 1
+
+    remaining_refs: set[str] = set()
+    for section in doc.sections:
+        for el in section.element.iter():
+            bid = el.get("binaryItemIDRef")
+            if bid:
+                remaining_refs.add(bid)
+
+    try:
+        for h in getattr(doc._root, "_headers", []):
+            el = getattr(h, "_element", None)
+            if el is not None:
+                for sub in el.iter():
+                    bid = sub.get("binaryItemIDRef")
+                    if bid:
+                        remaining_refs.add(bid)
+    except Exception:
+        pass
+
+    try:
+        for mp in getattr(doc._root, "_master_pages", []):
+            el = getattr(mp, "_element", None)
+            if el is not None:
+                for sub in el.iter():
+                    bid = sub.get("binaryItemIDRef")
+                    if bid:
+                        remaining_refs.add(bid)
+    except Exception:
+        pass
+
+    unreferenced = dropped_refs - remaining_refs
+    if unreferenced:
+        manifest_el = doc._package._manifest_element()
+        if manifest_el is not None:
+            for item in list(manifest_el):
+                item_id = item.get("id")
+                if item_id in unreferenced:
+                    href = item.get("href")
+                    doc._package.remove_manifest_item(item_id)
+                    if href and doc._package.has_part(href):
+                        doc._package.delete(href)
+
+    return dropped
+
+
+def _update_preview_parts(doc: HwpxDocument) -> None:
+    """Replace Preview/PrvText.txt with output body text and PrvImage.png with a minimal PNG."""
+    lines = []
+    total_len = 0
+    max_chars = 2000
+    for sec in doc.sections:
+        for p in sec.paragraphs:
+            txt = (p.text or "").strip()
+            if txt:
+                lines.append(txt)
+                total_len += len(txt)
+                if total_len >= max_chars:
+                    break
+        if total_len >= max_chars:
+            break
+
+    prv_text = "\r\n".join(lines)
+    doc._package.set_part("Preview/PrvText.txt", prv_text.encode("utf-8"))
+    doc._package.set_part("Preview/PrvImage.png", _MINIMAL_WHITE_PNG)
+
+
+def _find_residual_tokens(doc: HwpxDocument) -> list[str]:
+    """Find leftover {{...}} markers across document paragraphs and captions."""
+    tokens = []
+    for sec in doc.sections:
+        for p in sec.element.iter(f"{{{_HP}}}p"):
+            text = "".join(p.itertext())
+            for match in _RESIDUAL_TOKEN_RE.findall(text):
+                tokens.append(f"{{{{{match.strip()}}}}}")
+    return tokens
 
 
 def _clone_caption(ref_el, title: str, chapter: str | None):
@@ -1715,6 +1849,7 @@ def fill_from_markdown(
     # tables generated below copy a template table's format (house style)
     caption_pattern = re.compile(re.escape(table_template), re.I) if table_template else None
     ref_element, ref_section, designated = _find_reference_table(doc, caption_pattern)
+    ref_element_copy = copy.deepcopy(ref_element) if ref_element is not None else None
     table_fmt = (
         _table_format(ref_element, _char_height_lookup(doc))
         if ref_element is not None else None
@@ -1980,7 +2115,7 @@ def fill_from_markdown(
         if isinstance(block, TableBlock):
             table = _build_table(
                 doc, target_section, block, table_fmt, body_style, body_para,
-                ref_element, chapter_label(), equal_columns=equal_columns,
+                ref_element_copy, chapter_label(), equal_columns=equal_columns,
                 text_writer=write_text,
                 para_resolver=resolve_para,
             )
@@ -2096,15 +2231,6 @@ def fill_from_markdown(
             + ", ".join(f"[^{f}]" for f in unused)
         )
 
-    # clean the {{table…}} designation token out of the reference table's caption,
-    # and drop any dummy :sample format reference tables across the document so they
-    # never remain in the final output (even if another reference was chosen via --table-template).
-    if strip_table_token:
-        _drop_sample_tables(doc)
-        if designated and ref_element is not None and ref_element.getparent() is not None:
-            _strip_table_token(ref_element)
-            ref_section.mark_dirty()
-
     if marker is not None:
         # if the marker paragraph opens its 구역 (carries <hp:secPr>), move that
         # secPr-bearing run onto the first authored paragraph before deleting the
@@ -2130,6 +2256,22 @@ def fill_from_markdown(
         if n:
             result.warnings.append(
                 f"stripped {n} unfilled marker(s) (no content supplied for them)"
+            )
+
+    # Clean template reference elements, update preview parts, and audit leftover tokens
+    # once the final markers and content have settled.
+    if strip_table_token:
+        _drop_reference_tables(doc)
+        _drop_figure_template_paragraphs(doc)
+        if designated and ref_element is not None and ref_element.getparent() is not None:
+            _strip_table_token(ref_element)
+            ref_section.mark_dirty()
+        _update_preview_parts(doc)
+        leftovers = _find_residual_tokens(doc)
+        if leftovers:
+            toks = ", ".join(sorted(set(leftovers)))
+            result.warnings.append(
+                f"unconsumed template marker(s) left in document: {toks}"
             )
 
     doc.save_to_path(str(output or template))
@@ -2198,8 +2340,17 @@ def fill_sections(
     # consume markers for parts that weren't supplied, so no literal {{x}} survives
     doc = HwpxDocument.open(str(final_out))
     n = _strip_unfilled_markers(doc)
+    _drop_reference_tables(doc)
+    _drop_figure_template_paragraphs(doc)
+    _update_preview_parts(doc)
+    leftovers = _find_residual_tokens(doc)
+    if leftovers:
+        toks = ", ".join(sorted(set(leftovers)))
+        agg.warnings.append(
+            f"unconsumed template marker(s) left in document: {toks}"
+        )
+    doc.save_to_path(str(final_out))
     if n:
-        doc.save_to_path(str(final_out))
         agg.warnings.append(f"stripped {n} unfilled marker(s) not supplied by this build")
     return agg
 

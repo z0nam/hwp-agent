@@ -35,6 +35,7 @@ from hwpx.document import HwpxDocument
 from .equation import equation_run_xml, latex_to_hwp, math_pieces, unescape_dollars
 from .form import extract_placeholders
 from .links import (
+    _escape_xml,
     link_inner_xml,
     link_pieces,
     link_run_xml,
@@ -1092,7 +1093,69 @@ def _find_residual_tokens(doc: HwpxDocument) -> list[str]:
     return tokens
 
 
-def _clone_caption(ref_el, title: str, chapter: str | None):
+class _CaptionParaAdapter:
+    """Minimal paragraph adapter so :func:`add_runs` can append to a caption paragraph."""
+
+    def __init__(self, p_el) -> None:
+        self.element = p_el
+
+    def add_run(self, text: str = "", *, char_pr_id_ref: str | None = None, **kwargs):
+        from lxml import etree
+
+        c_attr = f' charPrIDRef="{char_pr_id_ref}"' if char_pr_id_ref is not None else ""
+        esc = _escape_xml(text)
+        run = etree.fromstring(f'<hp:run xmlns:hp="{_HP}"{c_attr}><hp:t>{esc}</hp:t></hp:run>')
+        self.element.append(run)
+        return run
+
+
+def _fill_caption_runs(
+    cap_el,
+    title: str,
+    *,
+    run_writer=None,
+) -> None:
+    """Populate *cap_el* with *title*, resolving Markdown links and inline styles.
+
+    Keeps the caption framing (e.g. ``>`` or ``]``) on the last text node of the
+    auto-number run, and appends runs for *title* via *run_writer* (an adapter to
+    ``add_runs``). Shared between table captions and future figure captions (#31).
+    When *run_writer* is None, falls back to setting plain text on the last text node.
+    """
+    texts = cap_el.findall(f".//{{{_HP}}}t")
+    if not texts:
+        return
+
+    last = texts[-1].text or ""
+    m = re.match(r"^([^\]>]*[>\]])", last)
+    framing = m.group(1) if m else _TABLE_TOKEN_RE.sub("", last).rstrip()
+
+    if not title:
+        texts[-1].text = framing.strip()
+        return
+
+    if run_writer is None:
+        texts[-1].text = f"{framing} {title}".strip()
+        return
+
+    texts[-1].text = f"{framing} " if framing else ""
+    base_run = texts[-1].getparent()
+    base_char = base_run.get("charPrIDRef") if base_run is not None else None
+    p_el = base_run.getparent() if base_run is not None else cap_el.find(f".//{{{_HP}}}p")
+    if p_el is None:
+        texts[-1].text = f"{framing} {title}".strip()
+        return
+
+    lsa = p_el.find(f"{{{_HP}}}linesegarray")
+    if lsa is not None:
+        p_el.remove(lsa)
+    adapter = _CaptionParaAdapter(p_el)
+    run_writer(adapter, title, base_char)
+    if lsa is not None:
+        p_el.append(lsa)
+
+
+def _clone_caption(ref_el, title: str, chapter: str | None, *, run_writer=None):
     """Clone the reference table's caption (auto-number + 표제목 style) with *title*.
 
     The caption text is like "<표 {{chapter_number}}-" + autoNum + "> {title}". We
@@ -1131,13 +1194,7 @@ def _clone_caption(ref_el, title: str, chapter: str | None):
                 t.text = re.sub(r"(표\s*)\S+(\s*-\s*)$", rf"\g<1>{chapter}\g<2>", t.text)
                 break
 
-    # title: the last text node holds "framing + {old title / token}"; keep the
-    # framing up to the first ">" or "]" and replace the rest with the new title.
-    if texts:
-        last = texts[-1].text or ""
-        m = re.match(r"^([^\]>]*[>\]])", last)
-        framing = m.group(1) if m else _TABLE_TOKEN_RE.sub("", last).rstrip()
-        texts[-1].text = f"{framing} {title}".strip()
+    _fill_caption_runs(clone, title, run_writer=run_writer)
     return clone
 
 
@@ -1357,6 +1414,7 @@ def _fit_table_height(table_el) -> None:
 def _build_table(
     doc, section, block: TableBlock, fmt, body_style, body_para, ref_el, chapter=None,
     *, equal_columns: bool = False, text_writer=None, para_resolver=None,
+    run_writer=None,
 ):
     """Create a table sized to *block*, styled by *fmt*'s zones, and fill its cells.
 
@@ -1452,7 +1510,7 @@ def _build_table(
 
     # caption "<표 N-M> {title}" cloned from the reference (auto-number + 표제목 style)
     if block.caption and ref_el is not None:
-        clone = _clone_caption(ref_el, block.caption, chapter)
+        clone = _clone_caption(ref_el, block.caption, chapter, run_writer=run_writer)
         if clone is not None:
             first_tr = table.element.find(f"{{{_HP}}}tr")
             if first_tr is not None:
@@ -2118,6 +2176,7 @@ def fill_from_markdown(
                 ref_element_copy, chapter_label(), equal_columns=equal_columns,
                 text_writer=write_text,
                 para_resolver=resolve_para,
+                run_writer=add_runs,
             )
             place(table.paragraph.element)
             result.placed += 1

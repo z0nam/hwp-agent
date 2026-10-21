@@ -12,9 +12,11 @@ content sections are rejected by Hangul, see ``docs/section-split.md``): each
 HEADING_1 paragraph of such a section gets an **odd-page header control** holding a
 white, borderless text box that covers the baked-in title and shows the chapter's
 own title in vertical writing. A header control takes effect from the page it sits
-on until the next one, so each chapter's odd pages carry that chapter's title; an
-empty odd-page header at the start of the following section stops the last
-chapter's wing from running on into it (header controls outlive their section).
+on until the next one, so each chapter's odd pages carry that chapter's title. A
+running header the template already has is cloned into each wing header, and the
+header in force before the wings is put back at the start of the following section
+so the last chapter's wing doesn't run on into it (header controls outlive their
+section).
 The text uses the chapter heading's own charPr (font, colour, weight) at the wing's
 size.
 
@@ -248,18 +250,22 @@ def _wing_box(
     )
 
 
-def _prepend_run(p, ctrl_xml: str, char_pr: str) -> None:
-    """Put a run holding *ctrl_xml* before the paragraph's text.
+def _prepend_run(p, ctrl, char_pr: str, *, after_headers: bool = True) -> None:
+    """Put a run holding the *ctrl* element before the paragraph's text.
 
-    It goes after any secPr run and after header controls already there, so a later
-    header (a chapter's wing) wins over an earlier one (the blanking header).
+    It goes after any secPr run and — with *after_headers* — after header controls
+    already there, so a chapter's wing wins over the paragraph's own headers. The
+    restoring header at a section start goes before them instead, so the section's
+    own headers still win over it.
     """
     run = etree.Element(_hp("run"), charPrIDRef=char_pr)
-    run.append(etree.fromstring(ctrl_xml))
+    run.append(ctrl)
     runs = p.findall(_hp("run"))
     at = 0
     for i, r in enumerate(runs):
-        if r.find(_hp("secPr")) is not None or r.find(f"{_hp('ctrl')}/{_hp('header')}") is not None:
+        if r.find(_hp("secPr")) is not None or (
+            after_headers and r.find(f"{_hp('ctrl')}/{_hp('header')}") is not None
+        ):
             at = i + 1
     if at < len(runs):
         runs[at].addprevious(run)
@@ -267,6 +273,34 @@ def _prepend_run(p, ctrl_xml: str, char_pr: str) -> None:
         runs[-1].addnext(run)
     else:
         p.insert(0, run)
+
+
+def _odd_header_ctrl(active, header_id: int, renumber, text_width: int, para_pr: str,
+                     char_pr: str, box: str):
+    """An odd-page header showing what *active* shows, plus *box* (may be empty).
+
+    *active* is the odd/both-sides header in force at that point (or None). Its
+    content is cloned — object ids renumbered — so a template's own running header
+    survives on the chapter's odd pages; the wing box rides in its first paragraph
+    as a floating object, adding no line.
+    """
+    if active is None:
+        return etree.fromstring(_header_ctrl(header_id, text_width, para_pr, char_pr, box))
+    ctrl = etree.Element(_hp("ctrl"))
+    header = etree.SubElement(ctrl, _hp("header"), id=str(header_id), applyPageType="ODD")
+    sub = copy.deepcopy(active.find(_hp("subList")))
+    renumber(sub)
+    header.append(sub)
+    if box:
+        first = sub.find(_hp("p"))
+        run = etree.Element(_hp("run"), charPrIDRef=char_pr)
+        run.append(etree.fromstring(f'<x xmlns:hp="{_HP}" xmlns:hc="{_HC}">{box}</x>')[0])
+        lsa = first.find(_hp("linesegarray"))
+        if lsa is not None:
+            lsa.addprevious(run)
+        else:
+            first.append(run)
+    return ctrl
 
 
 def apply_chapter_headers(
@@ -304,50 +338,83 @@ def apply_chapter_headers(
                  if v and v.isdigit() and int(v) < 2**31 - 16),
                 default=0,
             )
+            ids = iter(range(next_id, 2**31))
+
+            def renumber(el) -> None:
+                for e in el.iter():
+                    if e.tag in (_hp("p"), _hp("subList")):
+                        continue
+                    for attr in ("id", "instid"):
+                        v = e.get(attr)
+                        if v and v.isdigit() and int(v) > 0:
+                            e.set(attr, str(next(ids)))
+
+            def odd_or_both(el) -> bool:
+                return el.get("applyPageType") in ("ODD", "BOTH")
+
+            # the odd/both-sides header in force so far (the document's own, never ours)
+            active = None
             touched: list[str] = []
-            for i, part in enumerate(parts):
+            restore_next = False
+            for part in parts:
                 root = sections[part]
+                own = [h for h in root.iter(_hp("header")) if odd_or_both(h)]
+                if restore_next:
+                    # header controls outlive their section: at the start of the next
+                    # one, put back what was in force before the wings, so the last
+                    # chapter's wing doesn't run into it
+                    restore_next = False
+                    first = root.find(_hp("p"))
+                    if first is not None:
+                        run0 = first.find(_hp("run"))
+                        cp = run0.get("charPrIDRef", "0") if run0 is not None else "0"
+                        pp = first.get("paraPrIDRef", "0")
+                        ctrl = _odd_header_ctrl(active, next(ids), renumber, 0, pp, cp, "")
+                        _prepend_run(first, ctrl, cp, after_headers=False)
+                        touched.append(part)
                 heads = [p for p in root.findall(_hp("p"))
                          if p.get("styleIDRef") == h1 and _para_text(p)]
-                if not heads:
-                    continue
                 sec_pr = root.find(f".//{_hp('secPr')}")
-                if sec_pr is None or not _has_picture_wing(zf, sec_pr, names, spec):
+                target = bool(heads) and sec_pr is not None and _has_picture_wing(
+                    zf, sec_pr, names, spec
+                )
+                if heads and not target:
                     result.skipped.append(part)
+                if not target:
+                    if own:
+                        active = own[-1]
                     continue
                 page_pr = sec_pr.find(_hp("pagePr"))
                 margin = page_pr.find(_hp("margin"))
                 paper_w = int(page_pr.get("width"))
                 left, top = int(margin.get("left")), int(margin.get("top"))
                 text_width = paper_w - left - int(margin.get("right"))
-                for p in heads:
+                for p in root.findall(_hp("p")):
+                    # headers up to and including this paragraph are in force here
+                    for h in p.iter(_hp("header")):
+                        if odd_or_both(h):
+                            active = h
+                    if p not in heads:
+                        continue
                     runs = p.findall(_hp("run"))
                     base_char = runs[0].get("charPrIDRef", "0") if runs else "0"
                     char_pr = _wing_char_pr(char_props, base_char, spec.char_height)
                     para_pr = _wing_para_pr(para_props, p.get("paraPrIDRef", "0"))
+                    shape_id = next(ids)
+                    next(ids)  # the box's instid
                     box = _wing_box(
-                        title=_para_text(p), shape_id=next_id + 1, char_pr=char_pr,
+                        title=_para_text(p), shape_id=shape_id, char_pr=char_pr,
                         para_pr=para_pr, paper_w=paper_w, margin_left=left,
                         margin_top=top, spec=spec,
                     )
-                    _prepend_run(p, _header_ctrl(next_id, text_width, para_pr, char_pr, box),
-                                 base_char)
-                    next_id += 3
+                    ctrl = _odd_header_ctrl(
+                        active, next(ids), renumber, text_width, para_pr, char_pr, box
+                    )
+                    _prepend_run(p, ctrl, base_char)
                     result.titles.append(_para_text(p))
                 result.sections.append(part)
                 touched.append(part)
-                # header controls outlive their section: blank the odd header at the
-                # start of the next one, so the last chapter's wing doesn't run into it
-                if i + 1 < len(parts):
-                    nxt = parts[i + 1]
-                    first = sections[nxt].find(_hp("p"))
-                    if first is not None:
-                        run0 = first.find(_hp("run"))
-                        cp = run0.get("charPrIDRef", "0") if run0 is not None else "0"
-                        pp = first.get("paraPrIDRef", "0")
-                        _prepend_run(first, _header_ctrl(next_id, 0, pp, cp, ""), cp)
-                        next_id += 3
-                        touched.append(nxt)
+                restore_next = True
             for part in dict.fromkeys(touched):
                 overrides[part] = _serialize(raw[part], sections[part])
             if overrides:

@@ -177,3 +177,30 @@ def test_other_paper_size_is_left_alone(tmp_path: Path) -> None:
     res = apply_chapter_headers(tmp_path / "out.hwpx", dst, spec=WingSpec(paper_width=59528))
     assert res.count == 0
     assert dst.read_bytes() == (tmp_path / "out.hwpx").read_bytes()
+
+
+def test_existing_odd_header_content_is_kept(tmp_path: Path) -> None:
+    """A template's own running header survives on the chapters' odd pages (#56 review)."""
+    build_report(_manifest(tmp_path))
+    running = (
+        '<hp:run charPrIDRef="0"><hp:ctrl><hp:header id="99999" applyPageType="BOTH">'
+        '<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" '
+        'linkListIDRef="0" linkListNextIDRef="0" textWidth="38268" textHeight="0" '
+        'hasTextRef="0" hasNumRef="0"><hp:p id="0" paraPrIDRef="0" styleIDRef="0" '
+        'pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0">'
+        "<hp:t>RUNNING-HEAD</hp:t></hp:run></hp:p></hp:subList></hp:header></hp:ctrl></hp:run>"
+    )
+    src = tmp_path / "running.hwpx"
+    _with_part(tmp_path / "out.hwpx", src, "Contents/section0.xml",
+               lambda x: x.replace("</hp:run>", "</hp:run>" + running, 1))
+    res = apply_chapter_headers(src, tmp_path / "res.hwpx")
+    assert res.titles == TITLES
+    secs = _sections(tmp_path / "res.hwpx")
+    wings = _headers(secs["Contents/section4.xml"])
+    assert len(wings) == len(TITLES)
+    for h, title in zip(wings, TITLES, strict=True):
+        assert "RUNNING-HEAD" in h and title in h and "<hp:rect" in h
+    (restore,) = _headers(secs["Contents/section5.xml"])
+    assert 'applyPageType="ODD"' in restore
+    assert "RUNNING-HEAD" in restore and "<hp:rect" not in restore
+    assert audit_package(tmp_path / "res.hwpx") == []

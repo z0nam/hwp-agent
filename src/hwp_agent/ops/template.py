@@ -40,12 +40,12 @@ STANDARD_TEMPLATE_MARKERS: tuple[str, ...] = (
     FIGURE_TEMPLATE_TOKEN,
 )
 
-#: Regex matching a {{table_template}} designation with optional modifier (:sample, etc.)
-TABLE_TOKEN_RE = re.compile(r"\{\{table_template(?::\w+)?\}\}")
-#: Regex matching a {{figure_template}} designation with optional modifier
-FIGURE_TOKEN_RE = re.compile(r"\{\{figure_template(?::\w+)?\}\}")
-#: Regex matching any {{...}} token left in the document text or captions
-RESIDUAL_TOKEN_RE = re.compile(r"\{\{[a-zA-Z0-9_:.-]+\}\}")
+#: Regex matching a {{table…}} designation with optional modifier, case, or padding
+TABLE_TOKEN_RE = re.compile(r"\{\{\s*table[\w:-]*\s*\}\}", re.IGNORECASE)
+#: Regex matching a {{figure…}} designation with optional modifier, case, or padding
+FIGURE_TOKEN_RE = re.compile(r"\{\{\s*figure[\w:-]*\s*\}\}", re.IGNORECASE)
+#: Regex matching any {{...}} placeholder token (mirrors form.PLACEHOLDER_RE)
+RESIDUAL_TOKEN_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
 #: a user-installed default — drop any .hwpx here to override the bundled one
 USER_DEFAULT = Path.home() / ".config" / "hwp-agent" / "template.hwpx"

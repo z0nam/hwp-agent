@@ -114,35 +114,53 @@ def _marker_audit(doc, inst_style: str | None = None) -> list[dict]:
     figure_token = FIGURE_TEMPLATE_TOKEN
     order = (*INSERTION_MARKERS, table_token, figure_token)
     out: list[dict] = []
+
+    def _para_text_excluding_tbl(p_el) -> str:
+        texts = []
+        for node in p_el.iter():
+            if node.tag == f"{{{_HP}}}t" and node.text:
+                anc = node.getparent()
+                under_tbl = False
+                while anc is not None and anc is not p_el:
+                    if anc.tag == f"{{{_HP}}}tbl":
+                        under_tbl = True
+                        break
+                    anc = anc.getparent()
+                if not under_tbl:
+                    texts.append(node.text)
+        return "".join(texts)
+
     for si, section in enumerate(doc.sections):
         counts: dict[str, int] = {}
         for p in section.paragraphs:
             if inst_style is not None and str(p.style_id_ref) == inst_style:
                 continue  # instruction paragraph — removed before the writer picks a marker
-            text = "".join(p.element.itertext())
+            text = _para_text_excluding_tbl(p.element)
             for m in INSERTION_MARKERS:
                 if m in text:
                     counts[m] = counts.get(m, 0) + 1
             if FIGURE_TOKEN_RE.search(text):
                 counts[figure_token] = counts.get(figure_token, 0) + 1
             for res in RESIDUAL_TOKEN_RE.findall(text):
+                tok = f"{{{{{res.strip()}}}}}"
                 if (
-                    res not in order
-                    and not TABLE_TOKEN_RE.match(res)
-                    and not FIGURE_TOKEN_RE.match(res)
+                    tok not in order
+                    and not TABLE_TOKEN_RE.match(tok)
+                    and not FIGURE_TOKEN_RE.match(tok)
                 ):
-                    counts[res] = counts.get(res, 0) + 1
+                    counts[tok] = counts.get(tok, 0) + 1
         for tbl in section.element.iter(f"{{{_HP}}}tbl"):
             cap_txt = _caption_text(tbl)
             if TABLE_TOKEN_RE.search(cap_txt):
                 counts[table_token] = counts.get(table_token, 0) + 1
             for res in RESIDUAL_TOKEN_RE.findall(cap_txt):
+                tok = f"{{{{{res.strip()}}}}}"
                 if (
-                    res not in order
-                    and not TABLE_TOKEN_RE.match(res)
-                    and not FIGURE_TOKEN_RE.match(res)
+                    tok not in order
+                    and not TABLE_TOKEN_RE.match(tok)
+                    and not FIGURE_TOKEN_RE.match(tok)
                 ):
-                    counts[res] = counts.get(res, 0) + 1
+                    counts[tok] = counts.get(tok, 0) + 1
         for m in order:  # stable order
             if m in counts:
                 out.append({"token": m, "section": si, "count": counts.pop(m)})

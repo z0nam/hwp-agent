@@ -1088,7 +1088,7 @@ def _find_residual_tokens(doc: HwpxDocument) -> list[str]:
         for p in sec.element.iter(f"{{{_HP}}}p"):
             text = "".join(p.itertext())
             for match in _RESIDUAL_TOKEN_RE.findall(text):
-                tokens.append(match)
+                tokens.append(f"{{{{{match.strip()}}}}}")
     return tokens
 
 

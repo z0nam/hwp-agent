@@ -129,3 +129,46 @@ def test_residual_token_warnings(tmp_path: Path) -> None:
     # doctor check on this document should also flag unrecognized marker
     diag = diagnose_template(str(out))
     assert any("unconsumed_token" in w for w in diag["warnings"])
+
+
+def test_residual_korean_and_whitespace_placeholders(tmp_path: Path) -> None:
+    """Residual check recognizes form-engine style placeholders like {{ 제목 }}."""
+    md = "# 제목\n\n문서 내에 {{  공백_토큰  }} 및 {{ 제목 }} 남아있음.\n"
+    out = tmp_path / "out_korean_residual.hwpx"
+    res = fill_from_markdown(_DEFAULT_TPL, md, output=out)
+
+    assert any("공백_토큰" in w for w in res.warnings)
+    assert any("제목" in w for w in res.warnings)
+
+    diag = diagnose_template(str(out))
+    # Unrecognized marker should report each without false ambiguity
+    assert any("공백_토큰" in w for w in diag["warnings"])
+    assert any("제목" in w for w in diag["warnings"])
+    assert not any("appears 2×" in w for w in diag["warnings"])
+
+
+def test_caption_residual_not_double_counted(tmp_path: Path) -> None:
+    """A residual token inside a table caption must be counted exactly once."""
+    from lxml import etree
+
+    custom_tpl = tmp_path / "custom_caption.hwpx"
+    doc = HwpxDocument.open(str(_DEFAULT_TPL))
+    sec = doc.sections[0]
+    _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    for tbl in sec.element.iter(f"{{{_HP}}}tbl"):
+        cap = tbl.find(f"{{{_HP}}}caption")
+        if cap is not None:
+            p = cap.find(f".//{{{_HP}}}p")
+            if p is not None:
+                p.append(etree.fromstring(
+                    f'<hp:run xmlns:hp="{_HP}"><hp:t> {{{{custom_cap}}}}</hp:t></hp:run>'
+                ))
+                break
+    doc.save_to_path(str(custom_tpl))
+
+    diag = diagnose_template(str(custom_tpl))
+    toks = {m["token"]: m["count"] for m in diag["markers"]}
+    assert toks.get("{{custom_cap}}") == 1
+    # Must NOT be flagged as ambiguous (count == 1)
+    assert not any("custom_cap" in w and "appears 2×" in w for w in diag["warnings"])
+    assert any("custom_cap" in w and "unrecognized marker" in w for w in diag["warnings"])

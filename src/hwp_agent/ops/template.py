@@ -17,8 +17,35 @@ content.md`` works with no template flag at all.
 from __future__ import annotations
 
 import os
+import re
 from importlib.resources import files
 from pathlib import Path
+
+#: Insertion markers where markdown parts land
+INSERTION_MARKERS: tuple[str, ...] = (
+    "{{summary}}",
+    "{{intro}}",
+    "{{body}}",
+    "{{references}}",
+    "{{appendix}}",
+)
+
+TABLE_TEMPLATE_TOKEN = "{{table_template}}"
+FIGURE_TEMPLATE_TOKEN = "{{figure_template}}"
+
+#: All recognized standard template markers in a template
+STANDARD_TEMPLATE_MARKERS: tuple[str, ...] = (
+    *INSERTION_MARKERS,
+    TABLE_TEMPLATE_TOKEN,
+    FIGURE_TEMPLATE_TOKEN,
+)
+
+#: Regex matching a {{table_template}} designation with optional modifier (:sample, etc.)
+TABLE_TOKEN_RE = re.compile(r"\{\{table_template(?::\w+)?\}\}")
+#: Regex matching a {{figure_template}} designation with optional modifier
+FIGURE_TOKEN_RE = re.compile(r"\{\{figure_template(?::\w+)?\}\}")
+#: Regex matching any {{...}} token left in the document text or captions
+RESIDUAL_TOKEN_RE = re.compile(r"\{\{[a-zA-Z0-9_:.-]+\}\}")
 
 #: a user-installed default — drop any .hwpx here to override the bundled one
 USER_DEFAULT = Path.home() / ".config" / "hwp-agent" / "template.hwpx"

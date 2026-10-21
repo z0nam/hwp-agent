@@ -86,7 +86,7 @@ def _ladder(
 
 
 def _marker_audit(doc, inst_style: str | None = None) -> list[dict]:
-    """Locate each insertion marker (``{{body}}`` …) and ``{{table_template}}`` table.
+    """Locate each insertion marker, ``{{table_template}}``, and ``{{figure_template}}``.
 
     ``write``/``build`` route content to these markers and copy table styling from a
     ``{{table…}}``-captioned reference table; a marker that appears twice is ambiguous
@@ -100,26 +100,54 @@ def _marker_audit(doc, inst_style: str | None = None) -> list[dict]:
     *mentions* a token (e.g. "content is written at ``{{body}}``") is miscounted as a
     second live marker and falsely flagged ambiguous.
     """
-    from .author import _HP, _TABLE_TOKEN_RE, INSERTION_MARKERS, _caption_text
+    from .author import _HP, _caption_text
+    from .template import (
+        FIGURE_TEMPLATE_TOKEN,
+        FIGURE_TOKEN_RE,
+        INSERTION_MARKERS,
+        RESIDUAL_TOKEN_RE,
+        TABLE_TEMPLATE_TOKEN,
+        TABLE_TOKEN_RE,
+    )
 
-    table_token = "{{table_template}}"
-    order = (*INSERTION_MARKERS, table_token)
+    table_token = TABLE_TEMPLATE_TOKEN
+    figure_token = FIGURE_TEMPLATE_TOKEN
+    order = (*INSERTION_MARKERS, table_token, figure_token)
     out: list[dict] = []
     for si, section in enumerate(doc.sections):
         counts: dict[str, int] = {}
         for p in section.paragraphs:
             if inst_style is not None and str(p.style_id_ref) == inst_style:
                 continue  # instruction paragraph — removed before the writer picks a marker
-            text = p.text or ""
+            text = "".join(p.element.itertext())
             for m in INSERTION_MARKERS:
                 if m in text:
                     counts[m] = counts.get(m, 0) + 1
+            if FIGURE_TOKEN_RE.search(text):
+                counts[figure_token] = counts.get(figure_token, 0) + 1
+            for res in RESIDUAL_TOKEN_RE.findall(text):
+                if (
+                    res not in order
+                    and not TABLE_TOKEN_RE.match(res)
+                    and not FIGURE_TOKEN_RE.match(res)
+                ):
+                    counts[res] = counts.get(res, 0) + 1
         for tbl in section.element.iter(f"{{{_HP}}}tbl"):
-            if _TABLE_TOKEN_RE.search(_caption_text(tbl)):
+            cap_txt = _caption_text(tbl)
+            if TABLE_TOKEN_RE.search(cap_txt):
                 counts[table_token] = counts.get(table_token, 0) + 1
+            for res in RESIDUAL_TOKEN_RE.findall(cap_txt):
+                if (
+                    res not in order
+                    and not TABLE_TOKEN_RE.match(res)
+                    and not FIGURE_TOKEN_RE.match(res)
+                ):
+                    counts[res] = counts.get(res, 0) + 1
         for m in order:  # stable order
             if m in counts:
-                out.append({"token": m, "section": si, "count": counts[m]})
+                out.append({"token": m, "section": si, "count": counts.pop(m)})
+        for res, cnt in sorted(counts.items()):
+            out.append({"token": res, "section": si, "count": cnt})
     return out
 
 
@@ -252,6 +280,8 @@ def _warnings(r: dict) -> list[str]:
         out.append(f"integrity [{e['kind']}] {e['where']}: {e['detail']}")
     # a marker appearing more than once is ambiguous — write/build can't tell which
     # paragraph should receive the content (PR #16 P1/P2 class of bug)
+    from .template import STANDARD_TEMPLATE_MARKERS, TABLE_TOKEN_RE
+
     dup_total: dict[str, int] = {}
     for e in r.get("markers") or []:
         dup_total[e["token"]] = dup_total.get(e["token"], 0) + e["count"]
@@ -260,5 +290,10 @@ def _warnings(r: dict) -> list[str]:
             out.append(
                 f"marker {token} appears {total}× — ambiguous; write/build can't tell which "
                 "paragraph gets the content. Keep exactly one per template."
+            )
+        if token not in STANDARD_TEMPLATE_MARKERS and not TABLE_TOKEN_RE.match(token):
+            out.append(
+                f"unrecognized marker {token} appears {total}× — ambiguous template token; "
+                "write/build does not consume it."
             )
     return out

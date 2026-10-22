@@ -93,6 +93,39 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 runtime; install a JRE 17+ (e.g. [Temurin](https://adoptium.net/)) to run
 `convert`. HWPX-only use (editing, `form fill`) needs no Java at all.
 
+### Layout engines (for `fit tails`, `pdf`, `docx`)
+
+Everything above works without these. They matter only when hwp-agent has to
+know **how Hangul lays a document out** — `fit tails` on a document never saved
+in Hangul (e.g. a fresh `write` output), and `pdf`/`docx`. hwp-agent picks, in order:
+
+1. **hwp2pdf** — Hangul itself, through the conversion server of the separate
+   [hwp2pdf](https://github.com/z0nam/hwp2pdf) project (`hwp2pdf serve`, Windows +
+   Hancom Office). Exact. DOCX needs it.
+2. **rhwp** — a stand-alone renderer. Runs anywhere, but its line breaks can
+   differ from Hangul's; results are labelled `rhwp 조판 기준(한글과 다를 수 있음)`.
+3. **none** — `fit tails` prints `판정 엔진 없음` with the reason for each engine
+   and exits 3 (`write`/`build --fit-tails` only warn and still write the file).
+
+**hwp2pdf is never used while Hangul is running on the server machine** (or the
+server has other jobs queued): hwp-agent does not open a second Hangul next to
+yours and never closes yours. On your own PC with Hangul open, that means rhwp.
+For Hangul-exact results while you work, point at a server on a machine where
+nobody keeps Hangul open.
+
+Setup, by situation:
+
+| You are on | Do this |
+|---|---|
+| Windows PC with hwp2pdf installed | Run `hwp2pdf-cli.exe serve --init` (or its scheduled task). Nothing to configure: hwp-agent finds `127.0.0.1:17650` and the token `serve --init` saved. Used only while Hangul is closed. |
+| Any PC, shared conversion server | Create `~/.config/hwp-agent/hwp2pdf.json` from [`examples/hwp2pdf.example.json`](examples/hwp2pdf.example.json): `server_url`, and the token in a file named by `token_file` (mode 600) or in `$HWP2PDF_TOKEN`. Never put the token in the JSON or a repo. |
+| No server | Install rhwp: download the binary for your OS from [rhwp releases](https://github.com/edwardkim/rhwp/releases) and put it on `PATH`, or set `$RHWP_BIN` to its path. |
+
+Check what you got with `hwp-agent fit tails FILE.hwpx --dry-run`: the report
+ends with `[판정: …]` naming the engine, or explains why none was available.
+Env overrides: `HWP2PDF_SERVER_URL`, `HWP2PDF_TOKEN`, `HWP2PDF_TOKEN_FILE`,
+`HWP2PDF_TIMEOUT`, `HWP2PDF_NO_LOCAL=1` (skip the `127.0.0.1` probe), `RHWP_BIN`.
+
 ## Usage
 
 ```bash

@@ -184,6 +184,10 @@ class Hwp2PdfClient:
         try:
             code, body = self._call("GET", "/v1/health", auth=False)
         except OSError as exc:
+            if cfg.auto_local:
+                return Hwp2PdfStatus(
+                    False, f"{NOT_CONFIGURED}, 이 PC({url})에도 hwp2pdf serve 없음",
+                )
             return Hwp2PdfStatus(False, f"hwp2pdf 서버에 연결 못 함 ({url}): {exc}")
         if code != 200:
             return Hwp2PdfStatus(False, f"hwp2pdf 서버 health 응답 {code} ({url})")
@@ -195,7 +199,7 @@ class Hwp2PdfClient:
             )
         if health.get("auth_required", True) and not cfg.token():
             return Hwp2PdfStatus(
-                False, "hwp2pdf 토큰 없음 ($HWP2PDF_TOKEN 또는 hwp2pdf.json 의 token_file)",
+                False, f"hwp2pdf 토큰 없음 ({url}; $HWP2PDF_TOKEN 또는 hwp2pdf.json 의 token_file)",
             )
         try:
             code, body = self._call("GET", "/v1/capabilities")

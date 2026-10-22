@@ -28,6 +28,7 @@ def _isolate_hwp2pdf(monkeypatch, tmp_path_factory) -> None:
     monkeypatch.setenv(
         "HWP2PDF_CONFIG", str(tmp_path_factory.getbasetemp() / "no-hwp2pdf.json")
     )
+    monkeypatch.setenv("HWP2PDF_NO_LOCAL", "1")  # never probe a real local server
     for var in ("HWP2PDF_SERVER_URL", "HWP2PDF_TOKEN", "HWP2PDF_TOKEN_FILE", "HWP2PDF_TIMEOUT"):
         monkeypatch.delenv(var, raising=False)
 

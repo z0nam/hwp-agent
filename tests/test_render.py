@@ -232,6 +232,36 @@ def test_config_none_when_absent(tmp_path: Path) -> None:
     assert resolve_hwp2pdf_config(tmp_path / "none.json") is None
 
 
+def test_config_auto_local_when_unconfigured(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("HWP2PDF_NO_LOCAL")
+    c = resolve_hwp2pdf_config(tmp_path / "none.json")
+    assert c is not None and c.auto_local and c.server_url == "http://127.0.0.1:17650"
+
+
+def test_auto_local_server_is_found_and_used(tmp_path: Path, fake_hwp2pdf, monkeypatch) -> None:
+    # a researcher's Windows PC running "hwp2pdf serve": nothing configured, the
+    # token is the one "serve --init" saved under %LOCALAPPDATA%
+    from conftest import TOKEN
+
+    monkeypatch.delenv("HWP2PDF_NO_LOCAL")
+    monkeypatch.delenv("HWP2PDF_SERVER_URL")
+    monkeypatch.delenv("HWP2PDF_TOKEN")
+    monkeypatch.setattr("hwp_agent.render.config.LOCAL_URL", fake_hwp2pdf.url)
+    appdata = tmp_path / "appdata"
+    (appdata / "hwp2pdf").mkdir(parents=True)
+    (appdata / "hwp2pdf" / "server_token.txt").write_text(TOKEN)
+    monkeypatch.setenv("LOCALAPPDATA", str(appdata))
+    c = resolve_hwp2pdf_config(tmp_path / "none.json")
+    assert c.auto_local and Hwp2PdfClient(c).status().usable
+
+
+def test_auto_local_absent_reads_as_unconfigured(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("HWP2PDF_NO_LOCAL")
+    monkeypatch.setattr("hwp_agent.render.config.LOCAL_URL", "http://127.0.0.1:9")
+    st = Hwp2PdfClient(resolve_hwp2pdf_config(tmp_path / "none.json")).status()
+    assert not st.usable and "미설정" in st.reason and "이 PC" in st.reason
+
+
 def test_config_ignores_retired_ssh_keys(tmp_path: Path) -> None:
     cfg = tmp_path / "hwp2pdf.json"
     cfg.write_text(json.dumps({"host": "namun-ji", "remote_inbox": "C:/in",

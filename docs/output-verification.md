@@ -158,7 +158,12 @@ hwp-agent verify out.pdf                  # 한컴 PDF면 권위 사인오프(St
 - **config**: `~/.config/hwp-agent/hwp2pdf.json`(예시 `examples/hwp2pdf.example.json`) —
   `server_url`, `token_file`, 타임아웃. env `$HWP2PDF_SERVER_URL`·`$HWP2PDF_TOKEN`·
   `$HWP2PDF_TOKEN_FILE`·`$HWP2PDF_TIMEOUT`이 우선. 토큰은 저장소·로그·출력에 남기지 않는다.
-  `server_url`이 없으면 hwp2pdf 미가용 → auto는 rhwp. 옛 키(`host`, `remote_inbox` …)는 무시.
+  `server_url`이 없으면 이 PC의 `127.0.0.1:17650`(연구원 윈도 PC의 `hwp2pdf serve`)을 찔러 보고,
+  토큰은 `%LOCALAPPDATA%\hwp2pdf\server_token.txt`에서 읽는다. 거기도 없으면 hwp2pdf 미가용 →
+  auto는 rhwp. `HWP2PDF_NO_LOCAL=1`이면 로컬 탐지를 건너뛴다. 옛 키(`host`, `remote_inbox` …)는 무시.
+- **한글이 켜져 있으면 포기(2026-10-22 사용자 결정)**: 같은 PC에 한글을 하나 더 띄우면 COM이
+  겹치고(-2147023174), 켜 둔 한글을 빌리면 작업 방해라 대안이 없다. 사용자가 일하는 중에도 한글
+  기준 판정을 받으려면 한글을 상시 켜 두지 않는 머신의 서버를 `server_url`로 가리킨다.
 - **fit tails(#61)**: linesegarray가 없는 문서(`write` 산출물)는 hwp2pdf로 HWPX를 다시 저장해
   한글이 계산한 linesegarray로 꼬리 줄을 판정한다. 다시 저장한 파일은 판정에만 쓰고 버린다.
 - **옛 worker 해제(namun-ji, 사용자 확인 후 수동)**: `schtasks /delete /tn hwp-agent-hwp2pdf /f`

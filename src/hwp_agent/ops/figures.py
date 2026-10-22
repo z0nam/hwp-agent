@@ -345,7 +345,9 @@ def figure_parts(tbl) -> tuple[object, str] | None:
     """``(pic, caption_text)`` when *tbl* is a figure table ``write`` built, else None.
 
     A figure table is one column, one or two rows, a picture in the first cell, and
-    a caption framed ``[그림 …]`` — the shape :func:`write` emits.
+    a caption framed ``[그림 …]`` — the shape ``write`` emits, which is also how JRI
+    reports lay out figures by hand (those come back with the picture's original
+    file name as the path).
     """
     if (tbl.get("colCnt") or "") != "1" or (tbl.get("rowCnt") or "") not in ("1", "2"):
         return None

@@ -613,3 +613,13 @@ def test_write_fit_tails_without_engine_warns_and_writes(
     cap = capsys.readouterr()
     assert ret == 0 and out.is_file()
     assert "--fit-tails 미적용 — 판정 엔진 없음" in cap.err
+
+
+def test_malformed_hwp2pdf_config_falls_through(tmp_path: Path, monkeypatch, no_rhwp) -> None:
+    # review #63: a broken hwp2pdf.json must not crash; it is "hwp2pdf unavailable"
+    bad = tmp_path / "hwp2pdf.json"
+    bad.write_text("{not json")
+    monkeypatch.setenv("HWP2PDF_CONFIG", str(bad))
+    det = detect_tail_fits_with_engine(SAMPLE, max_chars=4)
+    assert det.engine == "none"
+    assert any("설정 오류" in n for n in det.notes)

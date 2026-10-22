@@ -250,6 +250,16 @@ class Hwp2PdfClient:
         if output_format == "HWPX" and src.suffix.lower() == ".hwpx":
             name = src.stem
 
+        # One deadline for the whole job (convert_timeout / --timeout): transfers
+        # and polling all draw on what is left of it.
+        deadline = time.monotonic() + cfg.convert_timeout
+
+        def left(cap: float) -> float:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Hwp2PdfError(f"hwp2pdf 변환이 {cfg.convert_timeout}초 안에 끝나지 않음")
+            return min(cap, remaining)
+
         stage = "작업 생성"
         try:
             code, body = self._call("POST", "/v1/jobs", payload={"lang": "ko", "safe_temp": True},
@@ -267,7 +277,7 @@ class Hwp2PdfClient:
             stage = "업로드"
             self._expect(
                 self._call("PUT", f"{base}/inputs/{item}", data=src.read_bytes(),
-                           timeout=TRANSFER_TIMEOUT),
+                           timeout=left(TRANSFER_TIMEOUT)),
                 (200, 201, 204), stage,
             )
             stage = "변환 요청"
@@ -281,13 +291,14 @@ class Hwp2PdfClient:
             self._expect((code, body), (200, 202), stage)
 
             stage = "진행 조회"
-            event = self._await_item(base, item, cfg.convert_timeout)
+            event = self._await_item(base, item, deadline, cfg.convert_timeout)
             if event.get("status") != "ok":
                 msg = event.get("message") or event.get("status") or "알 수 없는 오류"
                 raise Hwp2PdfError(f"hwp2pdf 변환 실패: {msg}")
 
             stage = "결과 내려받기"
-            code, body = self._call("GET", f"{base}/outputs/{item}", timeout=TRANSFER_TIMEOUT)
+            code, body = self._call("GET", f"{base}/outputs/{item}",
+                                    timeout=left(TRANSFER_TIMEOUT))
             self._expect((code, body), (200,), stage)
             out.parent.mkdir(parents=True, exist_ok=True)
             tmp = out.with_name(out.name + ".part")
@@ -307,9 +318,8 @@ class Hwp2PdfClient:
         if code not in ok:
             raise Hwp2PdfError(f"hwp2pdf {what} 실패 ({code}): {_detail(body)}")
 
-    def _await_item(self, base: str, item: str, timeout: int) -> dict:
-        """Drain the job's event log until *item* reports, or cancel on timeout."""
-        deadline = time.monotonic() + timeout
+    def _await_item(self, base: str, item: str, deadline: float, timeout: int) -> dict:
+        """Drain the job's event log until *item* reports, or cancel at *deadline*."""
         cursor = 0
         while time.monotonic() < deadline:
             wait = max(0, min(EVENT_WAIT, int(deadline - time.monotonic())))

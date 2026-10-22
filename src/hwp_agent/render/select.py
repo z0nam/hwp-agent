@@ -39,7 +39,7 @@ def select_render_backend(
     # auto
     if fmt == "docx":
         return remote  # only hwp2pdf can produce DOCX
-    return remote if remote.is_available() else local
+    return remote if remote.status(fmt).usable else local
 
 
 def render_document(

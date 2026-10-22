@@ -825,9 +825,15 @@ def detect_tail_fits_with_engine(
 
     notes: list[str] = []
     if use_hwp2pdf:
-        client = hwp2pdf or Hwp2PdfClient(resolve_hwp2pdf_config())
-        st = client.status("hwpx")
-        if st.usable:
+        try:
+            client = hwp2pdf or Hwp2PdfClient(resolve_hwp2pdf_config())
+        except ValueError as exc:  # malformed hwp2pdf.json: hwp2pdf is unavailable
+            client = None
+            notes.append(f"hwp2pdf 미사용 — 설정 오류: {exc}")
+        st = client.status("hwpx") if client else None
+        if st is None:
+            pass
+        elif st.usable:
             try:
                 layout = _hwp2pdf_linesegs(client, src, list(section_blobs))
                 matched, missed = _with_hangul_layout(eligible, layout)

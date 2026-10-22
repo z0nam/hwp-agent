@@ -163,6 +163,21 @@ def test_select_auto_prefers_remote_when_usable(fake_hwp2pdf) -> None:
     assert be.name == "hwp2pdf"
 
 
+def test_select_auto_skips_server_without_the_format(fake_hwp2pdf) -> None:
+    fake_hwp2pdf.formats = ["DOCX"]
+    assert select_render_backend("pdf", "auto").name == "rhwp"
+
+
+def test_hwp2pdf_whole_job_deadline_bounds_transfers(tmp_path: Path, fake_hwp2pdf) -> None:
+    import dataclasses
+
+    cfg = dataclasses.replace(resolve_hwp2pdf_config(), convert_timeout=0)
+    r = RemoteHwp2PdfBackend(cfg).render(_src(tmp_path), tmp_path / "o.pdf", fmt="pdf")
+    assert not r.ok and "0초 안에" in r.stderr
+    assert not any(m == "PUT" for m, _p in fake_hwp2pdf.requests)  # no upload started
+    assert fake_hwp2pdf.deleted == ["job1"]
+
+
 def test_select_auto_falls_to_rhwp_without_config() -> None:
     be = select_render_backend("pdf", "auto", config=None, _resolve=False)
     assert be.name == "rhwp"

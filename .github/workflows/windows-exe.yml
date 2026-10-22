@@ -35,7 +35,8 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install ".[mcp]" pyinstaller
+          # --collect-all mcp 가 mcp.cli 까지 import 하므로 그 의존성(typer 등)을 같이 깐다
+          pip install ".[mcp]" "mcp[cli]>=1.2,<2" pyinstaller
 
       - name: Build single-file exe
         shell: pwsh

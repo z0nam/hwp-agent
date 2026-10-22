@@ -16,7 +16,9 @@ from pathlib import Path
 
 from lxml import etree
 
-from ..render.rhwp import resolve_rhwp
+from ..render.config import resolve_hwp2pdf_config
+from ..render.remote_hwp2pdf import Hwp2PdfClient, Hwp2PdfError
+from ..render.rhwp import resolve_rhwp, rhwp_search_desc
 from .container import _rewrite_zip_preserving
 
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
@@ -657,25 +659,147 @@ def _detect_with_rhwp(
     return out
 
 
-def detect_tail_fits(
+#: Which layout a detection was judged on (``TailFitDetection.engine``).
+ENGINE_LABELS = {
+    "document": "문서에 저장된 한글 조판(linesegarray)",
+    "hwp2pdf": "hwp2pdf 한글 조판(다시 저장한 HWPX)",
+    "rhwp": "rhwp 조판 기준(한글과 다를 수 있음)",
+    "none": "판정 엔진 없음",
+}
+
+
+@dataclass
+class TailFitDetection:
+    """Candidates plus the engine they were judged on (issue #61).
+
+    ``engine == "none"`` means the document could not be judged at all — not
+    "no tails". ``notes`` holds one line per engine that was skipped and why.
+    """
+
+    candidates: list[TailFitCandidate]
+    engine: str  # "document" | "hwp2pdf" | "rhwp" | "none"
+    notes: list[str]
+
+    @property
+    def judged(self) -> bool:
+        return self.engine != "none"
+
+    @property
+    def engine_label(self) -> str:
+        return ENGINE_LABELS[self.engine]
+
+
+def _hwp2pdf_linesegs(
+    client: Hwp2PdfClient, src: Path, section_names: list[str]
+) -> dict[str, list[tuple[str, list]]]:
+    """Re-save *src* through hwp2pdf (Hangul) and read back each paragraph's
+    ``(text, linesegs)`` per section, in document order. The re-saved file is
+    only measured, never returned."""
+    with tempfile.TemporaryDirectory() as td:
+        resaved = Path(td) / "resaved.hwpx"
+        client.convert(src, resaved, "hwpx")
+        try:
+            with zipfile.ZipFile(str(resaved)) as z:
+                names = set(z.namelist())
+                blobs = {s: z.read(s) for s in section_names if s in names}
+        except zipfile.BadZipFile as exc:
+            raise Hwp2PdfError(f"hwp2pdf가 돌려준 HWPX를 열 수 없음: {exc}") from None
+    out: dict[str, list[tuple[str, list]]] = {}
+    for sname, blob in blobs.items():
+        root = etree.fromstring(blob)
+        out[sname] = [
+            (_para_text(p), p.findall(f"{_hp('linesegarray')}/{_hp('lineseg')}"))
+            for p in root.iter(_hp("p"))
+        ]
+    return out
+
+
+def _with_hangul_layout(
+    eligible: list[dict], layout: dict[str, list[tuple[str, list]]]
+) -> tuple[list[dict], int]:
+    """Eligible paragraphs carrying the re-saved Hangul linesegs.
+
+    Matched by position when the text agrees, else by text if that text is
+    unique in the re-saved section. Returns (matched, unmatched count).
+    """
+    by_text: dict[str, dict[str, list | None]] = {}
+    for sname, paras in layout.items():
+        idx: dict[str, list | None] = {}
+        for text, segs in paras:
+            idx[text] = None if text in idx else segs  # None = ambiguous
+        by_text[sname] = idx
+    matched: list[dict] = []
+    missed = 0
+    for e in eligible:
+        paras = layout.get(e["section"], [])
+        segs = None
+        if e["para_index"] < len(paras) and paras[e["para_index"]][0] == e["text"]:
+            segs = paras[e["para_index"]][1]
+        else:
+            segs = by_text.get(e["section"], {}).get(e["text"])
+        if segs:
+            matched.append({**e, "linesegs": segs})
+        else:
+            missed += 1
+    return matched, missed
+
+
+def _detect_saved_layout(
+    src: Path,
+    header_xml: str,
+    section_blobs: dict[str, bytes],
+    eligible: list[dict],
+    rhwp_bin: str | None,
+    max_chars: int,
+    min_spacing: int,
+    min_ratio: int,
+) -> list[TailFitCandidate] | None:
+    """Judge on linesegarray, verified with rhwp when available (pre-#61 path).
+
+    Returns None only when rhwp was asked to lay out paragraphs and failed.
+    """
+    rhwp_cands: list[TailFitCandidate] | None = None
+    if rhwp_bin and any(e["top_pi"] is not None for e in eligible):
+        rhwp_cands = _detect_with_rhwp(
+            src, header_xml, section_blobs, eligible, rhwp_bin,
+            max_chars, min_spacing, min_ratio,
+        )
+    candidates: list[TailFitCandidate] = []
+    for e in eligible:
+        if rhwp_cands is not None and e["top_pi"] is not None:
+            continue
+        hangul = _hangul_tail(e, max_chars)
+        if hangul:
+            candidates.append(_heuristic_candidate(e, *hangul, min_spacing, min_ratio))
+    if rhwp_cands:
+        candidates.extend(rhwp_cands)
+    return candidates
+
+
+def detect_tail_fits_with_engine(
     src: str | Path,
     max_chars: int = 4,
     min_spacing: int = -5,
     min_ratio: int = 95,
     include_footnotes: bool = False,
     rhwp_bin: str | None = None,
-) -> list[TailFitCandidate]:
-    """Find paragraphs with widow tail lines and verify reduction with rhwp.
+    hwp2pdf: Hwp2PdfClient | None = None,
+    use_hwp2pdf: bool = True,
+) -> TailFitDetection:
+    """Find widow tails, choosing the layout engine (issue #61).
 
-    With rhwp, body paragraphs are judged and verified on rhwp's layout (see
-    :func:`_detect_with_rhwp`); a candidate is fittable only if some step within
-    (min_spacing, min_ratio) removes at least one line. Footnote paragraphs
-    (not reported per paragraph by rhwp) and the no-rhwp / rhwp-failure path use
-    the Hangul linesegarray and the :func:`compute_tail_fit` ratio heuristic.
+    1. Every eligible paragraph has a Hangul-saved linesegarray → judge on it
+       (verified with rhwp when available), as before.
+    2. Otherwise → re-save the document as HWPX through hwp2pdf (Hangul) and
+       judge on the linesegarray Hangul wrote. hwp2pdf is skipped when it is not
+       configured, unreachable, or the node overlaps a running Hangul / queued job.
+    3. Otherwise → rhwp's own layout ("rhwp 조판 기준", may differ from Hangul).
+    4. Otherwise → ``engine="none"``: nothing judged, nothing to apply.
+
+    Only the original document is ever modified by :func:`apply_tail_fits`; the
+    re-saved HWPX is measured in a temp dir and discarded.
     """
     src = Path(src)
-    resolved_rhwp = resolve_rhwp(rhwp_bin)
-
     with zipfile.ZipFile(str(src)) as z:
         names = z.namelist()
         header_xml = (
@@ -686,25 +810,98 @@ def detect_tail_fits(
         section_blobs = {s: z.read(s) for s in _section_parts(names)}
 
     eligible = _eligible_paragraphs(header_xml, section_blobs, include_footnotes)
+    resolved_rhwp = resolve_rhwp(rhwp_bin)
 
-    rhwp_cands: list[TailFitCandidate] | None = None
-    if resolved_rhwp and any(e["top_pi"] is not None for e in eligible):
-        rhwp_cands = _detect_with_rhwp(
+    def done(cands: list[TailFitCandidate], engine: str, notes: list[str]) -> TailFitDetection:
+        cands.sort(key=lambda c: (_section_number(c.section), c.para_index))
+        return TailFitDetection(cands, engine, notes)
+
+    if all(e["linesegs"] for e in eligible):
+        cands = _detect_saved_layout(
             src, header_xml, section_blobs, eligible, resolved_rhwp,
             max_chars, min_spacing, min_ratio,
         )
+        return done(cands, "document", [])
 
-    candidates: list[TailFitCandidate] = []
+    notes: list[str] = []
+    if use_hwp2pdf:
+        try:
+            client = hwp2pdf or Hwp2PdfClient(resolve_hwp2pdf_config())
+        except ValueError as exc:  # malformed hwp2pdf.json: hwp2pdf is unavailable
+            client = None
+            notes.append(f"hwp2pdf 미사용 — 설정 오류: {exc}")
+        st = client.status("hwpx") if client else None
+        if st is None:
+            pass
+        elif st.usable:
+            try:
+                layout = _hwp2pdf_linesegs(client, src, list(section_blobs))
+                matched, missed = _with_hangul_layout(eligible, layout)
+                if not matched:
+                    raise Hwp2PdfError("다시 저장한 문서의 문단을 원본과 맞출 수 없음")
+                if missed:
+                    notes.append(f"hwp2pdf 조판과 맞출 수 없는 문단 {missed}개는 판정에서 제외")
+                cands = []
+                for e in matched:
+                    hangul = _hangul_tail(e, max_chars)
+                    if hangul:
+                        cands.append(_heuristic_candidate(e, *hangul, min_spacing, min_ratio))
+                return done(cands, "hwp2pdf", notes)
+            except Hwp2PdfError as exc:
+                notes.append(f"hwp2pdf 판정 실패 — {exc}")
+        else:
+            notes.append(f"hwp2pdf 미사용 — {st.reason}")
+    else:
+        notes.append("hwp2pdf 미사용 — 호출하지 않도록 지정됨")
+
+    if resolved_rhwp is None:
+        notes.append(f"rhwp 없음 — {rhwp_search_desc(rhwp_bin)}")
+        return done([], "none", notes)
+    if not any(e["top_pi"] is not None for e in eligible):
+        notes.append("rhwp 미사용 — 본문 밖(각주) 문단은 rhwp가 문단별로 보고하지 않음")
+        return done([], "none", notes)
+    rhwp_cands = _detect_with_rhwp(
+        src, header_xml, section_blobs, eligible, resolved_rhwp,
+        max_chars, min_spacing, min_ratio,
+    )
+    if rhwp_cands is None:
+        notes.append(f"rhwp 실행 실패 ({resolved_rhwp} dump-pages)")
+        return done([], "none", notes)
+    # footnote paragraphs are not reported per paragraph by rhwp: saved layout only
     for e in eligible:
-        if rhwp_cands is not None and e["top_pi"] is not None:
-            continue
-        hangul = _hangul_tail(e, max_chars)
-        if hangul:
-            candidates.append(_heuristic_candidate(e, *hangul, min_spacing, min_ratio))
-    if rhwp_cands:
-        candidates.extend(rhwp_cands)
-    candidates.sort(key=lambda c: (_section_number(c.section), c.para_index))
-    return candidates
+        if e["top_pi"] is None:
+            hangul = _hangul_tail(e, max_chars)
+            if hangul:
+                rhwp_cands.append(_heuristic_candidate(e, *hangul, min_spacing, min_ratio))
+    return done(rhwp_cands, "rhwp", notes)
+
+
+def detect_tail_fits(
+    src: str | Path,
+    max_chars: int = 4,
+    min_spacing: int = -5,
+    min_ratio: int = 95,
+    include_footnotes: bool = False,
+    rhwp_bin: str | None = None,
+    hwp2pdf: Hwp2PdfClient | None = None,
+    use_hwp2pdf: bool = True,
+) -> list[TailFitCandidate]:
+    """Candidates only — see :func:`detect_tail_fits_with_engine`.
+
+    An empty list is ambiguous here (no tails *or* no engine); callers that
+    report to a user should use :func:`detect_tail_fits_with_engine`.
+    """
+    return detect_tail_fits_with_engine(
+        src, max_chars, min_spacing, min_ratio, include_footnotes,
+        rhwp_bin, hwp2pdf, use_hwp2pdf,
+    ).candidates
+
+
+def format_no_engine_report(detection: TailFitDetection) -> str:
+    """The "could not judge" message — must never read like "no tails"."""
+    lines = ["꼬리 줄 압축: 판정 엔진 없음 — 적용하지 않음 (대상 없음이 아님)"]
+    lines += [f"  - {n}" for n in detection.notes]
+    return "\n".join(lines)
 
 
 def format_tail_fit_report(
@@ -712,10 +909,16 @@ def format_tail_fit_report(
     max_chars: int = 4,
     min_spacing: int = -5,
     min_ratio: int = 95,
+    engine_label: str | None = None,
 ) -> str:
-    """Format human-readable dry-run / audit report with before/after line counts."""
+    """Format human-readable dry-run / audit report with before/after line counts.
+
+    ``engine_label`` (:attr:`TailFitDetection.engine_label`) names the layout the
+    candidates were judged on; it is printed so "대상 없음" always says on what.
+    """
+    basis = f" [판정: {engine_label}]" if engine_label else ""
     if not candidates:
-        return "꼬리 줄 압축(widow-tail fitting) 대상 문단 없음."
+        return f"꼬리 줄 압축(widow-tail fitting) 대상 문단 없음.{basis}"
 
     fittable_count = sum(1 for c in candidates if c.fittable)
     mismatch_count = sum(1 for c in candidates if c.skip_reason == "layout_mismatch")
@@ -730,8 +933,8 @@ def format_tail_fit_report(
         summary += f", 검증 불가: {mismatch_count}건"
     summary += ")"
     if fittable_count:
-        summary += f", 줄 수 합계 {total_diff}줄(rhwp 기준)"
-    lines = [summary]
+        summary += f", 줄 수 합계 {total_diff}줄"
+    lines = [summary + basis]
     for idx, c in enumerate(candidates, start=1):
         diff = c.target_lines - c.total_lines
         diff_str = f" ({diff}줄)" if diff != 0 else ""

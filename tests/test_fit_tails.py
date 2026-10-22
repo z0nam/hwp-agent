@@ -17,6 +17,7 @@ from hwp_agent.ops.fit_tails import (
     apply_tail_fits,
     compute_tail_fit,
     detect_tail_fits,
+    detect_tail_fits_with_engine,
     format_tail_fit_report,
 )
 from hwp_agent.ops.integrity import audit_package
@@ -75,7 +76,7 @@ def test_compute_tail_fit_unfittable() -> None:
     assert ratio == 95
 
 
-def test_format_tail_fit_report() -> None:
+def test_format_tail_fit_report(fake_hwp2pdf, no_rhwp) -> None:
     report = format_tail_fit_report([])
     assert "대상 문단 없음" in report
 
@@ -123,7 +124,7 @@ def test_apply_tail_fits_and_integrity(tmp_path: Path) -> None:
             assert all_p[c.para_index].find(f"{{{_HP}}}linesegarray") is None
 
 
-def test_cli_fit_tails_dry_run(capsys) -> None:
+def test_cli_fit_tails_dry_run(capsys, fake_hwp2pdf) -> None:
     ret = main(["fit", "tails", str(SAMPLE), "--dry-run"])
     assert ret == 0
     captured = capsys.readouterr().out
@@ -131,7 +132,7 @@ def test_cli_fit_tails_dry_run(capsys) -> None:
     assert "--dry-run" in captured
 
 
-def test_cli_fit_tails_json(capsys) -> None:
+def test_cli_fit_tails_json(capsys, fake_hwp2pdf) -> None:
     ret = main(["fit", "tails", str(SAMPLE), "--json", "--dry-run"])
     assert ret == 0
     data = json.loads(capsys.readouterr().out)
@@ -140,7 +141,7 @@ def test_cli_fit_tails_json(capsys) -> None:
     assert "fittable_count" in data
 
 
-def test_cli_fit_tails_output(tmp_path: Path, capsys) -> None:
+def test_cli_fit_tails_output(tmp_path: Path, capsys, fake_hwp2pdf) -> None:
     out = tmp_path / "cli_out.hwpx"
     ret = main([
         "fit",
@@ -193,7 +194,9 @@ def test_detect_tail_fits_skips_hard_linebreak(tmp_path: Path) -> None:
     assert not any("첫째 줄이 여기에 있고" in c.text_preview for c in candidates)
 
 
-def test_detect_tail_fits_includes_bullet_paragraphs(tmp_path: Path) -> None:
+def test_detect_tail_fits_includes_bullet_paragraphs(
+    tmp_path: Path, fake_hwp2pdf, no_rhwp
+) -> None:
     # Paragraphs with heading type BULLET are institutional body text (■·-),
     # not outline headings, and MUST be included in tail-fitting.
     src = Path(str(SAMPLE))
@@ -406,7 +409,7 @@ def test_char_pr_cloner_per_run_isolation() -> None:
     assert raw.get("itemCnt") == "4"
 
 
-def test_detect_tail_fits_footnote_handling(tmp_path: Path) -> None:
+def test_detect_tail_fits_footnote_handling(tmp_path: Path, fake_hwp2pdf, no_rhwp) -> None:
     src = Path(str(SAMPLE))
     mod = tmp_path / "footnote_test.hwpx"
 
@@ -478,14 +481,145 @@ def test_generate_fit_steps_preserves_already_tighter_properties() -> None:
     assert target_rat == 98
 
 
-def test_detect_tail_fits_rhwp_failure_falls_back_to_heuristic(tmp_path: Path) -> None:
-    # When rhwp returns non-zero / fails, detect_tail_fits falls back to heuristic ratio
-    # rather than failing or returning 0 fittable candidates.
-    candidates = detect_tail_fits(
-        str(SAMPLE),
-        max_chars=4,
-        rhwp_bin="/bin/false",
-    )
-    assert len(candidates) >= 1
-    # Fallback heuristic calculates candidates normally
-    assert any(c.fittable for c in candidates)
+def test_detect_tail_fits_rhwp_failure_is_no_engine(tmp_path: Path) -> None:
+    # #61: paragraphs without a saved layout + rhwp failing (and no hwp2pdf) is
+    # "could not judge", not a heuristic guess over the paragraphs that happen
+    # to carry a linesegarray.
+    failing = tmp_path / "rhwp"
+    failing.write_text("#!/bin/sh\nexit 1\n")
+    failing.chmod(0o755)
+    det = detect_tail_fits_with_engine(SAMPLE, max_chars=4, rhwp_bin=str(failing))
+    assert det.engine == "none" and not det.judged and det.candidates == []
+    assert any("hwp2pdf 미사용" in n for n in det.notes)
+    assert any("rhwp 실행 실패" in n for n in det.notes)
+
+
+# --------------------------------------------------------------------------- #
+# #61 engine selection: saved linesegarray > hwp2pdf > rhwp > none
+# --------------------------------------------------------------------------- #
+def _drop_linesegs(src: Path, dst: Path) -> None:
+    """A write-like output: no paragraph carries a Hangul layout cache."""
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
+        for info in zin.infolist():
+            blob = zin.read(info.filename)
+            if info.filename.startswith("Contents/section"):
+                root = etree.fromstring(blob)
+                for lsa in list(root.iter(f"{{{_HP}}}linesegarray")):
+                    lsa.getparent().remove(lsa)
+                blob = etree.tostring(root, xml_declaration=True, encoding="UTF-8")
+            zout.writestr(info, blob)
+
+
+def _has_lineseg(path: Path, para_index: int) -> bool:
+    with zipfile.ZipFile(path) as z:
+        root = etree.fromstring(z.read("Contents/section0.xml"))
+    p = list(root.iter(f"{{{_HP}}}p"))[para_index]
+    return p.find(f"{{{_HP}}}linesegarray") is not None
+
+
+def test_hwp2pdf_resave_supplies_hangul_layout(tmp_path: Path, fake_hwp2pdf, no_rhwp) -> None:
+    bare = tmp_path / "bare.hwpx"
+    _drop_linesegs(SAMPLE, bare)
+    det = detect_tail_fits_with_engine(bare, max_chars=4)
+    assert det.engine == "hwp2pdf" and det.judged
+    assert "hwp2pdf" in det.engine_label
+    # fake re-save: every paragraph gets 3 lines with a 2-char tail
+    assert {c.text_preview[:3] for c in det.candidates} >= {"[A]", "[B]", "[E]"}
+    assert all(c.tail_chars == 2 and c.total_lines == 3 for c in det.candidates)
+    assert [p["output_format"] for p in fake_hwp2pdf.run_payloads] == ["HWPX"]
+
+
+def test_hwp2pdf_resave_never_leaks_into_result(tmp_path: Path, fake_hwp2pdf, no_rhwp) -> None:
+    bare = tmp_path / "bare.hwpx"
+    _drop_linesegs(SAMPLE, bare)
+    out = tmp_path / "out.hwpx"
+    det = detect_tail_fits_with_engine(bare, max_chars=4)
+    n = apply_tail_fits(bare, out, candidates=det.candidates)
+    assert n >= 1 and audit_package(out) == []
+    # the re-saved layout was only measured: no paragraph gained a linesegarray
+    with zipfile.ZipFile(out) as z:
+        assert b"linesegarray" not in z.read("Contents/section0.xml")
+
+
+def test_saved_layout_skips_hwp2pdf(tmp_path: Path, fake_hwp2pdf) -> None:
+    # every eligible paragraph already carries a Hangul layout: no round-trip
+    from conftest import resave_with_linesegs
+
+    full = tmp_path / "full.hwpx"
+    full.write_bytes(resave_with_linesegs(SAMPLE.read_bytes()))
+    det = detect_tail_fits_with_engine(full, max_chars=4, rhwp_bin=str(tmp_path / "none"))
+    assert det.engine == "document"
+    assert fake_hwp2pdf.run_payloads == []
+
+
+def test_hwp2pdf_overlap_falls_back_to_rhwp(tmp_path: Path, fake_hwp2pdf) -> None:
+    rhwp = resolve_rhwp()
+    if not rhwp:
+        pytest.skip("rhwp CLI not available")
+    fake_hwp2pdf.hwp_running = ["777"]
+    det = detect_tail_fits_with_engine(SAMPLE, max_chars=4)
+    assert det.engine == "rhwp" and "한글과 다를 수 있음" in det.engine_label
+    assert any("한글이 실행 중" in n for n in det.notes)
+    assert fake_hwp2pdf.run_payloads == []
+
+
+def test_hwp2pdf_overlap_and_no_rhwp_is_no_engine(tmp_path: Path, fake_hwp2pdf, no_rhwp) -> None:
+    fake_hwp2pdf.hwp_running = ["777"]
+    det = detect_tail_fits_with_engine(SAMPLE, max_chars=4)
+    assert det.engine == "none" and det.candidates == []
+    assert any("한글이 실행 중" in n for n in det.notes)
+    assert any("rhwp 없음" in n and "RHWP_BIN" in n for n in det.notes)
+    assert fake_hwp2pdf.run_payloads == []  # never touched Hangul
+
+
+def test_hwp2pdf_conversion_failure_falls_through(tmp_path: Path, fake_hwp2pdf, no_rhwp) -> None:
+    fake_hwp2pdf.fail_item = "RPC 서버를 사용할 수 없음"
+    det = detect_tail_fits_with_engine(SAMPLE, max_chars=4)
+    assert det.engine == "none"
+    assert any("hwp2pdf 판정 실패" in n and "RPC" in n for n in det.notes)
+    assert fake_hwp2pdf.deleted == ["job1"]
+
+
+def test_cli_fit_tails_no_engine_exit_code(capsys, no_rhwp) -> None:
+    ret = main(["fit", "tails", str(SAMPLE), "--dry-run"])
+    cap = capsys.readouterr()
+    assert ret == 3
+    assert "판정 엔진 없음" in cap.err and "대상 없음이 아님" in cap.err
+    assert "hwp2pdf 서버 미설정" in cap.err and "rhwp 없음" in cap.err
+    assert "대상 문단 없음" not in cap.out
+
+
+def test_cli_fit_tails_no_engine_json(capsys, no_rhwp) -> None:
+    ret = main(["fit", "tails", str(SAMPLE), "--json"])
+    data = json.loads(capsys.readouterr().out)
+    assert ret == 3 and data["judged"] is False and data["engine"] == "none"
+    assert data["notes"]
+
+
+def test_cli_fit_tails_reports_engine(capsys, fake_hwp2pdf, no_rhwp) -> None:
+    ret = main(["fit", "tails", str(SAMPLE), "--dry-run"])
+    assert ret == 0
+    assert "[판정: hwp2pdf 한글 조판" in capsys.readouterr().out
+
+
+def test_write_fit_tails_without_engine_warns_and_writes(
+    tmp_path: Path, capsys, no_rhwp
+) -> None:
+    md = tmp_path / "content.md"
+    md.write_text("# 서론\n\n" + "지역 공공서비스의 품질을 높이기 위한 방안을 검토함. " * 6 + "\n",
+                  encoding="utf-8")
+    out = tmp_path / "out.hwpx"
+    ret = main(["write", str(md), "-o", str(out), "--fit-tails"])
+    cap = capsys.readouterr()
+    assert ret == 0 and out.is_file()
+    assert "--fit-tails 미적용 — 판정 엔진 없음" in cap.err
+
+
+def test_malformed_hwp2pdf_config_falls_through(tmp_path: Path, monkeypatch, no_rhwp) -> None:
+    # review #63: a broken hwp2pdf.json must not crash; it is "hwp2pdf unavailable"
+    bad = tmp_path / "hwp2pdf.json"
+    bad.write_text("{not json")
+    monkeypatch.setenv("HWP2PDF_CONFIG", str(bad))
+    det = detect_tail_fits_with_engine(SAMPLE, max_chars=4)
+    assert det.engine == "none"
+    assert any("설정 오류" in n for n in det.notes)

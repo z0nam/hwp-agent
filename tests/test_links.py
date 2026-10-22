@@ -531,7 +531,7 @@ def test_mask_escapes_commonmark_ascii_punctuation() -> None:
     for p in puncts:
         src = f"\\{p}"
         m = mask_escapes(src)
-        assert m == chr(0xE100 + ord(p)), f"failed for {p}"
+        assert m == "\ue002" + chr(0xE100 + ord(p)), f"failed for {p}"
         assert unmask_escapes(m) == p
 
     # non-punctuation preserved
@@ -588,6 +588,24 @@ def test_link_pieces_unmasks_destination_url() -> None:
     # URL destination containing backslash escapes is unmasked
     res = link_pieces(r"[레이블](https://example.com/a\_b)")
     assert res == [("레이블", "https://example.com/a_b")]
+
+    # Escaped scheme colon is supported and unmasked to valid URL
+    res2 = link_pieces(r"[x](https\://example.com)")
+    assert res2 == [("x", "https://example.com")]
+
+
+def test_mask_escapes_literal_pua_roundtrip() -> None:
+    # A literal character in U+E121-U+E17E in authored markdown is preserved
+    literal_pua = chr(0xE121) + " literal and \\! escaped"
+    m = mask_escapes(literal_pua)
+    assert unmask_escapes(m) == chr(0xE121) + " literal and ! escaped"
+
+
+def test_mask_escapes_multiline_inline_math() -> None:
+    # Multiline inline math preserves LaTeX backslash escapes
+    multiline = "$a\n\\, b$"
+    assert mask_escapes(multiline) == multiline
+
 
 
 

@@ -50,7 +50,7 @@ def mask_escapes(text: str, *, math: bool = True) -> str:
         ch = text[i]
         if ch == "\\":
             if i + 1 < n and text[i + 1] in _PUNCT:
-                out.append(chr(0xE100 + ord(text[i + 1])))
+                out.append("\ue002" + chr(0xE100 + ord(text[i + 1])))
                 i += 2
             else:
                 out.append("\\")
@@ -80,11 +80,15 @@ def mask_escapes(text: str, *, math: bool = True) -> str:
                     continue
             # Inline math $...$
             if i + 1 < n and text[i + 1] not in (" ", "\t", "\n", "$"):
-                newline_idx = text.find("\n", i + 1)
+                blank_idx = text.find("\n\n", i + 1)
                 k = i + 1
                 found_close = -1
-                while k < n and (newline_idx == -1 or k < newline_idx):
-                    if text[k] == "$" and text[k - 1] != "\\" and text[k - 1] not in (" ", "\t"):
+                while k < n and (blank_idx == -1 or k < blank_idx):
+                    if (
+                        text[k] == "$"
+                        and text[k - 1] != "\\"
+                        and text[k - 1] not in (" ", "\t", "\n")
+                    ):
                         if k + 1 >= n or (text[k + 1] != "$" and not text[k + 1].isdigit()):
                             found_close = k
                             break
@@ -101,14 +105,14 @@ def mask_escapes(text: str, *, math: bool = True) -> str:
     return "".join(out)
 
 
+_UNMASK_RE = re.compile(r"\ue002([\ue121-\ue17e])")
+
+
 def unmask_escapes(text: str) -> str:
     """Restore private-use characters mapped by :func:`mask_escapes` to ASCII punctuation."""
     if not text:
         return text
-    return "".join(
-        chr(ord(c) - 0xE100) if 0xE121 <= ord(c) <= 0xE17E else c
-        for c in text
-    )
+    return _UNMASK_RE.sub(lambda m: chr(ord(m.group(1)) - 0xE100), text)
 
 
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
@@ -121,7 +125,7 @@ HYPERLINK_FIELD_ID = "627600491"
 #: image (``![…]``) and not a footnote reference (``[^id]``).
 _MD_LINK_RE = re.compile(
     r"(?<!!)\[(?!\^)([^\]\n]+)\]\(\s*<?"
-    r"([A-Za-z][A-Za-z0-9+.\-]*:(?:[^\s()<>]|\([^\s()<>]*\))+)>?"
+    r"([A-Za-z][A-Za-z0-9+.\-]*(?::|\ue002\ue13a)(?:[^\s()<>]|\([^\s()<>]*\))+)>?"
     r"(?:\s+\"[^\"]*\")?\s*\)"
 )
 #: a bare ``http(s)://`` URL (greedy up to whitespace / CJK punctuation, then

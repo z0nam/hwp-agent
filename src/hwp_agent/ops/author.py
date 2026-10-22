@@ -100,6 +100,8 @@ _HC = "http://www.hancom.co.kr/hwpml/2011/core"
 _HS = "http://www.hancom.co.kr/hwpml/2011/section"
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
+_BULLET_CHARS = r"[-*+■□▣◼￭▪◾●○⦁•◦–—―−·ㆍ]"
+_LITERAL_BULLET_RE = re.compile(rf"^(\s*)({_BULLET_CHARS})\s+(.*)$")
 # a thematic break / horizontal rule: 3+ of -, *, or _ (optionally spaced), alone
 # on a line. No pipes, so it never clashes with a `|---|` table delimiter.
 _RULE_RE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
@@ -564,7 +566,7 @@ def _bullet_render_text(block: Block, role: str, info) -> str:
 
 
 def parse_markdown(
-    markdown: str, *, math: bool = True
+    markdown: str, *, math: bool = True, literal_bullets: bool = False
 ) -> list[Block | TableBlock | FigureBlock]:
     """Parse Markdown into headings, paragraphs, bullets, ordered lists, and tables.
 
@@ -599,6 +601,7 @@ def parse_markdown(
             emit(Block("paragraph", 0, " ".join(para)))
             para.clear()
 
+    bullet_re = _LITERAL_BULLET_RE if literal_bullets else _BULLET_RE
     lines = markdown.splitlines()
     i = 0
     while i < len(lines):
@@ -684,10 +687,15 @@ def parse_markdown(
             flush()
             level = len(m.group(1).expandtabs(2)) // 2 + 1
             emit(Block("ordered", level, m.group(2).strip()))
-        elif m := _BULLET_RE.match(line):
+        elif m := bullet_re.match(line):
             flush()
             level = len(m.group(1).expandtabs(2)) // 2 + 1
-            emit(Block("bullet", level, m.group(2).strip()))
+            if literal_bullets:
+                item_text = m.group(3).strip()
+                raw_text = f"{m.group(2)} {item_text}"
+                emit(Block("bullet", level, item_text, raw_text=raw_text))
+            else:
+                emit(Block("bullet", level, m.group(2).strip()))
         else:
             para.append(line.strip())
         i += 1
@@ -1974,6 +1982,70 @@ def _left_para_pr(
         return key
 
 
+def _none_heading_para_pr(
+    doc: HwpxDocument,
+    base_para_pr_id: str | int | None,
+    cache: dict[str, str],
+) -> str | None:
+    """Return a variant of *base_para_pr_id* with heading type="NONE".
+
+    Issues #22, #35, #52:
+    - If base_para_pr_id is None, returns None.
+    - If already cached, returns the cached id.
+    - If the base paraPr already has heading type="NONE" (or no <hh:heading>),
+      returns the base id without duplicating.
+    - Otherwise clones the base paraPr, sets <hh:heading type="NONE" idRef="0" level="0"/>,
+      appends it to the end of <hh:paraProperties> with max(existing_id)+1,
+      updates itemCnt, marks the header dirty, and caches the new id.
+    """
+    if base_para_pr_id is None:
+        return None
+    key = str(base_para_pr_id)
+    if key in cache:
+        return cache[key]
+
+    try:
+        header = doc._root._headers[0]
+        pps = header._para_properties_element(create=False)
+        if pps is None:
+            cache[key] = key
+            return key
+        base_el = pps.find(f"{{{_HH}}}paraPr[@id='{key}']")
+        if base_el is None:
+            cache[key] = key
+            return key
+
+        heading_el = base_el.find(f"{{{_HH}}}heading")
+        if heading_el is None or heading_el.get("type") == "NONE":
+            cache[key] = key
+            return key
+
+        existing_ids = [
+            int(p.get("id"))
+            for p in pps.findall(f"{{{_HH}}}paraPr")
+            if p.get("id") and p.get("id").isdigit()
+        ]
+        next_id = str(max(existing_ids, default=-1) + 1)
+
+        new_el = copy.deepcopy(base_el)
+        new_el.set("id", next_id)
+        new_heading = new_el.find(f"{{{_HH}}}heading")
+        if new_heading is not None:
+            new_heading.set("type", "NONE")
+            new_heading.set("idRef", "0")
+            new_heading.set("level", "0")
+
+        pps.append(new_el)
+        pps.set("itemCnt", str(len(pps.findall(f"{{{_HH}}}paraPr"))))
+        header.mark_dirty()
+
+        cache[key] = next_id
+        return next_id
+    except Exception:
+        cache[key] = key
+        return key
+
+
 def _find_insertion_marker(doc: HwpxDocument, marker_token: str | None = None):
     """Locate the paragraph holding an insertion marker, if any.
 
@@ -2083,6 +2155,8 @@ def fill_from_markdown(
     blue_links: bool = False,
     math: bool = True,
     link_align: str = "auto",
+    literal_numbering: bool = False,
+    literal_bullets: bool = False,
     base_dir: Path | str | None = None,
 ) -> AuthorResult:
     """Fill a template from Markdown, styled with its own outline styles.
@@ -2238,6 +2312,7 @@ def fill_from_markdown(
         return hl_char if hl_char is not None else char
 
     left_para_cache: dict[str, str] = {}
+    none_heading_cache: dict[str, str] = {}
 
     def resolve_para(base_para, txt: str):
         if not links or link_align == "keep" or not txt:
@@ -2398,7 +2473,9 @@ def fill_from_markdown(
             return explicit_chapter
         return str(chapter_count) if chapter_count else None
 
-    blocks = parse_markdown(markdown, math=math)
+    blocks = parse_markdown(
+        markdown, math=math, literal_bullets=literal_bullets
+    )
     _resolve_cross_refs(
         blocks, chapter_label(), result.warnings, figure_start=_count_figures(doc)
     )
@@ -2523,23 +2600,48 @@ def fill_from_markdown(
             result.placed += 1
             continue
 
-        style_id, role = resolve(block)
-        if role == "HEADING_1" and explicit_chapter is None:
-            chapter_count += 1
-        if style_id is None:
-            style_id = roles.get("BODY")
-            if role not in result.unmapped_roles and role != "BODY":
-                result.unmapped_roles.append(role)
-        para_pr = infos[style_id].para_pr_id if style_id in infos else None
-        base_char = doc.style(style_id).char_pr_id_ref if style_id is not None else None
-
-        info = infos.get(style_id)
-        if block.kind == "heading":
-            text = _heading_render_text(block, info)
-        elif block.kind == "bullet":
-            text = _bullet_render_text(block, role, info)
+        if literal_bullets and block.kind == "bullet":
+            body_style_id = roles.get("BODY")
+            style_id = body_style_id
+            role = "BODY"
+            base_char = doc.style(style_id).char_pr_id_ref if style_id is not None else None
+            text = block.raw_text or block.text
+            if bullet_levels:
+                target_bullet_role = _ranked("BULLET_", bullet_levels, block.level)
+                target_style_id = roles.get(target_bullet_role)
+                target_para_pr = (
+                    infos[target_style_id].para_pr_id
+                    if target_style_id in infos
+                    else None
+                )
+                para_pr = _none_heading_para_pr(doc, target_para_pr, none_heading_cache)
+            else:
+                para_pr = infos[style_id].para_pr_id if style_id in infos else None
         else:
-            text = block.text
+            style_id, role = resolve(block)
+            if role == "HEADING_1" and explicit_chapter is None:
+                chapter_count += 1
+            if style_id is None:
+                style_id = roles.get("BODY")
+                if role not in result.unmapped_roles and role != "BODY":
+                    result.unmapped_roles.append(role)
+            para_pr = infos[style_id].para_pr_id if style_id in infos else None
+            base_char = doc.style(style_id).char_pr_id_ref if style_id is not None else None
+
+            info = infos.get(style_id)
+            if block.kind == "heading":
+                text = (
+                    (block.raw_text or block.text)
+                    if literal_numbering
+                    else _heading_render_text(block, info)
+                )
+            elif block.kind == "bullet":
+                text = _bullet_render_text(block, role, info)
+            else:
+                text = block.text
+
+            if literal_numbering and block.kind == "heading":
+                para_pr = _none_heading_para_pr(doc, para_pr, none_heading_cache)
 
         effective_para = resolve_para(para_pr, text)
         # build the paragraph empty, then add one run per inline segment so
@@ -2553,6 +2655,7 @@ def fill_from_markdown(
         # keeps them as outline headings (item C) — only when one isn't already there
         if (
             block.kind == "heading"
+            and not literal_numbering
             and str(style_id) in lineseg_by_style
             and para.element.find(f"{{{_HP}}}linesegarray") is None
         ):
@@ -2644,6 +2747,8 @@ def fill_sections(
     blue_links: bool = False,
     math: bool = True,
     link_align: str = "auto",
+    literal_numbering: bool = False,
+    literal_bullets: bool = False,
     base_dir: Path | str | None = None,
 ) -> AuthorResult:
     """Fill several named markers, each from its own Markdown part.
@@ -2680,6 +2785,8 @@ def fill_sections(
                 blue_links=blue_links,
                 math=math,
                 link_align=link_align,
+                literal_numbering=literal_numbering,
+                literal_bullets=literal_bullets,
                 base_dir=base_dir,
             )
             agg.placed += res.placed
@@ -2720,6 +2827,8 @@ def build_report(
     blue_links: bool | None = None,
     math: bool | None = None,
     link_align: str | None = None,
+    literal_numbering: bool | None = None,
+    literal_bullets: bool | None = None,
 ) -> AuthorResult:
     """Assemble a multi-section report from a JSON manifest into one template.
 
@@ -2792,5 +2901,15 @@ def build_report(
         blue_links=data.get("blue_links", False) if blue_links is None else blue_links,
         math=data.get("math", True) if math is None else math,
         link_align=data.get("link_align", "auto") if link_align is None else link_align,
+        literal_numbering=(
+            data.get("literal_numbering", False)
+            if literal_numbering is None
+            else literal_numbering
+        ),
+        literal_bullets=(
+            data.get("literal_bullets", False)
+            if literal_bullets is None
+            else literal_bullets
+        ),
         base_dir=base,
     )

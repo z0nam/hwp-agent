@@ -2501,6 +2501,289 @@ def test_fill_from_markdown_math_preserves_latex_escapes(tmp_path: Path) -> None
     assert res.equations == 2
 
 
+def test_literal_numbering_and_bullets_default_template(tmp_path: Path) -> None:
+    """Issue #52: --literal-numbering and --literal-bullets keep literal text and strip autonum."""
+    import zipfile
+
+    from lxml import etree
+
+    from hwp_agent.ops.integrity import audit_package
+
+    md = "# 1. 장\n## 1) 글로벌 동향\n- 하이픈 항목\n\\- 이스케이프 항목\n"
+
+    # 1. 옵션 OFF: 기존 동작 검증
+    out_off = tmp_path / "default_off.hwpx"
+    res_off = fill_from_markdown(DEFAULT_TPL, md, output=out_off, chapter="3-2")
+    assert res_off.placed == 4
+
+    with zipfile.ZipFile(out_off) as zf:
+        header = etree.fromstring(zf.read("Contents/header.xml"))
+        sec = etree.fromstring(zf.read("Contents/section0.xml"))
+
+    items_off = []
+    for p in sec.findall(f".//{_HP}p"):
+        txt = "".join(p.itertext()).strip()
+        if not txt:
+            continue
+        pr_id = p.get("paraPrIDRef")
+        style_id = p.get("styleIDRef")
+        pp = header.find(f".//{_HH}paraPr[@id='{pr_id}']")
+        h = pp.find(f"{_HH}heading") if pp is not None else None
+        htype = h.get("type") if h is not None else "NONE"
+        st = header.find(f".//{_HH}style[@id='{style_id}']")
+        st_name = st.get("name") if st is not None else ""
+        items_off.append((txt, st_name, htype))
+
+    assert any(txt == "장" and htype == "OUTLINE" for txt, _, htype in items_off)
+    assert any(txt == "글로벌 동향" and htype == "OUTLINE" for txt, _, htype in items_off)
+    assert any(txt == "하이픈 항목" and htype == "BULLET" for txt, _, htype in items_off)
+    assert any(txt == "- 이스케이프 항목" and htype == "NONE" for txt, _, htype in items_off)
+
+    # 2. 옵션 ON: 리터럴 번호/기호 보존 및 자동번호/글머리표 NONE 검증
+    out_on = tmp_path / "default_on.hwpx"
+    res_on = fill_from_markdown(
+        DEFAULT_TPL,
+        md,
+        output=out_on,
+        chapter="3-2",
+        literal_numbering=True,
+        literal_bullets=True,
+    )
+    assert res_on.placed == 4
+    assert not [i for i in audit_package(out_on) if i.kind in ("order", "count", "dangling")]
+
+    with zipfile.ZipFile(out_on) as zf:
+        header_on = etree.fromstring(zf.read("Contents/header.xml"))
+        sec_on = etree.fromstring(zf.read("Contents/section0.xml"))
+
+    items_on = []
+    for p in sec_on.findall(f".//{_HP}p"):
+        txt = "".join(p.itertext()).strip()
+        if not txt:
+            continue
+        pr_id = p.get("paraPrIDRef")
+        style_id = p.get("styleIDRef")
+        pp = header_on.find(f".//{_HH}paraPr[@id='{pr_id}']")
+        h = pp.find(f"{_HH}heading") if pp is not None else None
+        htype = h.get("type") if h is not None else "NONE"
+        st = header_on.find(f".//{_HH}style[@id='{style_id}']")
+        st_name = st.get("name") if st is not None else ""
+        items_on.append((txt, st_name, htype, style_id))
+
+    # 제목 1: '1. 장' 텍스트 그대로, 제목 스타일 charPr 유지, heading type=NONE
+    h1 = next((item for item in items_on if item[0] == "1. 장"), None)
+    assert h1 is not None
+    assert h1[1] == "로마자"
+    assert h1[2] == "NONE"
+
+    # 제목 2: '1) 글로벌 동향' 텍스트 그대로, 제목 스타일 charPr 유지, heading type=NONE
+    h2 = next((item for item in items_on if item[0] == "1) 글로벌 동향"), None)
+    assert h2 is not None
+    assert h2[1] == "1."
+    assert h2[2] == "NONE"
+
+    # 불릿 항목: '- 하이픈 항목' 텍스트 그대로, 본문 스타일(Normal), heading type=NONE
+    b1 = next((item for item in items_on if item[0] == "- 하이픈 항목"), None)
+    assert b1 is not None
+    assert b1[1] == "Normal"
+    assert b1[2] == "NONE"
+
+    # 이스케이프 항목: '- 이스케이프 항목' 텍스트 그대로, Normal, heading type=NONE
+    esc = next((item for item in items_on if item[0] == "- 이스케이프 항목"), None)
+    assert esc is not None
+    assert esc[1] == "Normal"
+    assert esc[2] == "NONE"
+
+
+def test_literal_numbering_and_bullets_house_form(tmp_path: Path) -> None:
+    """Issue #52: institutional house-form with --literal-numbering and --literal-bullets."""
+    import zipfile
+
+    from lxml import etree
+
+    from hwp_agent.ops.integrity import audit_package
+
+    house_tpl = REPO_ROOT / "examples" / "house-forms" / "정책과제_서식.normalized.hwpx"
+    md = "# 1. 장\n## 1) 글로벌 동향\n- 하이픈 항목\n\\- 이스케이프 항목\n"
+
+    out_on = tmp_path / "house_on.hwpx"
+    res_on = fill_from_markdown(
+        house_tpl,
+        md,
+        output=out_on,
+        literal_numbering=True,
+        literal_bullets=True,
+    )
+    assert res_on.placed == 4
+    assert not [i for i in audit_package(out_on) if i.kind in ("order", "count", "dangling")]
+
+    with zipfile.ZipFile(out_on) as zf:
+        header = etree.fromstring(zf.read("Contents/header.xml"))
+        all_paras = []
+        for name in zf.namelist():
+            if name.startswith("Contents/section") and name.endswith(".xml"):
+                sec = etree.fromstring(zf.read(name))
+                for p in sec.findall(f".//{_HP}p"):
+                    txt = "".join(p.itertext()).strip()
+                    if not txt:
+                        continue
+                    pr_id = p.get("paraPrIDRef")
+                    style_id = p.get("styleIDRef")
+                    pp = header.find(f".//{_HH}paraPr[@id='{pr_id}']")
+                    h = pp.find(f"{_HH}heading") if pp is not None else None
+                    htype = h.get("type") if h is not None else "NONE"
+                    st = header.find(f".//{_HH}style[@id='{style_id}']")
+                    st_name = st.get("name") if st is not None else ""
+                    all_paras.append((txt, st_name, htype))
+
+    assert any(txt == "1. 장" and htype == "NONE" for txt, _, htype in all_paras)
+    assert any(txt == "1) 글로벌 동향" and htype == "NONE" for txt, _, htype in all_paras)
+    assert any(txt == "- 하이픈 항목" and htype == "NONE" for txt, _, htype in all_paras)
+    assert any(txt == "- 이스케이프 항목" and htype == "NONE" for txt, _, htype in all_paras)
+
+
+def test_literal_bullets_preserves_indent_ladder(tmp_path: Path) -> None:
+    """Issue #52: nested literal bullets keep their respective indentation levels."""
+    import zipfile
+
+    from lxml import etree
+
+    _HC = "{http://www.hancom.co.kr/hwpml/2011/core}"
+
+    md = (
+        "- 1단계 하이픈\n"
+        "  - 2단계 하이픈\n"
+        "□ 1단계 네모\n"
+        "  ◦ 2단계 동그라미\n"
+    )
+    out = tmp_path / "nested.hwpx"
+    fill_from_markdown(
+        DEFAULT_TPL,
+        md,
+        output=out,
+        literal_bullets=True,
+    )
+
+    with zipfile.ZipFile(out) as zf:
+        header = etree.fromstring(zf.read("Contents/header.xml"))
+        sec = etree.fromstring(zf.read("Contents/section0.xml"))
+
+    def get_left_margin(p_el) -> int:
+        pr_id = p_el.get("paraPrIDRef")
+        pp = header.find(f".//{_HH}paraPr[@id='{pr_id}']")
+        assert pp is not None
+        h = pp.find(f"{_HH}heading")
+        assert h is None or h.get("type") == "NONE"
+        for l_el in pp.findall(f".//{_HC}left"):
+            return int(l_el.get("value", 0))
+        return 0
+
+    paras = [p for p in sec.findall(f".//{_HP}p") if "".join(p.itertext()).strip()]
+    lvl1_hyphen = next(p for p in paras if "1단계 하이픈" in "".join(p.itertext()))
+    lvl2_hyphen = next(p for p in paras if "2단계 하이픈" in "".join(p.itertext()))
+    lvl1_box = next(p for p in paras if "1단계 네모" in "".join(p.itertext()))
+    lvl2_circle = next(p for p in paras if "2단계 동그라미" in "".join(p.itertext()))
+
+    m1_h = get_left_margin(lvl1_hyphen)
+    m2_h = get_left_margin(lvl2_hyphen)
+    m1_b = get_left_margin(lvl1_box)
+    m2_c = get_left_margin(lvl2_circle)
+
+    assert m1_h > 0
+    assert m2_h > m1_h
+    assert m1_b == m1_h
+    assert m2_c == m2_h
+
+
+def test_literal_options_off_byte_exact_match(tmp_path: Path) -> None:
+    """Issue #52: when options are False or omitted, output matches byte-for-byte (regression)."""
+    import zipfile
+
+    from lxml import etree
+
+    md = "# 1. 장\n## 1) 동향\n- 항목\n"
+    out_default = tmp_path / "out_default.hwpx"
+    out_explicit = tmp_path / "out_explicit.hwpx"
+
+    fill_from_markdown(DEFAULT_TPL, md, output=out_default)
+    fill_from_markdown(
+        DEFAULT_TPL,
+        md,
+        output=out_explicit,
+        literal_numbering=False,
+        literal_bullets=False,
+    )
+
+    with zipfile.ZipFile(out_default) as z1, zipfile.ZipFile(out_explicit) as z2:
+        # header.xml is strictly byte-for-byte identical (no extra/modified paraPr)
+        assert z1.read("Contents/header.xml") == z2.read("Contents/header.xml")
+        # section structure and content (style, paraPr, text) match exactly
+        sec1 = etree.fromstring(z1.read("Contents/section0.xml"))
+        sec2 = etree.fromstring(z2.read("Contents/section0.xml"))
+        p1 = [
+            (p.get("styleIDRef"), p.get("paraPrIDRef"), "".join(p.itertext()).strip())
+            for p in sec1.findall(f".//{_HP}p")
+            if "".join(p.itertext()).strip()
+        ]
+        p2 = [
+            (p.get("styleIDRef"), p.get("paraPrIDRef"), "".join(p.itertext()).strip())
+            for p in sec2.findall(f".//{_HP}p")
+            if "".join(p.itertext()).strip()
+        ]
+        assert p1 == p2
+
+
+def test_parse_markdown_literal_bullets_flag() -> None:
+    """Issue #52: raw_text on bullets is only set when literal_bullets=True."""
+    md = "- 첫째\n  - 둘째\n"
+    blocks_off = parse_markdown(md, literal_bullets=False)
+    assert all(b.raw_text == "" for b in blocks_off if b.kind == "bullet")
+    assert [b.text for b in blocks_off if b.kind == "bullet"] == ["첫째", "둘째"]
+
+    blocks_on = parse_markdown(md, literal_bullets=True)
+    assert [b.raw_text for b in blocks_on if b.kind == "bullet"] == ["- 첫째", "- 둘째"]
+    assert [b.text for b in blocks_on if b.kind == "bullet"] == ["첫째", "둘째"]
+
+
+def test_cli_literal_flags(tmp_path: Path) -> None:
+    """Issue #52: CLI write and build correctly handle literal numbering and bullets flags."""
+    import json
+
+    from hwp_agent.cli.main import main
+
+    md_path = tmp_path / "doc.md"
+    md_path.write_text("# 1. 제목\n- 불릿\n", encoding="utf-8")
+    out_write = tmp_path / "cli_write.hwpx"
+
+    rc = main([
+        "write",
+        str(md_path),
+        "--template",
+        str(DEFAULT_TPL),
+        "--literal-numbering",
+        "--literal-bullets",
+        "-o",
+        str(out_write),
+    ])
+    assert rc == 0
+    assert out_write.is_file()
+
+    # build with manifest
+    manifest_path = tmp_path / "manifest.json"
+    manifest_data = {
+        "template": str(DEFAULT_TPL),
+        "output": str(tmp_path / "cli_build.hwpx"),
+        "literal_numbering": True,
+        "literal_bullets": True,
+        "parts": {"body": str(md_path)},
+    }
+    manifest_path.write_text(json.dumps(manifest_data), encoding="utf-8")
+    rc_build = main(["build", str(manifest_path)])
+    assert rc_build == 0
+    assert (tmp_path / "cli_build.hwpx").is_file()
+
+
+
 
 
 

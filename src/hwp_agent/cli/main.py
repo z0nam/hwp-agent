@@ -1052,6 +1052,8 @@ def _cmd_write(args: argparse.Namespace) -> int:
         blue_links=getattr(args, "blue_links", False),
         math=getattr(args, "math", True),
         link_align=getattr(args, "link_align", "auto"),
+        literal_numbering=getattr(args, "literal_numbering", False),
+        literal_bullets=getattr(args, "literal_bullets", False),
         base_dir=Path(args.md).parent,
     )
     if getattr(args, "fit_tails", False):
@@ -1109,6 +1111,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
             blue_links=getattr(args, "blue_links", None),
             math=getattr(args, "math", None),
             link_align=getattr(args, "link_align", None),
+            literal_numbering=getattr(args, "literal_numbering", None),
+            literal_bullets=getattr(args, "literal_bullets", None),
         )
     except (OSError, ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -1197,6 +1201,27 @@ def _add_link_args(p: argparse.ArgumentParser, *, default_links) -> None:
         default=None if default_links is None else "auto",
         help="paragraph alignment for URLs: auto (left-align if unbroken URL >= 30 chars), "
         "left (always left-align links), keep (keep template alignment, default: auto)",
+    )
+
+
+def _add_literal_args(p: argparse.ArgumentParser, *, default_literal) -> None:
+    """``--literal-numbering`` / ``--literal-bullets`` (issue #52), shared by write and build.
+
+    build passes ``None`` defaults so the manifest's own keys apply unless a flag
+    is given."""
+    p.add_argument(
+        "--literal-numbering",
+        dest="literal_numbering",
+        action="store_true",
+        default=default_literal,
+        help="keep Markdown heading numbers as literal text without template autonum",
+    )
+    p.add_argument(
+        "--literal-bullets",
+        dest="literal_bullets",
+        action="store_true",
+        default=default_literal,
+        help="keep bullet markers (-, □, ◦) as literal text in body paragraphs",
     )
 
 
@@ -1697,6 +1722,7 @@ def build_parser() -> argparse.ArgumentParser:
         "(default: {{body}} if present, else the first marker)",
     )
     _add_link_args(wr, default_links=True)
+    _add_literal_args(wr, default_literal=False)
     wr.add_argument(
         "--fit-tails",
         action="store_true",
@@ -1727,6 +1753,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="output file (overrides the manifest's 'output')",
     )
     _add_link_args(bd, default_links=None)
+    _add_literal_args(bd, default_literal=None)
     bd.add_argument(
         "--fit-tails",
         action="store_true",

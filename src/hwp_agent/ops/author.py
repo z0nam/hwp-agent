@@ -1978,7 +1978,7 @@ def fill_from_markdown(
     def emit_link(para, label: str, url: str, char) -> None:
         from lxml import etree
 
-        xml = link_run_xml(unmask_escapes(label), url, link_char(char))
+        xml = link_run_xml(unmask_escapes(label), unmask_escapes(url), link_char(char))
         para.element.append(etree.fromstring(xml))
         result.links += 1
 

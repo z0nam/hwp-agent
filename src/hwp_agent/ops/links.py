@@ -69,6 +69,35 @@ def mask_escapes(text: str) -> str:
             else:
                 out.append(fence)
                 i = j
+        elif ch == "$":
+            # Display math $$...$$
+            if i + 1 < n and text[i + 1] == "$":
+                close_idx = text.find("$$", i + 2)
+                if close_idx != -1:
+                    out.append(text[i : close_idx + 2])
+                    i = close_idx + 2
+                    continue
+            # Inline math $...$
+            if (
+                i + 1 < n
+                and text[i + 1] not in (" ", "\t", "\n", "$")
+                and not text[i + 1].isdigit()
+            ):
+                newline_idx = text.find("\n", i + 1)
+                k = i + 1
+                found_close = -1
+                while k < n and (newline_idx == -1 or k < newline_idx):
+                    if text[k] == "$" and text[k - 1] != "\\":
+                        if k + 1 >= n or (text[k + 1] != "$" and not text[k + 1].isdigit()):
+                            found_close = k
+                            break
+                    k += 1
+                if found_close != -1:
+                    out.append(text[i : found_close + 1])
+                    i = found_close + 1
+                    continue
+            out.append(ch)
+            i += 1
         else:
             out.append(ch)
             i += 1
@@ -182,7 +211,10 @@ def link_pieces(text: str, *, unmask: bool = True) -> list[tuple[str, str | None
         else:
             merged.append((t, u))
     if unmask:
-        return [(unmask_escapes(t), u) for t, u in merged] or [(unmask_escapes(text), None)]
+        return [
+            (unmask_escapes(t), unmask_escapes(u) if u is not None else None)
+            for t, u in merged
+        ] or [(unmask_escapes(text), None)]
     return merged or [(text, None)]
 
 

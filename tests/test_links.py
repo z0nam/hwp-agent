@@ -562,4 +562,25 @@ def test_link_pieces_escaped_brackets() -> None:
     assert res2 == [("제주 *연구원*", "https://www.jri.re.kr")]
 
 
+def test_mask_escapes_preserves_math_spans() -> None:
+    # LaTeX commands inside math spans must not be masked
+    display_math = r"$$\begin{matrix} a \\ b \end{matrix}$$"
+    assert mask_escapes(display_math) == display_math
+
+    inline_math = r"$x \, y \_ z$"
+    assert mask_escapes(inline_math) == inline_math
+
+    mixed = r"\- 하이픈과 $a \\ b$ 수식"
+    m = mask_escapes(mixed)
+    assert r"$a \\ b$" in m
+    assert chr(0xE100 + ord("-")) in m
+
+
+def test_link_pieces_unmasks_destination_url() -> None:
+    # URL destination containing backslash escapes is unmasked
+    res = link_pieces(r"[레이블](https://example.com/a\_b)")
+    assert res == [("레이블", "https://example.com/a_b")]
+
+
+
 

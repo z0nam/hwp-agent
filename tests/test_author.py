@@ -2490,6 +2490,18 @@ def test_fill_from_markdown_escapes(tmp_path: Path) -> None:
     assert any("각주 안 -" in t for t in all_texts)
 
 
+def test_fill_from_markdown_math_preserves_latex_escapes(tmp_path: Path) -> None:
+    out = tmp_path / "math_esc.hwpx"
+    md = (
+        r"$$\begin{matrix} a \\ b \end{matrix}$$" + "\n\n"
+        r"$x \, y \_ z$" + "\n"
+    )
+    tpl = REPO_ROOT / "src" / "hwp_agent" / "assets" / "default-template.hwpx"
+    res = fill_from_markdown(tpl, md, output=out)
+    assert res.equations == 2
+
+
+
 
 
 

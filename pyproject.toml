@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hwp-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Edit HWP/HWPX documents directly with AI, without a lossy DOCX round-trip."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -47,7 +47,7 @@ serve = [
 ]
 # Local stdio MCP server (`hwp-agent mcp`) for Claude Desktop / Claude Code / Codex.
 mcp = [
-    "mcp>=1.2",
+    "mcp>=1.2,<2",  # 2.x에서 FastMCP가 MCPServer로 바뀜 — 이식 전까지 1.x 고정
 ]
 
 [project.scripts]

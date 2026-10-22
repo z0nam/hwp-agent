@@ -199,6 +199,19 @@ For non-technical users, two zero-terminal surfaces — see **[docs/serving.md](
 > users use the web link; the upload-free chat flow is the local-MCP path. Details
 > and the exact per-client config are in [docs/serving.md](docs/serving.md).
 
+## Claude plugin
+
+This repository is also a Claude plugin (`.claude-plugin/plugin.json`): the
+skill below plus the stdio MCP server, started with
+`uvx --from <plugin dir> --with "mcp>=1.2,<2" hwp-agent mcp` (needs [uv](https://docs.astral.sh/uv/) on PATH).
+Jeju Research Institute staff get it through the JAIX marketplace
+([jeju-inst/jaix-kit](https://github.com/jeju-inst/jaix-kit)), pinned to a tested release:
+
+```
+/plugin marketplace add jeju-inst/jaix-kit
+/plugin install hwp-agent@jaix
+```
+
 ## Claude Code Skill
 
 `skills/hwp-agent/` packages the authoring workflow as a [Claude Code

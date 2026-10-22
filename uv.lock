@@ -345,7 +345,7 @@ wheels = [
 
 [[package]]
 name = "hwp-agent"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "python-hwpx" },
@@ -374,7 +374,7 @@ verify = [
 requires-dist = [
     { name = "anthropic", marker = "extra == 'verify'", specifier = ">=0.40" },
     { name = "fastapi", marker = "extra == 'serve'", specifier = ">=0.110" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2,<2" },
     { name = "pymupdf", marker = "extra == 'dev'", specifier = ">=1.24" },
     { name = "pymupdf", marker = "extra == 'verify'", specifier = ">=1.24" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },

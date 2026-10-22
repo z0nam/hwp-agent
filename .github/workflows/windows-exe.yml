@@ -2,7 +2,9 @@ name: Build Windows exe
 
 # Builds a standalone hwp-agent.exe (no Python needed by the user) with the
 # converter jar bundled inside, and publishes it to the "windows-exe" release.
-# Run manually from the Actions tab, or it fires when you push a tag like v0.1.0.
+# Runs from calver.yml (dispatched for each automatic date tag vYYYY.MM.DD.N) or when you push
+# a v* tag. Only tag runs stamp the version and publish; a manual run on a branch just builds
+# and uploads the workflow artifact (pick a tag in "Use workflow from" to republish).
 
 on:
   workflow_dispatch:
@@ -12,6 +14,14 @@ on:
 
 permissions:
   contents: write
+
+# 빌드마다 같은 windows-exe 릴리스를 지우고 다시 만든다. 겹치면 늦게 끝난 옛 빌드가 새 파일을
+# 덮거나 delete/create 가 경합하므로 한 번에 하나씩. 대기 중인 실행은 더 새 실행으로 갈아 끼워진다
+# (릴리스에는 최신만 남으면 된다). 게시하지 않는 브랜치 빌드는 다른 그룹이라 대기 중인 태그 빌드를
+# 밀어내지 않는다.
+concurrency:
+  group: windows-exe-${{ startsWith(github.ref, 'refs/tags/v') && 'release' || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -30,6 +40,25 @@ jobs:
           Invoke-WebRequest `
             -Uri "https://github.com/z0nam/hwp-agent/releases/download/converter-jar/hwp2hwpx.jar" `
             -OutFile "vendor/hwp2hwpx.jar"
+
+      # 소스의 버전은 0.0.0+dev 다. 태그로 빌드할 때만 태그 값(v 뗀 것, 예 2026.10.22.1 —
+      # PEP 440·Inno 4자리 모두 유효)을 찍어 exe·설치기 --version 이 릴리스 번호를 말하게 한다.
+      - name: Stamp version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}".Substring(1)
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          function Stamp($path, $pattern, $repl) {
+            $text = [IO.File]::ReadAllText($path)
+            $new = [regex]::Replace($text, $pattern, $repl, 'Multiline')
+            if ($new -eq $text) { throw "버전 자리를 못 찾음: $path" }
+            [IO.File]::WriteAllText($path, $new, $utf8)
+          }
+          Stamp pyproject.toml '^version = ".*"' "version = `"$v`""
+          Stamp src/hwp_agent/__init__.py '^__version__ = ".*"' "__version__ = `"$v`""
+          Stamp installer/hwp-agent.iss '^#define AppVer ".*"' "#define AppVer `"$v`""
+          Write-Host "version $v"
 
       - name: Install package + MCP + PyInstaller
         shell: pwsh
@@ -86,7 +115,10 @@ jobs:
             dist/hwp-agent.exe
             installer/Output/hwp-agent-setup.exe
 
+      # Only a tag build publishes. A manual run on a branch carries the 0.0.0+dev version,
+      # so it stops at the workflow artifact above instead of replacing the public release.
       - name: Publish to the windows-exe release
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

@@ -8,7 +8,7 @@
 ; and runs:  ISCC.exe installer\hwp-agent.iss
 
 #define AppName "HWP 폼 채우기 (hwp-agent)"
-#define AppVer "0.2.0"
+#define AppVer "0.2.1"
 
 [Setup]
 AppId={{8E0C2C9A-3B7E-4E2A-9C2E-1A2B3C4D5E6F}

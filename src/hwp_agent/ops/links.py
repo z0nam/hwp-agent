@@ -26,6 +26,94 @@ from __future__ import annotations
 import itertools
 import random
 import re
+import string
+
+_PUNCT = set(string.punctuation)
+
+
+def mask_escapes(text: str, *, math: bool = True) -> str:
+    r"""Mask CommonMark backslash-escaped ASCII punctuation with private-use characters.
+
+    CommonMark rule: backslash followed by an ASCII punctuation character
+    (! " # $ % & ' ( ) * + , - . / : ; < = > ? @ [ \ ] ^ _ ` { | } ~) represents
+    that literal character and does not trigger Markdown formatting (headings,
+    bullets, ordered lists, pipe tables, bold/italic, links, etc.).
+
+    Backslash followed by a non-punctuation character (e.g. C:\Users, \n) is kept.
+    Inside code spans (`...`), backslashes are preserved verbatim and not unescaped.
+    With *math*, LaTeX commands inside math spans ($...$, $$...$$) are preserved.
+    """
+    i = 0
+    n = len(text)
+    out: list[str] = []
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            if i + 1 < n and text[i + 1] in _PUNCT:
+                out.append("\ue002" + chr(0xE100 + ord(text[i + 1])))
+                i += 2
+            else:
+                out.append("\\")
+                i += 1
+        elif ch == "`":
+            # Count opening backticks
+            j = i
+            while j < n and text[j] == "`":
+                j += 1
+            fence_len = j - i
+            fence = "`" * fence_len
+            close_idx = text.find(fence, j)
+            if close_idx != -1:
+                # Code span: keep verbatim without unescaping backslashes
+                out.append(text[i : close_idx + fence_len])
+                i = close_idx + fence_len
+            else:
+                out.append(fence)
+                i = j
+        elif math and ch == "$":
+            # Display math $$...$$
+            if i + 1 < n and text[i + 1] == "$":
+                close_idx = text.find("$$", i + 2)
+                if close_idx != -1:
+                    out.append(text[i : close_idx + 2])
+                    i = close_idx + 2
+                    continue
+            # Inline math $...$
+            if i + 1 < n and text[i + 1] not in (" ", "\t", "\n", "$"):
+                blank_idx = text.find("\n\n", i + 1)
+                k = i + 1
+                found_close = -1
+                while k < n and (blank_idx == -1 or k < blank_idx):
+                    if (
+                        text[k] == "$"
+                        and text[k - 1] != "\\"
+                        and text[k - 1] not in (" ", "\t", "\n")
+                    ):
+                        if k + 1 >= n or (text[k + 1] != "$" and not text[k + 1].isdigit()):
+                            found_close = k
+                            break
+                    k += 1
+                if found_close != -1:
+                    out.append(text[i : found_close + 1])
+                    i = found_close + 1
+                    continue
+            out.append(ch)
+            i += 1
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+_UNMASK_RE = re.compile(r"\ue002([\ue121-\ue17e])")
+
+
+def unmask_escapes(text: str) -> str:
+    """Restore private-use characters mapped by :func:`mask_escapes` to ASCII punctuation."""
+    if not text:
+        return text
+    return _UNMASK_RE.sub(lambda m: chr(ord(m.group(1)) - 0xE100), text)
+
 
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 
@@ -37,7 +125,7 @@ HYPERLINK_FIELD_ID = "627600491"
 #: image (``![…]``) and not a footnote reference (``[^id]``).
 _MD_LINK_RE = re.compile(
     r"(?<!!)\[(?!\^)([^\]\n]+)\]\(\s*<?"
-    r"([A-Za-z][A-Za-z0-9+.\-]*:(?:[^\s()<>]|\([^\s()<>]*\))+)>?"
+    r"([A-Za-z][A-Za-z0-9+.\-]*(?::|\ue002\ue13a)(?:[^\s()<>]|\([^\s()<>]*\))+)>?"
     r"(?:\s+\"[^\"]*\")?\s*\)"
 )
 #: a bare ``http(s)://`` URL (greedy up to whitespace / CJK punctuation, then
@@ -85,11 +173,12 @@ def _trim_url(url: str) -> str:
     return url
 
 
-def link_pieces(text: str) -> list[tuple[str, str | None]]:
+def link_pieces(text: str, *, unmask: bool = True) -> list[tuple[str, str | None]]:
     """Split *text* into ``(text, url)`` pieces; ``url`` is None for plain text.
 
     ``[표시](https://…)`` → ``("표시", "https://…")``; a bare URL links to itself.
     Text without links comes back as a single plain piece."""
+    text = mask_escapes(text)
     pieces: list[tuple[str, str | None]] = []
 
     def plain(s: str) -> None:
@@ -122,7 +211,13 @@ def link_pieces(text: str) -> list[tuple[str, str | None]]:
             merged[-1] = (merged[-1][0] + t, None)
         else:
             merged.append((t, u))
+    if unmask:
+        return [
+            (unmask_escapes(t), unmask_escapes(u) if u is not None else None)
+            for t, u in merged
+        ] or [(unmask_escapes(text), None)]
     return merged or [(text, None)]
+
 
 
 def has_links(text: str) -> bool:

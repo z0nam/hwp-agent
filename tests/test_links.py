@@ -16,8 +16,10 @@ from hwp_agent.ops.links import (
     audit_links,
     command_for_url,
     link_pieces,
+    mask_escapes,
     rendered_text,
     should_left_align,
+    unmask_escapes,
     url_from_command,
 )
 
@@ -519,5 +521,92 @@ def test_table_caption_links_and_formatting(tmp_path: Path) -> None:
     for cap in captions:
         auto_nums = cap.findall(f".//{_HP}autoNum[@numType='TABLE']")
         assert len(auto_nums) == 1
+
+
+# --------------------------------------------------------------------------- #
+# backslash escapes (issue #52)
+# --------------------------------------------------------------------------- #
+def test_mask_escapes_commonmark_ascii_punctuation() -> None:
+    puncts = r"!\"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"
+    for p in puncts:
+        src = f"\\{p}"
+        m = mask_escapes(src)
+        assert m == "\ue002" + chr(0xE100 + ord(p)), f"failed for {p}"
+        assert unmask_escapes(m) == p
+
+    # non-punctuation preserved
+    assert unmask_escapes(mask_escapes(r"C:\Users\x")) == r"C:\Users\x"
+    assert unmask_escapes(mask_escapes(r"\n 새줄")) == r"\n 새줄"
+
+    # code spans preserve backslashes verbatim
+    code_sample = r"코드 `\-` 와 `` `\*` `` 는 그대로"
+    assert unmask_escapes(mask_escapes(code_sample)) == code_sample
+
+
+def test_link_pieces_escaped_brackets() -> None:
+    # Escaped opening bracket does not become a markdown link [text](url);
+    # instead [text]( stays plain text and the URL inside parens is autolinked.
+    res = link_pieces(r"\[제주연구원\](https://www.jri.re.kr) 참고")
+    assert res == [
+        ("[제주연구원](", None),
+        ("https://www.jri.re.kr", "https://www.jri.re.kr"),
+        (") 참고", None),
+    ]
+
+    # Without escape, it is a Markdown link
+    res_unescaped = link_pieces("[제주연구원](https://www.jri.re.kr) 참고")
+    assert res_unescaped == [("제주연구원", "https://www.jri.re.kr"), (" 참고", None)]
+
+    # Escaped characters inside link label are unescaped
+    res2 = link_pieces(r"[제주 \*연구원\*](https://www.jri.re.kr)")
+    assert res2 == [("제주 *연구원*", "https://www.jri.re.kr")]
+
+
+def test_mask_escapes_preserves_math_spans() -> None:
+    # LaTeX commands inside math spans must not be masked
+    display_math = r"$$\begin{matrix} a \\ b \end{matrix}$$"
+    assert mask_escapes(display_math) == display_math
+
+    inline_math = r"$x \, y \_ z$"
+    assert mask_escapes(inline_math) == inline_math
+
+    # Digit-leading inline math (Codex review finding)
+    digit_math = r"$5 \, x$"
+    assert mask_escapes(digit_math) == digit_math
+
+    mixed = r"\- 하이픈과 $a \\ b$ 수식"
+    m = mask_escapes(mixed)
+    assert r"$a \\ b$" in m
+    assert chr(0xE100 + ord("-")) in m
+
+    # When math conversion is disabled (math=False), $ is treated as regular text
+    no_math = r"$x \_ y$"
+    assert unmask_escapes(mask_escapes(no_math, math=False)) == "$x _ y$"
+
+
+def test_link_pieces_unmasks_destination_url() -> None:
+    # URL destination containing backslash escapes is unmasked
+    res = link_pieces(r"[레이블](https://example.com/a\_b)")
+    assert res == [("레이블", "https://example.com/a_b")]
+
+    # Escaped scheme colon is supported and unmasked to valid URL
+    res2 = link_pieces(r"[x](https\://example.com)")
+    assert res2 == [("x", "https://example.com")]
+
+
+def test_mask_escapes_literal_pua_roundtrip() -> None:
+    # A literal character in U+E121-U+E17E in authored markdown is preserved
+    literal_pua = chr(0xE121) + " literal and \\! escaped"
+    m = mask_escapes(literal_pua)
+    assert unmask_escapes(m) == chr(0xE121) + " literal and ! escaped"
+
+
+def test_mask_escapes_multiline_inline_math() -> None:
+    # Multiline inline math preserves LaTeX backslash escapes
+    multiline = "$a\n\\, b$"
+    assert mask_escapes(multiline) == multiline
+
+
+
 
 

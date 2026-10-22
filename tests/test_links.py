@@ -442,3 +442,82 @@ def test_generic_table_cell_fallback_to_cp_para_pr(tmp_path: Path) -> None:
             al = pp.find(f"{_HH}align")
             assert al is not None and al.get("horizontal") == "LEFT"
 
+
+@pytest.mark.skipif(not TPL.is_file(), reason="bundled default template missing")
+def test_table_caption_links_and_formatting(tmp_path: Path) -> None:
+    """Table captions resolve Markdown links and inline styles to hyperlink fields (#54)."""
+    md = """# 제목
+
+출처는 [통계포털](https://kosis.kr) 참조
+
+| A | B |
+|---|---|
+| 1 | 2 |
+
+참고자료 https://example.com/data/bare
+
+| C | D |
+|---|---|
+| 3 | 4 |
+
+**주요 통계** 및 [관련 자료](https://example.com/bold-link)
+
+| E | F |
+|---|---|
+| 5 | 6 |
+
+링크가 없는 일반 표 제목
+
+| G | H |
+|---|---|
+| 7 | 8 |
+
+본문 문단의 [일반 링크](https://example.com/body) 확인.
+"""
+    out = tmp_path / "caption_links.hwpx"
+    res = fill_from_markdown(TPL, md, output=out)
+    # 총 4개 링크: 캡션 짧은 링크 + 캡션 맨 URL + 캡션 bold 링크 + 본문 일반 링크
+    assert res.links == 4
+
+    with zipfile.ZipFile(out) as zf:
+        sec_xml = etree.fromstring(zf.read("Contents/section0.xml"))
+
+    captions = sec_xml.findall(f".//{_HP}caption")
+    assert len(captions) == 4
+
+    # 1. 짧은 링크 캡션
+    cap1_texts = [t.text for t in captions[0].findall(f".//{_HP}t") if t.text]
+    assert "통계포털" in "".join(cap1_texts)
+    assert "[통계포털]" not in "".join(cap1_texts)
+    fb1 = captions[0].findall(f".//{_HP}fieldBegin[@type='HYPERLINK']")
+    assert len(fb1) == 1
+    cmd1 = fb1[0].find(f".//{_HP}stringParam[@name='Command']").text
+    assert url_from_command(cmd1) == "https://kosis.kr"
+
+    # 2. 맨 URL 캡션
+    fb2 = captions[1].findall(f".//{_HP}fieldBegin[@type='HYPERLINK']")
+    assert len(fb2) == 1
+    cmd2 = fb2[0].find(f".//{_HP}stringParam[@name='Command']").text
+    assert url_from_command(cmd2) == "https://example.com/data/bare"
+
+    # 3. bold + 링크 캡션
+    cap3_text = "".join(t.text for t in captions[2].findall(f".//{_HP}t") if t.text)
+    assert "**" not in cap3_text
+    assert "주요 통계" in cap3_text
+    fb3 = captions[2].findall(f".//{_HP}fieldBegin[@type='HYPERLINK']")
+    assert len(fb3) == 1
+    cmd3 = fb3[0].find(f".//{_HP}stringParam[@name='Command']").text
+    assert url_from_command(cmd3) == "https://example.com/bold-link"
+
+    # 4. 링크 없는 캡션 (회귀)
+    cap4_text = "".join(t.text for t in captions[3].findall(f".//{_HP}t") if t.text)
+    assert "링크가 없는 일반 표 제목" in cap4_text
+    fb4 = captions[3].findall(f".//{_HP}fieldBegin[@type='HYPERLINK']")
+    assert len(fb4) == 0
+
+    # 모든 캡션의 autoNum 보존 확인
+    for cap in captions:
+        auto_nums = cap.findall(f".//{_HP}autoNum[@numType='TABLE']")
+        assert len(auto_nums) == 1
+
+

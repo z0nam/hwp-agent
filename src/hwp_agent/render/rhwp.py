@@ -33,6 +33,15 @@ def resolve_rhwp(explicit: str | None = None) -> str | None:
     return shutil.which(cand)
 
 
+def rhwp_search_desc(explicit: str | None = None) -> str:
+    """Where :func:`resolve_rhwp` looked, for a "not found" message."""
+    if explicit:
+        return f"지정 경로 {explicit} 없음"
+    env = os.environ.get("RHWP_BIN")
+    where = f"$RHWP_BIN={env} 없음" if env else "$RHWP_BIN 미설정"
+    return f"{where}, PATH에 {DEFAULT_RHWP} 없음"
+
+
 def rhwp_render_fn(rhwp_bin: str) -> RenderFn:
     """Default renderer: ``rhwp export-pdf <src> -o <out.pdf>`` (native HWP/HWPX)."""
 

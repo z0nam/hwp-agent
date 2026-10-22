@@ -8,8 +8,8 @@ Two backends implement :class:`RenderBackend`:
 
 - ``rhwp`` (Tier 1) — local, PDF only, layout is approximate (rhwp paginates
   ~+25% vs Hancom); good for gross-defect checks, runs anywhere.
-- ``hwp2pdf`` (Tier 2) — Hancom-authoritative PDF+DOCX, round-tripped through a
-  Windows node; the source of truth for precise layout.
+- ``hwp2pdf`` (Tier 2) — Hancom-authoritative PDF+DOCX via the ``hwp2pdf-serve``
+  HTTP API on a Windows node; the source of truth for precise layout.
 
 Mirrors the shape of :mod:`hwp_agent.convert.base` (``.ok`` result, cheap
 ``is_available()``).
@@ -33,7 +33,8 @@ class RenderResult:
     stdout: str = ""
     stderr: str = ""
     remote: bool = False  # True when it round-tripped through a remote node
-    busy: bool = False  # remote node declined (Hangul open) — retry elsewhere
+    busy: bool = False  # hwp2pdf declined (Hangul open / queue) — not an outage
+    note: str = ""  # one line on why the preferred engine was not used
 
     @property
     def ok(self) -> bool:

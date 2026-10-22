@@ -502,9 +502,10 @@ def _render_cmd(args: argparse.Namespace, *, fmt: str, engine: str) -> int:
         src, out, fmt=fmt, engine=engine, config=config,
         rhwp_bin=getattr(args, "rhwp", None),
     )
+    if result.note:
+        print(f"note: {result.note}", file=sys.stderr)
     if result.ok:
-        where = "/namun-ji" if result.remote else ""
-        print(f"wrote {out}  (via {result.backend}{where})")
+        print(f"wrote {out}  (via {result.backend})")
         return 0
     print(f"error: {result.stderr}", file=sys.stderr)
     return result.returncode or 1
@@ -824,7 +825,8 @@ def _cmd_fit_tails(args: argparse.Namespace) -> int:
 
     from ..ops import (
         apply_tail_fits,
-        detect_tail_fits,
+        detect_tail_fits_with_engine,
+        format_no_engine_report,
         format_tail_fit_report,
     )
 
@@ -836,13 +838,14 @@ def _cmd_fit_tails(args: argparse.Namespace) -> int:
     dry_run = getattr(args, "dry_run", False)
     as_json = getattr(args, "json", False)
 
-    candidates = detect_tail_fits(
+    detection = detect_tail_fits_with_engine(
         src,
         max_chars=max_chars,
         min_spacing=min_spacing,
         min_ratio=min_ratio,
         include_footnotes=include_footnotes,
     )
+    candidates = detection.candidates
 
     if as_json:
         payload = {
@@ -850,11 +853,16 @@ def _cmd_fit_tails(args: argparse.Namespace) -> int:
             "max_chars": max_chars,
             "min_spacing": min_spacing,
             "min_ratio": min_ratio,
+            "engine": detection.engine,
+            "judged": detection.judged,
+            "notes": detection.notes,
             "candidates": [c.as_dict() for c in candidates],
             "fittable_count": sum(1 for c in candidates if c.fittable),
             "total_candidates": len(candidates),
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+        if not detection.judged:
+            return _FIT_NO_ENGINE
         if not dry_run and any(c.fittable for c in candidates):
             out = getattr(args, "output", None) or src
             gr = _guard_output(out)
@@ -870,11 +878,18 @@ def _cmd_fit_tails(args: argparse.Namespace) -> int:
             _guard_finalize(gr)
         return 0
 
+    if not detection.judged:
+        print(format_no_engine_report(detection), file=sys.stderr)
+        return _FIT_NO_ENGINE
+    for note in detection.notes:
+        print(f"note: {note}", file=sys.stderr)
+
     report = format_tail_fit_report(
         candidates,
         max_chars=max_chars,
         min_spacing=min_spacing,
         min_ratio=min_ratio,
+        engine_label=detection.engine_label,
     )
     print(report)
 
@@ -900,6 +915,33 @@ def _cmd_fit_tails(args: argparse.Namespace) -> int:
     _guard_finalize(gr)
     print(f"\n적용 완료: {fitted}개 문단 꼬리 줄 압축 -> {gr.target}")
     return 0
+
+
+#: ``fit tails`` exit code when no layout engine could judge the document
+#: (distinct from 0 = judged, whether or not anything was found).
+_FIT_NO_ENGINE = 3
+
+
+def _fit_tails_in_place(path: Path) -> None:
+    """``write``/``build --fit-tails``: fit *path* in place; warn, never fail."""
+    from ..ops import apply_tail_fits, detect_tail_fits_with_engine
+
+    detection = detect_tail_fits_with_engine(path)
+    if not detection.judged:
+        print(
+            "  warning: --fit-tails 미적용 — 판정 엔진 없음 (문서는 그대로 생성)",
+            file=sys.stderr,
+        )
+        for note in detection.notes:
+            print(f"    - {note}", file=sys.stderr)
+        return
+    for note in detection.notes:
+        print(f"  note: {note}", file=sys.stderr)
+    fitted = apply_tail_fits(path, path, candidates=detection.candidates)
+    print(
+        f"  --fit-tails: {fitted} paragraph widow tail(s) fitted "
+        f"[판정: {detection.engine_label}]"
+    )
 
 
 def _cmd_image(args: argparse.Namespace) -> int:
@@ -1055,16 +1097,7 @@ def _cmd_write(args: argparse.Namespace) -> int:
         base_dir=Path(args.md).parent,
     )
     if getattr(args, "fit_tails", False):
-        from ..ops import apply_tail_fits
-
-        fitted = apply_tail_fits(gr.target, gr.target)
-        if fitted:
-            print(f"  fitted {fitted} paragraph widow tail(s)")
-        else:
-            print(
-                "  note: --fit-tails fitted nothing (without rhwp it needs layout "
-                "caches — run 'hwp-agent fit tails' after saving in Hangul)"
-            )
+        _fit_tails_in_place(gr.target)
     _guard_finalize(gr)
     print(f"placed {result.placed} block(s) -> {gr.target}")
     if result.links:
@@ -1119,16 +1152,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
 
         wings = apply_chapter_headers(gr.target)
     if getattr(args, "fit_tails", False):
-        from ..ops import apply_tail_fits
-
-        fitted = apply_tail_fits(gr.target, gr.target)
-        if fitted:
-            print(f"  fitted {fitted} paragraph widow tail(s)")
-        else:
-            print(
-                "  note: --fit-tails fitted nothing (without rhwp it needs layout "
-                "caches — run 'hwp-agent fit tails' after saving in Hangul)"
-            )
+        _fit_tails_in_place(gr.target)
     _guard_finalize(gr)
     print(f"assembled {result.placed} block(s) -> {gr.target}")
     if result.links:
@@ -1445,7 +1469,7 @@ def build_parser() -> argparse.ArgumentParser:
     vfy.set_defaults(func=_cmd_verify)
 
     rpdf = sub.add_parser(
-        "pdf", help="render an HWP/HWPX to PDF (hwp2pdf/namun-ji if reachable, else rhwp)",
+        "pdf", help="render an HWP/HWPX to PDF (hwp2pdf-serve if usable, else rhwp)",
     )
     rpdf.add_argument("input", type=Path, help="source .hwp/.hwpx file")
     rpdf.add_argument(
@@ -1454,21 +1478,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rpdf.add_argument(
         "--engine", choices=("auto", "hwp2pdf", "rhwp"), default="auto",
-        help="auto = hwp2pdf if reachable, else rhwp (Tier-1)",
+        help="auto = hwp2pdf if reachable and not overlapping a running Hangul, else rhwp",
     )
     rpdf.add_argument("--rhwp", default=None, help="path to the rhwp CLI (Tier-1)")
     rpdf.add_argument(
         "--config", type=Path, default=None,
-        help="hwp2pdf endpoint config (default: ~/.config/hwp-agent/hwp2pdf.json)",
+        help="hwp2pdf server config (default: ~/.config/hwp-agent/hwp2pdf.json)",
     )
     rpdf.add_argument(
         "--timeout", type=int, default=None, dest="timeout",
-        help="Tier-2 convert timeout in seconds (overrides config)",
+        help="hwp2pdf convert timeout in seconds (overrides config)",
     )
     rpdf.set_defaults(func=_cmd_pdf)
 
     rdocx = sub.add_parser(
-        "docx", help="render an HWP/HWPX to DOCX (Hancom hwp2pdf/namun-ji only)",
+        "docx", help="render an HWP/HWPX to DOCX (hwp2pdf-serve only)",
     )
     rdocx.add_argument("input", type=Path, help="source .hwp/.hwpx file")
     rdocx.add_argument(
@@ -1476,7 +1500,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="destination .docx (default: alongside input)",
     )
     rdocx.add_argument(
-        "--config", type=Path, default=None, help="hwp2pdf endpoint config",
+        "--config", type=Path, default=None, help="hwp2pdf server config",
     )
     rdocx.add_argument(
         "--timeout", type=int, default=None, dest="timeout",
@@ -1701,7 +1725,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--fit-tails",
         action="store_true",
         default=False,
-        help="shorten widow tail lines (verified with rhwp; without rhwp needs a layout cache)",
+        help="shorten widow tail lines (layout: saved linesegarray > hwp2pdf > rhwp; "
+        "warns and skips if none)",
     )
     wr.add_argument("-o", "--output", type=Path, default=None, help="output file")
     wr.set_defaults(func=_cmd_write)
@@ -1731,7 +1756,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--fit-tails",
         action="store_true",
         default=False,
-        help="shorten widow tail lines (verified with rhwp; without rhwp needs a layout cache)",
+        help="shorten widow tail lines (layout: saved linesegarray > hwp2pdf > rhwp; "
+        "warns and skips if none)",
     )
     bd.set_defaults(func=_cmd_build)
 

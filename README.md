@@ -99,15 +99,15 @@ runtime; install a JRE 17+ (e.g. [Temurin](https://adoptium.net/)) to run
 hwp-agent convert report.hwp report.hwpx
 hwp-agent --version
 
-# render HWP/HWPX -> PDF/DOCX. auto = Hancom hwp2pdf (via a Windows node) if
-# reachable, else local rhwp for PDF. DOCX is Hancom-only (rhwp can't).
-# The node never closes a Hangul window you're editing: if Hangul is open there,
-# the job is skipped (PDF falls back to local rhwp; DOCX waits). See issue #17.
-hwp-agent pdf report.hwpx                 # auto tier
+# render HWP/HWPX -> PDF/DOCX. auto = Hancom via the hwp2pdf conversion server
+# (hwp2pdf-serve, a separate project) if usable, else local rhwp for PDF. DOCX is
+# Hancom-only (rhwp can't). hwp2pdf is never used while Hangul is running on the
+# server machine or its queue is busy -- PDF falls back to rhwp (issue #61).
+hwp-agent pdf report.hwpx                 # auto
 hwp-agent pdf report.hwpx --engine rhwp   # force local (no Hancom)
-hwp-agent docx report.hwpx                # DOCX -> hwp2pdf/namun-ji only
-#   Tier-2 needs ~/.config/hwp-agent/hwp2pdf.json (see examples/hwp2pdf.example.json)
-#   and a one-time worker on the Windows node: scripts/install-hwp2pdf-worker.ps1
+hwp-agent docx report.hwpx                # DOCX -> hwp2pdf only
+#   hwp2pdf needs ~/.config/hwp-agent/hwp2pdf.json (examples/hwp2pdf.example.json):
+#   server_url + token via $HWP2PDF_TOKEN or token_file
 
 # fill a Korean form: inspect slots, then fill
 hwp-agent form analyze 등록신청서.hwpx --json

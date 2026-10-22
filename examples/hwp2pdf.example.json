@@ -1,12 +1,7 @@
 {
-  "_note": "Tier-2 원격 hwp2pdf(한컴 권위 변환) 엔드포인트. ~/.config/hwp-agent/hwp2pdf.json 로 복사해 값 채움. host는 ~/.ssh/config 의 Host 별칭(Tailscale MagicDNS). exe_path는 워커 스크립트(namun-ji)에서만 쓰이며 클라이언트는 무시. 없으면 auto는 rhwp로 폴백.",
-  "host": "namun-ji",
-  "exe_path": "C:\\Users\\user\\dev\\hwp2pdf\\.venv\\Scripts\\hwp2pdf.exe",
-  "remote_inbox": "C:/Users/user/.hwp-agent/inbox",
-  "remote_outbox": "C:/Users/user/.hwp-agent/outbox",
-  "task_name": "hwp-agent-hwp2pdf",
-  "default_format": "pdf",
-  "connect_timeout": 5,
-  "convert_timeout": 180,
-  "poll_interval": 2.0
+  "_note": "hwp2pdf 변환 서버(hwp2pdf-serve, 별도 프로젝트 z0nam/hwp2pdf) 주소. ~/.config/hwp-agent/hwp2pdf.json 로 복사해 값 채움. 토큰은 여기 적지 말고 $HWP2PDF_TOKEN 또는 token_file(토큰만 든 텍스트 파일, 권한 600)로. 서버 머신에서 한글이 실행 중이거나 대기열이 있으면 hwp2pdf를 쓰지 않고 rhwp로 넘어감. 없으면 auto는 rhwp.",
+  "server_url": "http://namun-ji.tail0fdba8.ts.net:17650",
+  "token_file": "~/.config/hwp-agent/hwp2pdf.token",
+  "connect_timeout": 10,
+  "convert_timeout": 900
 }

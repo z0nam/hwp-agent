@@ -30,9 +30,12 @@ from .doctor import diagnose_template
 from .extract import extract_markdown
 from .fit_tails import (
     TailFitCandidate,
+    TailFitDetection,
     apply_tail_fits,
     compute_tail_fit,
     detect_tail_fits,
+    detect_tail_fits_with_engine,
+    format_no_engine_report,
     format_tail_fit_report,
 )
 from .form import (
@@ -181,6 +184,9 @@ __all__ = [
     "TailFitCandidate",
     "compute_tail_fit",
     "detect_tail_fits",
+    "detect_tail_fits_with_engine",
+    "TailFitDetection",
+    "format_no_engine_report",
     "format_tail_fit_report",
     "apply_tail_fits",
     "apply_chapter_headers",

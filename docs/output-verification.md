@@ -140,22 +140,29 @@ hwp-agent docx report.hwpx                # DOCX = Tier-2(hwp2pdf) 전용 (rhwp�
 hwp-agent verify out.pdf                  # 한컴 PDF면 권위 사인오프(Step 1)
 ```
 
-- **선택(`--engine auto`)**: `docx`는 항상 Tier-2. `pdf`는 Tier-2 사용가능(config 있음 + ssh
-  프로브 성공)이면 Tier-2, 아니면 Tier-1(rhwp)로 폴백.
-- **Tier-2 왕복(schtasks 온디맨드)**: scp로 파일을 namun-ji inbox에 올림 → SSH로
-  `schtasks /run /tn hwp-agent-hwp2pdf`(세션1) → outbox의 `<job>.done`/`.err`/`.busy` 폴링 →
-  scp로 회수 → 정리. 워커 `scripts/render-inbox.ps1`이 `hwp2pdf <inbox> --pdf --docx` 실행 후
-  outbox로 옮기고 `.done`/`.err` 마커를 남긴다.
-- **busy 가드(#17)**: 워커는 **`--kill-hwp`를 절대 쓰지 않는다.** 렌더 전에 한글 프로세스
-  (`Hwp`)가 떠 있으면 `<job>.busy` 마커만 남기고 그 잡을 건너뛴다 — **편집 중인 문서를
-  닫아 미저장분을 날리지 않기 위함.** 클라이언트는 `.busy`를 받으면 `pdf`는 로컬 rhwp로
-  폴백하고, `docx`는 로컬 대체가 없어 "노드가 빌 때까지 대기" 안내를 반환한다. 절충: 크래시로
-  남은 stale 한글 프로세스도 "busy"로 보여 렌더를 막으므로, 그 경우 노드에서 한글을 닫아야
-  한다(살아있는 문서를 죽이는 것보다 안전).
+> **2026-10-22 개정(#61):** 아래 scp + `schtasks /run hwp-agent-hwp2pdf` 왕복은 폐기했다.
+> 같은 노드의 hwp2pdf 상주 서버(`hwp2pdf serve`, 10분 자가 재시작)와 한글 COM을 두고 겹쳐
+> `RPC 서버를 사용할 수 없음`(-2147023174)·`.busy`로 실패했다. 이제 hwp-agent는 hwp2pdf를
+> 직접 실행하지 않고 **hwp2pdf-serve HTTP API**(z0nam/hwp2pdf `docs/protocol.md`, API 1)만 부른다.
+> 한글 COM을 다루는 쪽이 서버 하나뿐이라 겹칠 일이 없고, 두 프로젝트는 별도로 유지된다.
+
+- **선택(`--engine auto`)**: `docx`는 항상 hwp2pdf. `pdf`는 hwp2pdf가 쓸 수 있으면 hwp2pdf,
+  아니면 rhwp로 폴백하고 그 이유를 `note:` 한 줄로 알린다.
+- **"쓸 수 있음"의 판정**: `GET /v1/health`(무인증, 닿는지·API 버전) → `GET /v1/capabilities`
+  (Bearer). `hwp_installed`가 참이고 **`hwp_running`이 비어 있고 `queue_depth == 0`** 일 때만 쓴다.
+  서버 머신에서 사용자가 한글을 켜 두었거나 다른 변환이 대기 중이면 hwp2pdf를 쓰지 않는다
+  (`--engine hwp2pdf`로 명시해도 마찬가지). 한글 프로세스를 닫거나 종료하는 동작은 없다.
+- **왕복**: `POST /v1/jobs` → `PUT .../inputs/{item}` → `POST .../items/{item}/run
+  {name, output_format}` → `GET .../events` 폴링 → `GET .../outputs/{item}` → `DELETE` 로 정리
+  (실패·시간초과에도 항상 정리). PDF만 요청하면 PDF만 만든다.
 - **config**: `~/.config/hwp-agent/hwp2pdf.json`(예시 `examples/hwp2pdf.example.json`) —
-  `host`(ssh 별칭), inbox/outbox 원격경로, task_name, 타임아웃. 필드별 `$HWP2PDF_*` env 오버라이드.
-  없으면 Tier-2 미가용 → auto는 rhwp.
-- **namun-ji 1회 세팅**: `scripts/install-hwp2pdf-worker.ps1`(세션1 `schtasks /it` 등록 +
-  inbox/outbox + 워커 배치). 전제(자동로그인·잠금해제·FilePathCheckerModule)는 위 Step-2 해결
-  그대로 — 스크립트가 강제하지 못하므로 타임아웃 메시지가 이 둘을 지목한다.
-- 클라이언트/transport는 주입 가능(`tests/test_render.py`) → namun-ji 없이 오프라인 테스트.
+  `server_url`, `token_file`, 타임아웃. env `$HWP2PDF_SERVER_URL`·`$HWP2PDF_TOKEN`·
+  `$HWP2PDF_TOKEN_FILE`·`$HWP2PDF_TIMEOUT`이 우선. 토큰은 저장소·로그·출력에 남기지 않는다.
+  `server_url`이 없으면 hwp2pdf 미가용 → auto는 rhwp. 옛 키(`host`, `remote_inbox` …)는 무시.
+- **fit tails(#61)**: linesegarray가 없는 문서(`write` 산출물)는 hwp2pdf로 HWPX를 다시 저장해
+  한글이 계산한 linesegarray로 꼬리 줄을 판정한다. 다시 저장한 파일은 판정에만 쓰고 버린다.
+- **옛 worker 해제(namun-ji, 사용자 확인 후 수동)**: `schtasks /delete /tn hwp-agent-hwp2pdf /f`
+  그리고 `%USERPROFILE%\.hwp-agent\`(inbox/outbox/render-inbox.ps1 사본) 삭제.
+  `scripts/install-hwp2pdf-worker.ps1`·`render-inbox.ps1`은 저장소에서 제거했다.
+- HTTP transport는 주입 가능하고, 테스트는 `tests/conftest.py`의 가짜 hwp2pdf-serve로 돈다
+  → namun-ji 없이 오프라인 테스트.

@@ -1,9 +1,15 @@
-"""Config for the Tier-2 remote hwp2pdf endpoint (the Windows/Hancom node).
+"""Config for the hwp2pdf conversion server (``hwp2pdf-serve``, issue #61).
 
-Resolution mirrors the house idiom (``ops/template.py``, ``convert/_resolve_jar``):
-explicit arg → ``$HWP2PDF_CONFIG`` → ``~/.config/hwp-agent/hwp2pdf.json`` → None
-(None simply means Tier-2 is unavailable, so ``auto`` falls back to rhwp). After a
-file is loaded, individual ``$HWP2PDF_*`` env vars override its fields.
+hwp2pdf is a separate project; hwp-agent only *calls* its HTTP API (protocol:
+z0nam/hwp2pdf ``docs/protocol.md``). Resolution mirrors the house idiom
+(``ops/template.py``, ``convert/_resolve_jar``): explicit arg → ``$HWP2PDF_CONFIG``
+→ ``~/.config/hwp-agent/hwp2pdf.json`` → None (None simply means hwp2pdf is not
+configured, so callers fall back to rhwp). After a file is loaded, individual
+``$HWP2PDF_*`` env vars override its fields.
+
+The bearer token is never stored in this object: :meth:`Hwp2PdfConfig.token`
+reads ``$HWP2PDF_TOKEN`` or the file named by ``token_file`` at call time, so
+the secret stays out of the repo, reprs and logs.
 """
 
 from __future__ import annotations
@@ -12,33 +18,50 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 DEFAULT_CONFIG = Path.home() / ".config" / "hwp-agent" / "hwp2pdf.json"
+DEFAULT_PORT = 17650  # hwp2pdf ``protocol.DEFAULT_PORT``
 
 
 @dataclass(frozen=True)
 class Hwp2PdfConfig:
-    host: str  # ssh alias (e.g. "namun-ji"; resolved via ~/.ssh/config + Tailscale)
-    remote_inbox: str  # forward-slash remote path, e.g. "C:/Users/user/.hwp-agent/inbox"
-    remote_outbox: str  # "C:/Users/user/.hwp-agent/outbox"
-    task_name: str = "hwp-agent-hwp2pdf"  # session-1 scheduled task to /run
-    default_format: str = "pdf"
-    connect_timeout: int = 5  # ssh -o ConnectTimeout
-    convert_timeout: int = 180  # empirical ~45s; headroom for cold Hancom
-    poll_interval: float = 2.0
+    server_url: str  # e.g. "http://namun-ji.tail0fdba8.ts.net:17650"
+    token_file: str | None = None  # plain-text file holding the bearer token
+    connect_timeout: int = 10  # health / capabilities / small requests
+    convert_timeout: int = 900  # whole job; matches the server's own job timeout
+
+    def token(self) -> str | None:
+        """``$HWP2PDF_TOKEN`` > ``token_file`` contents > None."""
+        env = os.environ.get("HWP2PDF_TOKEN", "").strip()
+        if env:
+            return env
+        if self.token_file:
+            try:
+                text = Path(self.token_file).expanduser().read_text(encoding="utf-8")
+                return text.strip() or None
+            except OSError:
+                return None
+        return None
+
+
+def normalize_server_url(value: str) -> str:
+    """Accept what the hwp2pdf client accepts: full URL, ``host`` or ``host:port``."""
+    value = value.strip().rstrip("/")
+    if "://" not in value:
+        value = f"http://{value}"
+    parts = urlsplit(value)
+    if parts.port is None and parts.scheme == "http":
+        value = f"{parts.scheme}://{parts.hostname}:{DEFAULT_PORT}{parts.path}"
+    return value
 
 
 def _apply_env(data: dict) -> dict:
     """Overlay per-field ``$HWP2PDF_*`` env vars onto a loaded config dict."""
-    env_map = {
-        "HWP2PDF_HOST": "host",
-        "HWP2PDF_INBOX": "remote_inbox",
-        "HWP2PDF_OUTBOX": "remote_outbox",
-        "HWP2PDF_TASK": "task_name",
-    }
-    for env, key in env_map.items():
-        if os.environ.get(env):
-            data[key] = os.environ[env]
+    if os.environ.get("HWP2PDF_SERVER_URL"):
+        data["server_url"] = os.environ["HWP2PDF_SERVER_URL"]
+    if os.environ.get("HWP2PDF_TOKEN_FILE"):
+        data["token_file"] = os.environ["HWP2PDF_TOKEN_FILE"]
     if os.environ.get("HWP2PDF_TIMEOUT"):
         try:
             data["convert_timeout"] = int(os.environ["HWP2PDF_TIMEOUT"])
@@ -50,10 +73,11 @@ def _apply_env(data: dict) -> dict:
 def resolve_hwp2pdf_config(
     explicit: str | Path | None = None,
 ) -> Hwp2PdfConfig | None:
-    """Load the remote hwp2pdf config, or None if none is configured.
+    """Load the hwp2pdf server config, or None if no server URL is configured.
 
-    None is not an error — it means Tier-2 is simply unavailable and ``auto``
-    selection will use the local rhwp backend for PDF.
+    None is not an error — it means hwp2pdf is simply unavailable and callers use
+    the local rhwp backend instead. Keys of the retired SSH/schtasks transport
+    (``host``, ``remote_inbox``, …) are ignored.
     """
     path = (
         Path(explicit)
@@ -69,9 +93,9 @@ def resolve_hwp2pdf_config(
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(f"invalid hwp2pdf config {path}: {exc}") from exc
     data = _apply_env(data)
-    # drop unknown keys (e.g. comments, exe_path used only by the worker script)
     fields = Hwp2PdfConfig.__dataclass_fields__
     known = {k: v for k, v in data.items() if k in fields}
-    if not known.get("host") or not known.get("remote_inbox") or not known.get("remote_outbox"):
-        return None  # not enough to reach Tier-2
+    if not known.get("server_url"):
+        return None
+    known["server_url"] = normalize_server_url(str(known["server_url"]))
     return Hwp2PdfConfig(**known)

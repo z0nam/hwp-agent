@@ -34,7 +34,7 @@ _OPF = "http://www.idpf.org/2007/opf/"
 #: brackets, so a caption link ``![[기관](url) 자료](x.png)`` still parses.
 FIGURE_LINE_RE = re.compile(
     r"""^\s*!\[(?P<alt>(?:[^\[\]]|\[[^\[\]]*\])*)\]
-        \(\s*(?P<path><[^>]+>|[^)\s]+)(?:\s+"[^"]*")?\s*\)
+        \(\s*(?P<path><[^>]+>|(?:[^()\s]|\([^()\s]*\))+)(?:\s+"[^"]*")?\s*\)
         \s*(?:\{\s*\#(?P<label>[^{}\s]+)\s*\})?\s*$""",
     re.VERBOSE,
 )
@@ -44,10 +44,11 @@ FIGURE_FRAMING_RE = re.compile(r"^\s*\[\s*그림\s*[^\]]*\]\s*")
 _LABEL_LINE = "그림 참조 id:"
 _LABEL_LINE_RE = re.compile(re.escape(_LABEL_LINE) + r"\s*(\S+)")
 
-#: formats Hangul embeds as pictures; the BinData extension used for each
-_EXT = {"png": "png", "jpeg": "jpg", "gif": "gif", "bmp": "bmp", "tiff": "tif"}
-_MEDIA = {"png": "image/png", "jpg": "image/jpg", "gif": "image/gif",
-          "bmp": "image/bmp", "tif": "image/tiff"}
+#: formats Hangul embeds as pictures; the BinData extension used for each. Only
+#: those whose size :func:`.images.read_image_size` reads without Pillow (an
+#: optional, undeclared extra) — so TIFF is left out.
+_EXT = {"png": "png", "jpeg": "jpg", "gif": "gif", "bmp": "bmp"}
+_MEDIA = {"png": "image/png", "jpg": "image/jpg", "gif": "image/gif", "bmp": "image/bmp"}
 
 
 @dataclass
@@ -341,6 +342,20 @@ def body_height(section) -> int | None:
 # --------------------------------------------------------------------------- #
 # extract side
 # --------------------------------------------------------------------------- #
+def is_figure_table(tbl) -> bool:
+    """A figure table ``write`` built — with its picture or, when the image was
+    missing, its placeholder (numbered as a picture, ``[그림 …]`` caption)."""
+    if figure_parts(tbl) is not None:
+        return True
+    cap = tbl.find(f"{{{_HP}}}caption")
+    return (
+        tbl.get("numberingType") == "PICTURE"
+        and cap is not None
+        and FIGURE_FRAMING_RE.match("".join(t.text or "" for t in cap.iter(f"{{{_HP}}}t")))
+        is not None
+    )
+
+
 def figure_parts(tbl) -> tuple[object, str] | None:
     """``(pic, caption_text)`` when *tbl* is a figure table ``write`` built, else None.
 

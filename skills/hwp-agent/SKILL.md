@@ -262,7 +262,7 @@ table** with the picture on top (scaled to the text width, aspect kept, capped a
 - Write only the title as alt text — the `[그림 …]` framing is added. Links and
   `**bold**` in it work as in table captions.
 - Paths are relative to the Markdown file (`write`) or to each part file
-  (`build`, falling back to the manifest folder). PNG/JPEG/GIF/BMP/TIFF. A
+  (`build`, falling back to the manifest folder). PNG/JPEG/GIF/BMP (TIFF: convert first). A
   missing image keeps the figure (number + caption) with a `[그림 없음: path]`
   placeholder and a warning.
 - The caption style comes from the template's `{{figure_template}}` figure (its

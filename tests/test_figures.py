@@ -295,3 +295,47 @@ def test_build_reads_images_relative_to_each_part(tmp_path: Path) -> None:
 def test_rebase_leaves_unknown_paths() -> None:
     base = Path("/nonexistent-base")
     assert rebase_figure_paths("![a](x.png)", base) == "![a](x.png)"
+
+
+# --------------------------------------------------------------------------- #
+# review follow-ups (PR #60)
+# --------------------------------------------------------------------------- #
+def test_parenthesised_path_is_a_figure() -> None:
+    fig = parse_figure_line("![결과](assets/plot(1).png){#fig_p}")
+    assert fig is not None and fig.path == "assets/plot(1).png" and fig.label == "fig_p"
+
+
+def test_gif_embeds_without_pillow(tmp_path: Path) -> None:
+    gif = (
+        b"GIF89a\x03\x00\x02\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff"
+        b"!\xf9\x04\x00\x00\x00\x00\x00,\x00\x00\x00\x00\x03\x00\x02\x00\x00"
+        b"\x02\x02D\x01\x00;"
+    )
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "g.gif").write_bytes(gif)
+    res, out = _write(tmp_path, md="![움짤](assets/g.gif)\n")
+    assert not any("image" in w for w in res.warnings)
+    pic_sz = _figure_tables(out)[0].find(f".//{{{_HP}}}pic/{{{_HP}}}sz")
+    assert abs(int(pic_sz.get("width")) / int(pic_sz.get("height")) - 1.5) < 0.01
+    with zipfile.ZipFile(out) as z:
+        assert any(n.endswith(".gif") for n in z.namelist())
+
+
+def test_placeholder_figures_count_across_build_parts(tmp_path: Path) -> None:
+    """A missing image in an earlier part still holds its number for later parts."""
+    _png(tmp_path / "a.png", 200, 100)
+    (tmp_path / "intro.md").write_text("![없음](none.png)\n", encoding="utf-8")
+    (tmp_path / "body.md").write_text("# 장\n\n![있음](a.png){#fig_a}\n\n{ref:fig_a}\n",
+                                      encoding="utf-8")
+    manifest = tmp_path / "report.json"
+    manifest.write_text(json.dumps({
+        "template": str(_HOUSE.resolve()), "output": "out.hwpx", "chapter": "Ⅰ",
+        "parts": {"intro": "intro.md", "body": "body.md"},
+    }), encoding="utf-8")
+    res = build_report(manifest)
+    assert res.figures == 2
+    caps = [
+        _caption(t) for s in _sections(tmp_path / "out.hwpx") for t in s.iter(f"{{{_HP}}}tbl")
+        if t.get("numberingType") == "PICTURE"
+    ]
+    assert caps == ["[그림 Ⅰ-1] 없음", "[그림 Ⅰ-2] 있음"]

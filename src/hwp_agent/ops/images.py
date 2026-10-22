@@ -141,6 +141,11 @@ def _bmp_size(data: bytes) -> tuple[int, int]:
     return abs(w), abs(h)
 
 
+def _gif_size(data: bytes) -> tuple[int, int]:
+    # logical screen width/height: little-endian uint16 right after "GIF8xa"
+    return int.from_bytes(data[6:8], "little"), int.from_bytes(data[8:10], "little")
+
+
 def _jpeg_size(data: bytes) -> tuple[int, int]:
     i, n = 2, len(data)
     while i + 9 < n:
@@ -165,7 +170,7 @@ def read_image_size(data: bytes) -> tuple[int, int]:
     """Return ``(pixel_width, pixel_height)``; raise ``ValueError`` if undecodable.
 
     Tries Pillow first (covers every format); falls back to header parsing for
-    PNG / JPEG / BMP so the common cases work with no extra dependency.
+    PNG / JPEG / GIF / BMP so the common cases work with no extra dependency.
     """
     try:  # pragma: no cover - exercised only when Pillow is installed
         from io import BytesIO
@@ -181,6 +186,8 @@ def read_image_size(data: bytes) -> tuple[int, int]:
         return _png_size(data)
     if fmt == "bmp":
         return _bmp_size(data)
+    if fmt == "gif":
+        return _gif_size(data)
     if fmt == "jpeg":
         return _jpeg_size(data)
     raise ValueError(f"cannot read image size (format={fmt!r})")

@@ -39,8 +39,8 @@ from .figures import (
     body_height,
     borderless_fill,
     centered_para_pr,
-    figure_parts,
     fit_extent,
+    is_figure_table,
     load_image,
     parse_figure_line,
     picture_xml,
@@ -1613,7 +1613,7 @@ def _count_figures(doc: HwpxDocument) -> int:
         1
         for s in doc.sections
         for tbl in s.element.iter(f"{{{_HP}}}tbl")
-        if figure_parts(tbl) is not None
+        if is_figure_table(tbl)
     )
 
 

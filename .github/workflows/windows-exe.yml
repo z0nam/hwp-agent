@@ -17,9 +17,10 @@ permissions:
 
 # 빌드마다 같은 windows-exe 릴리스를 지우고 다시 만든다. 겹치면 늦게 끝난 옛 빌드가 새 파일을
 # 덮거나 delete/create 가 경합하므로 한 번에 하나씩. 대기 중인 실행은 더 새 실행으로 갈아 끼워진다
-# (릴리스에는 최신만 남으면 된다).
+# (릴리스에는 최신만 남으면 된다). 게시하지 않는 브랜치 빌드는 다른 그룹이라 대기 중인 태그 빌드를
+# 밀어내지 않는다.
 concurrency:
-  group: windows-exe-release
+  group: windows-exe-${{ startsWith(github.ref, 'refs/tags/v') && 'release' || github.ref }}
   cancel-in-progress: false
 
 jobs:

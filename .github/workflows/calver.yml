@@ -1,0 +1,29 @@
+name: calver
+
+# main 머지마다 날짜 버전 태그(vYYYY.MM.DD.N, KST)를 달고 그 태그로 Windows exe 를 빌드한다.
+# 번호는 사람이 관리하지 않는다. jaix-kit 갱신 봇이 이 태그를 찾아 잠금을 올린다
+# (https://github.com/jeju-inst/jaix-kit). 0.2.1 이 마지막 semver 태그다.
+
+on:
+  push:
+    branches: [main]
+
+concurrency: calver-tag
+
+jobs:
+  tag:
+    uses: jeju-inst/jaix-kit/.github/workflows/calver-tag.yml@main
+    permissions:
+      contents: write
+
+  # GITHUB_TOKEN 으로 단 태그는 windows-exe 의 `push: tags` 를 깨우지 않아 직접 부른다
+  windows-exe:
+    needs: tag
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: gh workflow run windows-exe.yml -R "$GITHUB_REPOSITORY" --ref "$TAG"

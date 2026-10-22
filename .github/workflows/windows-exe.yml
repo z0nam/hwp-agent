@@ -2,7 +2,8 @@ name: Build Windows exe
 
 # Builds a standalone hwp-agent.exe (no Python needed by the user) with the
 # converter jar bundled inside, and publishes it to the "windows-exe" release.
-# Run manually from the Actions tab, or it fires when you push a tag like v0.1.0.
+# Run manually from the Actions tab, when you push a tag like v0.1.0, or from calver.yml
+# (which dispatches it for each automatic date tag vYYYY.MM.DD.N).
 
 on:
   workflow_dispatch:

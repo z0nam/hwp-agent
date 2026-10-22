@@ -19,13 +19,14 @@ jobs:
   tag:
     # 다른 저장소 코드가 이 저장소 태그 권한(contents: write)을 쥐므로 커밋으로 고정한다.
     # 올릴 때는 jaix-kit 의 새 커밋을 확인하고 PR 로.
-    uses: jeju-inst/jaix-kit/.github/workflows/calver-tag.yml@dbcfc7168013a2f588888c7eab842abffed04d7f
+    uses: jeju-inst/jaix-kit/.github/workflows/calver-tag.yml@ceb18e6bb8efdf0d92ed35f5f98fed2515453f5a
     permissions:
       contents: write
 
   # GITHUB_TOKEN 으로 단 태그는 windows-exe 의 `push: tags` 를 깨우지 않아 직접 부른다
   windows-exe:
     needs: tag
+    if: needs.tag.outputs.created == 'true'   # 앞선 실행이 이미 태그·빌드한 커밋이면 건너뜀
     runs-on: ubuntu-latest
     permissions:
       actions: write

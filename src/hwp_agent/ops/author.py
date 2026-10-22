@@ -1720,14 +1720,17 @@ def _build_figure(
     if centered is not None:
         cp.para_pr_id_ref = centered
     cp.clear_text()
-    src = Path(fig.path).expanduser()
+    # parse_markdown masked backslash escapes (#52); a path is used, not emitted,
+    # so restore them here — `assets/a\_b.png` names the file a_b.png
+    fig_path = unmask_escapes(fig.path)
+    src = Path(fig_path).expanduser()
     if not src.is_absolute():
         src = base_dir / src
     try:
         img = load_image(src)
     except ValueError as exc:
         warnings.append(f"{fig.display}: {exc} — placeholder left in the figure")
-        cp.add_run(f"[그림 없음: {fig.path}]", char_pr_id_ref=body_char)
+        cp.add_run(f"[그림 없음: {fig_path}]", char_pr_id_ref=body_char)
         pic_h = None
     else:
         item_id = add_bin_image(doc, img.data, img.ext)
@@ -1736,7 +1739,7 @@ def _build_figure(
         try:
             name = str(src.resolve().relative_to(base_dir.resolve()))
         except ValueError:
-            name = fig.path
+            name = fig_path
         lsa = cp.element.find(f"{{{_HP}}}linesegarray")
         run = etree.fromstring(picture_xml(
             item_id, img, w, pic_h, char_pr=body_char, source_name=name, label=fig.label,

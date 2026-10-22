@@ -74,6 +74,10 @@ def parse_figure_line(line: str) -> FigureBlock | None:
     return FigureBlock(alt=m.group("alt").strip(), path=path, label=m.group("label"))
 
 
+#: a CommonMark backslash escape of ASCII punctuation (``\_`` → ``_``)
+_ESCAPE_RE = re.compile(r"\\([!-/:-@\[-`{-~])")
+
+
 def rebase_figure_paths(markdown: str, base: Path) -> str:
     """Make relative image paths in standalone figure lines absolute under *base*.
 
@@ -88,6 +92,7 @@ def rebase_figure_paths(markdown: str, base: Path) -> str:
         if m:
             raw = m.group("path")
             p = raw[1:-1] if raw.startswith("<") and raw.endswith(">") else raw
+            p = _ESCAPE_RE.sub(r"\1", p)  # the file name, as write reads it
             if not Path(p).is_absolute() and "://" not in p and (base / p).is_file():
                 new = str((base / p).resolve())
                 line = line[: m.start("path")] + f"<{new}>" + line[m.end("path"):]

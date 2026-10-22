@@ -339,3 +339,45 @@ def test_placeholder_figures_count_across_build_parts(tmp_path: Path) -> None:
         if t.get("numberingType") == "PICTURE"
     ]
     assert caps == ["[그림 Ⅰ-1] 없음", "[그림 Ⅰ-2] 있음"]
+
+
+# --------------------------------------------------------------------------- #
+# with #52 backslash escapes
+# --------------------------------------------------------------------------- #
+def test_escapes_in_figure_alt_path_and_notes(tmp_path: Path) -> None:
+    _png(tmp_path / "assets" / "a_b.png", 200, 100)
+    md = (
+        "![지표 \\*잠정\\* 추이](assets/a\\_b.png){#fig_a}\n"
+        "주: 2026년 \\*표시는 추정\n\n"
+        "{ref:fig_a} 참조\n"
+    )
+    res, out = _write(tmp_path, md=md)
+    assert res.figures == 1
+    assert not any("image" in w for w in res.warnings)
+    fig = _figure_tables(out)[0]
+    assert _caption(fig) == "[그림 Ⅳ-1] 지표 *잠정* 추이"
+    assert "주: 2026년 *표시는 추정" in "".join(fig.itertext())
+    with zipfile.ZipFile(out) as z:
+        assert any(n.endswith(".png") for n in z.namelist() if n.startswith("BinData/"))
+    assert "![지표 *잠정* 추이](assets/a_b.png){#fig_a}" in extract_markdown(out)
+
+
+def test_escaped_bang_is_not_a_figure(tmp_path: Path) -> None:
+    res, out = _write(tmp_path, md="\\![그림 아님](assets/a.png)\n")
+    assert res.figures == 0
+    texts = "".join(t.text or "" for s in _sections(out) for t in s.iter(f"{{{_HP}}}t"))
+    assert "![그림 아님](assets/a.png)" in texts
+
+
+def test_build_rebases_escaped_paths(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    _png(src / "img" / "a_b.png", 300, 100)
+    (src / "01.md").write_text("# 장\n\n![가](img/a\\_b.png)\n", encoding="utf-8")
+    manifest = tmp_path / "report.json"
+    manifest.write_text(json.dumps({
+        "template": str(_DEFAULT_TPL.resolve()), "output": "out.hwpx",
+        "parts": {"body": ["src/01.md"]},
+    }), encoding="utf-8")
+    res = build_report(manifest)
+    assert res.figures == 1
+    assert not any("image" in w for w in res.warnings)

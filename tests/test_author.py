@@ -2733,6 +2733,18 @@ def test_literal_options_off_byte_exact_match(tmp_path: Path) -> None:
         assert p1 == p2
 
 
+def test_parse_markdown_literal_bullets_flag() -> None:
+    """Issue #52: raw_text on bullets is only set when literal_bullets=True."""
+    md = "- 첫째\n  - 둘째\n"
+    blocks_off = parse_markdown(md, literal_bullets=False)
+    assert all(b.raw_text == "" for b in blocks_off if b.kind == "bullet")
+    assert [b.text for b in blocks_off if b.kind == "bullet"] == ["첫째", "둘째"]
+
+    blocks_on = parse_markdown(md, literal_bullets=True)
+    assert [b.raw_text for b in blocks_on if b.kind == "bullet"] == ["- 첫째", "- 둘째"]
+    assert [b.text for b in blocks_on if b.kind == "bullet"] == ["첫째", "둘째"]
+
+
 def test_cli_literal_flags(tmp_path: Path) -> None:
     """Issue #52: CLI write and build correctly handle literal numbering and bullets flags."""
     import json

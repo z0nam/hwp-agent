@@ -99,10 +99,9 @@ _HH = "http://www.hancom.co.kr/hwpml/2011/head"
 _HC = "http://www.hancom.co.kr/hwpml/2011/core"
 _HS = "http://www.hancom.co.kr/hwpml/2011/section"
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_BULLET_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
 _BULLET_CHARS = r"[-*+■□▣◼￭▪◾●○⦁•◦–—―−·ㆍ]"
-_DEFAULT_BULLET_RE = re.compile(r"^(\s*)([-*])\s+(.*)$")
 _LITERAL_BULLET_RE = re.compile(rf"^(\s*)({_BULLET_CHARS})\s+(.*)$")
-_BULLET_RE = _DEFAULT_BULLET_RE
 # a thematic break / horizontal rule: 3+ of -, *, or _ (optionally spaced), alone
 # on a line. No pipes, so it never clashes with a `|---|` table delimiter.
 _RULE_RE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
@@ -602,7 +601,7 @@ def parse_markdown(
             emit(Block("paragraph", 0, " ".join(para)))
             para.clear()
 
-    bullet_re = _LITERAL_BULLET_RE if literal_bullets else _DEFAULT_BULLET_RE
+    bullet_re = _LITERAL_BULLET_RE if literal_bullets else _BULLET_RE
     lines = markdown.splitlines()
     i = 0
     while i < len(lines):
@@ -691,9 +690,12 @@ def parse_markdown(
         elif m := bullet_re.match(line):
             flush()
             level = len(m.group(1).expandtabs(2)) // 2 + 1
-            item_text = m.group(3).strip()
-            raw_text = f"{m.group(2)} {item_text}"
-            emit(Block("bullet", level, item_text, raw_text=raw_text))
+            if literal_bullets:
+                item_text = m.group(3).strip()
+                raw_text = f"{m.group(2)} {item_text}"
+                emit(Block("bullet", level, item_text, raw_text=raw_text))
+            else:
+                emit(Block("bullet", level, m.group(2).strip()))
         else:
             para.append(line.strip())
         i += 1
@@ -2601,6 +2603,7 @@ def fill_from_markdown(
         if literal_bullets and block.kind == "bullet":
             body_style_id = roles.get("BODY")
             style_id = body_style_id
+            role = "BODY"
             base_char = doc.style(style_id).char_pr_id_ref if style_id is not None else None
             text = block.raw_text or block.text
             if bullet_levels:

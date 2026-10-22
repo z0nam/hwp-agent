@@ -148,7 +148,7 @@ def _build():
     except ModuleNotFoundError as exc:  # pragma: no cover - import guard
         raise SystemExit(
             'the MCP server needs the "mcp" package. Install it with:\n'
-            '  pip install "hwp-agent[mcp]"   (or: uv pip install "mcp>=1.2")'
+            '  pip install "hwp-agent[mcp]"   (or: uv pip install "mcp>=1.2,<2")'
         ) from exc
 
     from .ops import extract_markdown

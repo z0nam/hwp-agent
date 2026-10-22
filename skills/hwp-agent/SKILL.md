@@ -20,12 +20,16 @@ The original `.hwp` is the source of truth and is **never modified**. The
 
 ## Prerequisites
 
-- `hwp-agent` installed (the CLI). Verify with `hwp-agent --version`.
-- To convert `.hwp` → `.hwpx`, the converter jar must be built
-  (`./scripts/bootstrap.sh`, needs JDK 17+ & Maven). Editing existing `.hwpx`
-  needs no jar.
-- If `hwp-agent` is not on PATH, run it from the repo via the project venv:
-  `.venv/bin/hwp-agent …`.
+- **As a Claude plugin** (Claude Desktop Cowork/Code tab, Claude Code): the
+  plugin starts the `hwp-agent` MCP server itself (needs `uv` on PATH). Prefer
+  its tools (`convert_hwp_to_hwpx`, `analyze_form_slots`, `fill_form_slots`,
+  `extract_to_markdown`, …) when they cover the step.
+- **CLI** (Codex, Hermes, terminal): `hwp-agent` on PATH. Verify with
+  `hwp-agent --version`. Install with `uv tool install hwp-agent` from this repo
+  or the Windows installer `hwp-agent-setup.exe`.
+- `.hwp` → `.hwpx` conversion needs Java 17+ and the converter jar. Fetch the jar
+  once with `hwp-agent setup` (the Windows installer bundles both). Editing an
+  existing `.hwpx` needs neither.
 
 ## The authoring loop
 

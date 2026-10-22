@@ -1052,6 +1052,7 @@ def _cmd_write(args: argparse.Namespace) -> int:
         blue_links=getattr(args, "blue_links", False),
         math=getattr(args, "math", True),
         link_align=getattr(args, "link_align", "auto"),
+        base_dir=Path(args.md).parent,
     )
     if getattr(args, "fit_tails", False):
         from ..ops import apply_tail_fits
@@ -1070,6 +1071,8 @@ def _cmd_write(args: argparse.Namespace) -> int:
         print(f"  linked {result.links} URL(s) as hyperlink fields")
     if result.equations:
         print(f"  converted {result.equations} LaTeX math span(s) to equations")
+    if result.figures:
+        print(f"  placed {result.figures} figure(s)")
     if result.instructions_removed:
         print(f"  removed {result.instructions_removed} instruction paragraph(s)")
     if result.unmapped_roles:
@@ -1132,6 +1135,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
         print(f"  linked {result.links} URL(s) as hyperlink fields")
     if result.equations:
         print(f"  converted {result.equations} LaTeX math span(s) to equations")
+    if result.figures:
+        print(f"  placed {result.figures} figure(s)")
     if wings is not None and wings.count:
         print(f"  set the side wing (쪽날개) of {wings.count} chapter(s)")
     if result.unmapped_roles:

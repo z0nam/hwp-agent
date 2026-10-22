@@ -33,6 +33,19 @@ from pathlib import Path
 from hwpx.document import HwpxDocument
 
 from .equation import equation_run_xml, latex_to_hwp, math_pieces, unescape_dollars
+from .figures import (
+    FigureBlock,
+    add_bin_image,
+    body_height,
+    borderless_fill,
+    centered_para_pr,
+    figure_parts,
+    fit_extent,
+    load_image,
+    parse_figure_line,
+    picture_xml,
+    rebase_figure_paths,
+)
 from .form import extract_placeholders
 from .links import (
     _escape_xml,
@@ -180,6 +193,7 @@ class AuthorResult:
     target_section: int = -1  # index of the section the content went into
     links: int = 0  # hyperlink fields created ([text](url) / bare URLs)
     equations: int = 0  # equation objects created ($…$ / $$…$$)
+    figures: int = 0  # figure tables created (![alt](path))
     warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -191,6 +205,7 @@ class AuthorResult:
             "target_section": self.target_section,
             "links": self.links,
             "equations": self.equations,
+            "figures": self.figures,
             "warnings": self.warnings,
         }
 
@@ -428,9 +443,16 @@ def _delimiter_aligns(line: str) -> list[str] | None:
 
 
 def _resolve_cross_refs(
-    blocks: list, chapter: str | None, warnings: list[str]
+    blocks: list, chapter: str | None, warnings: list[str], *, figure_start: int = 0
 ) -> None:
     """Resolve `{label:id}` / `{ref:id}` cross-references across the block list.
+
+    Figures (:class:`FigureBlock`) have their **own** sequence, separate from tables
+    (issue #31): the 1×2 table a figure is built as never takes a table number. Each
+    gets ``display = "그림 {chapter}-{N}"`` (``"그림 N"`` without a chapter), counted
+    after *figure_start* figures already in the document, and a ``{#fig_X}`` anchor
+    registers that text so ``{ref:fig_X}`` resolves to it. The caption is built from
+    the same ``display``, so caption and reference always agree.
 
     Every :class:`TableBlock` is numbered in document order (1-based). A
     ``{label:id}`` in a table's caption registers that table's autonum text
@@ -444,9 +466,19 @@ def _resolve_cross_refs(
     """
     labels: dict[str, str] = {}
     table_seq = 0
+    figure_seq = figure_start
     fmt = (lambda n: f"표 {chapter}-{n}") if chapter else (lambda n: f"표 {n}")
+    fig_fmt = (lambda n: f"그림 {chapter}-{n}") if chapter else (lambda n: f"그림 {n}")
     for b in blocks:
-        if isinstance(b, TableBlock) and b.caption:
+        if isinstance(b, FigureBlock):
+            figure_seq += 1
+            b.display = fig_fmt(figure_seq)
+            if b.label:
+                if b.label in labels:
+                    warnings.append(f"duplicate {{#{b.label}}}; first wins")
+                else:
+                    labels[b.label] = b.display
+        elif isinstance(b, TableBlock) and b.caption:
             table_seq += 1
             for lid in _LABEL_RE.findall(b.caption):
                 if lid in labels:
@@ -474,7 +506,10 @@ def _resolve_cross_refs(
         return _REF_RE.sub(sub, text)
 
     for b in blocks:
-        if isinstance(b, TableBlock):
+        if isinstance(b, FigureBlock):
+            b.alt = resolve(b.alt) or b.alt
+            b.note = resolve(b.note)
+        elif isinstance(b, TableBlock):
             b.caption = resolve(b.caption)
             b.note = resolve(b.note)
             b.rows = [[resolve(c) or "" for c in r] for r in b.rows]
@@ -528,7 +563,9 @@ def _bullet_render_text(block: Block, role: str, info) -> str:
     return f"{glyph} {block.text}" if glyph else block.text
 
 
-def parse_markdown(markdown: str, *, math: bool = True) -> list[Block | TableBlock]:
+def parse_markdown(
+    markdown: str, *, math: bool = True
+) -> list[Block | TableBlock | FigureBlock]:
     """Parse Markdown into headings, paragraphs, bullets, ordered lists, and tables.
 
     With *math*, a ``$$ … $$`` block standing alone (one line or spread over
@@ -537,14 +574,18 @@ def parse_markdown(markdown: str, *, math: bool = True) -> list[Block | TableBlo
     Inline ``**bold**`` / ``*italic*`` markers are kept in ``Block.text`` and
     resolved into runs at fill time via :func:`inline_segments`. Pipe tables
     (header row + ``|---|`` delimiter + body rows) become :class:`TableBlock`.
+
+    An image on a line of its own (``![alt](path){#fig_X}``) becomes a
+    :class:`FigureBlock`; the 주)/출처)/자료) lines directly under it are its note
+    (they go in the figure's lower cell, like a table's note row).
     """
     markdown = mask_escapes(markdown, math=math)
     markdown = _HTML_COMMENT_RE.sub("", markdown)
-    blocks: list[Block | TableBlock] = []
+    blocks: list[Block | TableBlock | FigureBlock] = []
     para: list[str] = []
     pending_blanks = 0  # blank lines seen since the last emitted block
 
-    def emit(block: Block | TableBlock) -> None:
+    def emit(block: Block | TableBlock | FigureBlock) -> None:
         # stamp the run of blank lines that preceded this block, then consume it —
         # so a blank line before a heading attaches to that heading (see fill_from_
         # markdown's contextual spacing rule).
@@ -612,6 +653,16 @@ def parse_markdown(markdown: str, *, math: bool = True) -> list[Block | TableBlo
                 src, i = latex
                 emit(Block("math", 0, src))
                 continue
+        if (fig := parse_figure_line(line)) is not None:
+            flush()
+            i += 1
+            note_lines = []
+            while i < len(lines) and _NOTE_RE.match(lines[i]):
+                note_lines.append(lines[i].strip())
+                i += 1
+            fig.note = "\n".join(note_lines) or None
+            emit(fig)
+            continue
         if not line.strip():
             flush()
             pending_blanks += 1
@@ -1536,6 +1587,205 @@ def _build_table(
     return table
 
 
+def _find_figure_caption(doc: HwpxDocument):
+    """A detached copy of the ``{{figure_template}}`` picture's caption, if any.
+
+    The figure-template paragraph is the format reference for figure captions
+    (style, paragraph/char properties, side, gap). It is copied **before** fill —
+    the paragraph itself, and the template picture's BinData, are dropped at the
+    end (:func:`_drop_figure_template_paragraphs`), so nothing of the template
+    figure survives into the output.
+    """
+    for section in doc.sections:
+        for p in section.element.iter(f"{{{_HP}}}p"):
+            if not _FIGURE_TOKEN_RE.search("".join(p.itertext())):
+                continue
+            cap = p.find(f".//{{{_HP}}}caption")
+            if cap is not None:
+                return copy.deepcopy(cap)
+    return None
+
+
+def _count_figures(doc: HwpxDocument) -> int:
+    """Figure tables already in the document (earlier ``build`` parts), so the
+    figure sequence continues past them."""
+    return sum(
+        1
+        for s in doc.sections
+        for tbl in s.element.iter(f"{{{_HP}}}tbl")
+        if figure_parts(tbl) is not None
+    )
+
+
+def _figure_caption(
+    cap_src, display: str, title: str, width: int, *,
+    body_style, body_para, body_char, run_writer=None,
+):
+    """Build the ``[그림 Ⅳ-2] title`` caption for a figure table.
+
+    *cap_src* is the caption to take the format from — the figure template's, else
+    the reference table's (house forms without a figure template caption figures in
+    the table-caption style). Its runs are replaced by one ``[그림 …]`` framing run
+    in the source's char, so a table auto-number in the source never ends up here
+    (a figure must not advance Hangul's table count). The title then goes through
+    :func:`_fill_caption_runs` like a table caption, so links and **bold** in it are
+    handled the same way (#54). Without any source, a plain BODY caption is built.
+    """
+    from lxml import etree
+
+    if title:
+        title = _CAPTION_FRAMING_RE.sub("", title, count=1).lstrip()
+    if cap_src is not None:
+        cap = copy.deepcopy(cap_src)
+        paras = cap.findall(f".//{{{_HP}}}p")
+        if not paras:
+            cap_src = None
+    if cap_src is None:
+        c_attr = f' charPrIDRef="{body_char}"' if body_char is not None else ""
+        cap = etree.fromstring(
+            f'<hp:caption xmlns:hp="{_HP}" side="TOP" fullSz="0" width="8504" gap="850" '
+            f'lastWidth="{width}"><hp:subList id="" textDirection="HORIZONTAL" '
+            f'lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" '
+            f'textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">'
+            f'<hp:p id="2147483648" paraPrIDRef="{body_para or 0}" '
+            f'styleIDRef="{body_style or 0}" pageBreak="0" columnBreak="0" merged="0">'
+            f"<hp:run{c_attr}><hp:t/></hp:run></hp:p></hp:subList></hp:caption>"
+        )
+        paras = cap.findall(f".//{{{_HP}}}p")
+    p = paras[0]
+    for extra in paras[1:]:
+        extra.getparent().remove(extra)
+    runs = p.findall(f"{{{_HP}}}run")
+    char = next(
+        (r.get("charPrIDRef") for r in runs if r.find(f"{{{_HP}}}t") is not None),
+        runs[0].get("charPrIDRef") if runs else body_char,
+    )
+    for r in runs:
+        p.remove(r)
+    c_attr = f' charPrIDRef="{char}"' if char is not None else ""
+    p.insert(0, etree.fromstring(
+        f'<hp:run xmlns:hp="{_HP}"{c_attr}><hp:t>[{_escape_xml(display)}]</hp:t></hp:run>'
+    ))
+    cap.set("lastWidth", str(width))
+    _fill_caption_runs(cap, title, run_writer=run_writer)
+    return cap
+
+
+def _build_figure(
+    doc, section, fig: FigureBlock, *, base_dir: Path, cap_src, note_zone,
+    body_style, body_para, body_char, ref_el, para_cache: dict,
+    text_writer=None, run_writer=None, warnings: list[str],
+):
+    """Build *fig* as a 1-column, 2-row borderless table (issue #31).
+
+    Top cell: the picture, scaled to the text width with its aspect kept (capped at
+    80% of the page's text height, so a tall image still fits on one page), in a
+    centred margin-free paragraph. Bottom cell: the note lines, one paragraph each,
+    in the reference table's note style. The image goes in as a **new** BinData
+    part (:func:`add_bin_image`); the table is anchored like generated tables (the
+    reference table's position) and takes a ``[그림 …]`` caption on top.
+
+    A missing or unreadable image keeps the figure (number, caption, note) with a
+    ``[그림 없음: path]`` placeholder in the top cell and a warning, so later figure
+    numbers and ``{ref:…}`` texts don't shift.
+    """
+    from lxml import etree
+
+    tw = _text_width(section) or 42520
+    nofill = borderless_fill(doc)
+    table = doc.add_table(
+        2, 1, section=section, border_fill_id_ref=nofill,
+        style_id_ref=body_style, para_pr_id_ref=body_para,
+    )
+    tel = table.element
+    # Hangul advances its table count for every object numbered as TABLE, caption or
+    # not — so a figure table left at the add_table default pushed the next real
+    # table to <표 Ⅳ-2> while {ref:…} said 표 Ⅳ-1 (hwp2pdf render). Number it as a
+    # picture; the picture inside is NONE so one figure is one figure.
+    tel.set("numberingType", "PICTURE")
+    if ref_el is not None:
+        gen_pos = tel.find(f"{{{_HP}}}pos")
+        ref_pos = ref_el.find(f"{{{_HP}}}pos")
+        if gen_pos is not None and ref_pos is not None:
+            for k, v in ref_pos.attrib.items():
+                gen_pos.set(k, v)
+    _fit_table_width(tel, tw)
+
+    # top cell: the picture
+    pic_cell = table.cell(0, 0)
+    cp = pic_cell.paragraphs[0]
+    if body_style is not None:
+        cp.style_id_ref = body_style
+    centered = centered_para_pr(doc, body_para, para_cache)
+    if centered is not None:
+        cp.para_pr_id_ref = centered
+    cp.clear_text()
+    src = Path(fig.path).expanduser()
+    if not src.is_absolute():
+        src = base_dir / src
+    try:
+        img = load_image(src)
+    except ValueError as exc:
+        warnings.append(f"{fig.display}: {exc} — placeholder left in the figure")
+        cp.add_run(f"[그림 없음: {fig.path}]", char_pr_id_ref=body_char)
+        pic_h = None
+    else:
+        item_id = add_bin_image(doc, img.data, img.ext)
+        page_h = body_height(section)
+        w, pic_h = fit_extent(img.px_w, img.px_h, tw, int(page_h * 0.8) if page_h else None)
+        try:
+            name = str(src.resolve().relative_to(base_dir.resolve()))
+        except ValueError:
+            name = fig.path
+        lsa = cp.element.find(f"{{{_HP}}}linesegarray")
+        run = etree.fromstring(picture_xml(
+            item_id, img, w, pic_h, char_pr=body_char, source_name=name, label=fig.label,
+        ))
+        if lsa is not None:
+            lsa.addprevious(run)
+        else:
+            cp.element.append(run)
+    pic_sz = pic_cell.element.find(f"{{{_HP}}}cellSz")
+    if pic_sz is not None and pic_h:
+        pic_sz.set("height", str(pic_h))
+
+    # bottom cell: 출처/주, one paragraph per line
+    zone = copy.copy(note_zone) if note_zone is not None else Zone()
+    zone.left_bf = zone.mid_bf = zone.right_bf = nofill
+    if zone.style is None:
+        zone.style, zone.para, zone.char = body_style, body_para, body_char
+    lines = fig.note.split("\n") if fig.note else [""]
+    note_cell = table.cell(1, 0)
+    _style_cell(note_cell, zone, 0, 1, lines[0], text_writer)
+    first_p = note_cell.paragraphs[0].element
+    for line in lines[1:]:
+        extra = copy.deepcopy(first_p)
+        for child in list(extra):
+            extra.remove(child)
+        extra.set("id", "0")
+        first_p.getparent().append(extra)
+        adapter = _CaptionParaAdapter(extra)
+        if text_writer is not None:
+            text_writer(adapter, plain_text(line), zone.char, zone.char)
+        else:
+            adapter.add_run(plain_text(line), char_pr_id_ref=zone.char)
+    note_sz = note_cell.element.find(f"{{{_HP}}}cellSz")
+    seed = zone.height if zone.height and int(zone.height or 0) > 0 else None
+    if note_sz is not None:
+        note_sz.set("height", seed or str(int(CHAR_W * 1.6)))
+    for tc in tel.iter(f"{{{_HP}}}tc"):
+        tc.set("borderFillIDRef", nofill)
+
+    cap = _figure_caption(
+        cap_src, fig.display, fig.alt, tw, body_style=body_style, body_para=body_para,
+        body_char=body_char, run_writer=run_writer,
+    )
+    tel.find(f"{{{_HP}}}tr").addprevious(cap)
+    _grow_rows_for_content(tel, [[""], ["\n".join(lines)]])
+    _fit_table_height(tel)
+    return table
+
+
 def _lineseg_index(doc: HwpxDocument) -> dict[str, object]:
     """Map styleIDRef → a deep-copied ``<hp:linesegarray>`` from a real paragraph.
 
@@ -1830,6 +2080,7 @@ def fill_from_markdown(
     blue_links: bool = False,
     math: bool = True,
     link_align: str = "auto",
+    base_dir: Path | str | None = None,
 ) -> AuthorResult:
     """Fill a template from Markdown, styled with its own outline styles.
 
@@ -1853,7 +2104,15 @@ def fill_from_markdown(
     ``math`` (default on) turns ``$…$`` (inline) and standalone ``$$…$$`` (display)
     LaTeX into Hangul equation objects (issue #5); off keeps them as text.
     Display equations take the template's 「수식」 style when it has one, else BODY.
+
+    A standalone image line ``![alt](path){#fig_X}`` becomes a figure (issue #31):
+    a borderless 1×2 table with the picture on top and the 주/출처 lines under the
+    image line in the lower cell, captioned ``[그림 {chapter}-N] alt`` and numbered
+    apart from tables; ``{ref:fig_X}`` resolves to ``그림 {chapter}-N``. Relative
+    image paths are read from *base_dir* (default: the current directory; the CLI
+    passes the Markdown file's folder).
     """
+    base_path = Path(base_dir) if base_dir is not None else Path.cwd()
     roles = role_map(template)
     infos = {i.style_id: i for i in read_style_system(template)}
     def _levels(prefix: str) -> list[int]:
@@ -1920,6 +2179,13 @@ def fill_from_markdown(
         _table_format(ref_element, _char_height_lookup(doc))
         if ref_element is not None else None
     )
+
+    # figure captions copy the {{figure_template}} picture's caption, else the
+    # reference table's caption style (copied now: both are dropped at the end)
+    figure_cap_src = _find_figure_caption(doc)
+    if figure_cap_src is None and ref_element_copy is not None:
+        figure_cap_src = ref_element_copy.find(f"{{{_HP}}}caption")
+    figure_para_cache: dict[str, str] = {}
 
     # headings need a linesegarray cloned from a real same-style heading, or Hangul
     # demotes the 2nd+ authored heading to body (see docs/author-backlog.md item C)
@@ -2130,7 +2396,9 @@ def fill_from_markdown(
         return str(chapter_count) if chapter_count else None
 
     blocks = parse_markdown(markdown, math=math)
-    _resolve_cross_refs(blocks, chapter_label(), result.warnings)
+    _resolve_cross_refs(
+        blocks, chapter_label(), result.warnings, figure_start=_count_figures(doc)
+    )
     if any(isinstance(b, TableBlock) for b in blocks) and not designated:
         result.warnings.append(
             "no {{table…}} token found — generated tables use "
@@ -2178,6 +2446,21 @@ def fill_from_markdown(
         prev_block = block  # remembered for the next block's hug check
         if gap_needed:
             _emit_heading_gap(block)
+
+        if isinstance(block, FigureBlock):
+            table = _build_figure(
+                doc, target_section, block, base_dir=base_path,
+                cap_src=figure_cap_src,
+                note_zone=table_fmt.note if table_fmt is not None else None,
+                body_style=body_style, body_para=body_para,
+                body_char=doc.style(body_style).char_pr_id_ref if body_style else None,
+                ref_el=ref_element_copy, para_cache=figure_para_cache,
+                text_writer=write_text, run_writer=add_runs, warnings=result.warnings,
+            )
+            place(table.paragraph.element)
+            result.placed += 1
+            result.figures += 1
+            continue
 
         if isinstance(block, TableBlock):
             table = _build_table(
@@ -2358,6 +2641,7 @@ def fill_sections(
     blue_links: bool = False,
     math: bool = True,
     link_align: str = "auto",
+    base_dir: Path | str | None = None,
 ) -> AuthorResult:
     """Fill several named markers, each from its own Markdown part.
 
@@ -2393,8 +2677,10 @@ def fill_sections(
                 blue_links=blue_links,
                 math=math,
                 link_align=link_align,
+                base_dir=base_dir,
             )
             agg.placed += res.placed
+            agg.figures += res.figures
             agg.links += res.links
             agg.equations += res.equations
             agg.instructions_removed += res.instructions_removed
@@ -2477,8 +2763,13 @@ def build_report(
         files = parts_cfg[name]
         if isinstance(files, str):
             files = [files]
+        # each file names its images relative to its own folder; rebase before
+        # joining (paths that don't exist there fall back to the manifest folder)
         md = "\n\n".join(
-            Path(_resolve(f)).read_text(encoding="utf-8") for f in files
+            rebase_figure_paths(
+                Path(_resolve(f)).read_text(encoding="utf-8"), Path(_resolve(f)).parent
+            )
+            for f in files
         )
         parts.append(("{{" + name + "}}", md))
     if not parts:
@@ -2498,4 +2789,5 @@ def build_report(
         blue_links=data.get("blue_links", False) if blue_links is None else blue_links,
         math=data.get("math", True) if math is None else math,
         link_align=data.get("link_align", "auto") if link_align is None else link_align,
+        base_dir=base,
     )

@@ -31,7 +31,7 @@ import string
 _PUNCT = set(string.punctuation)
 
 
-def mask_escapes(text: str) -> str:
+def mask_escapes(text: str, *, math: bool = True) -> str:
     r"""Mask CommonMark backslash-escaped ASCII punctuation with private-use characters.
 
     CommonMark rule: backslash followed by an ASCII punctuation character
@@ -41,6 +41,7 @@ def mask_escapes(text: str) -> str:
 
     Backslash followed by a non-punctuation character (e.g. C:\Users, \n) is kept.
     Inside code spans (`...`), backslashes are preserved verbatim and not unescaped.
+    With *math*, LaTeX commands inside math spans ($...$, $$...$$) are preserved.
     """
     i = 0
     n = len(text)
@@ -69,7 +70,7 @@ def mask_escapes(text: str) -> str:
             else:
                 out.append(fence)
                 i = j
-        elif ch == "$":
+        elif math and ch == "$":
             # Display math $$...$$
             if i + 1 < n and text[i + 1] == "$":
                 close_idx = text.find("$$", i + 2)
@@ -78,16 +79,12 @@ def mask_escapes(text: str) -> str:
                     i = close_idx + 2
                     continue
             # Inline math $...$
-            if (
-                i + 1 < n
-                and text[i + 1] not in (" ", "\t", "\n", "$")
-                and not text[i + 1].isdigit()
-            ):
+            if i + 1 < n and text[i + 1] not in (" ", "\t", "\n", "$"):
                 newline_idx = text.find("\n", i + 1)
                 k = i + 1
                 found_close = -1
                 while k < n and (newline_idx == -1 or k < newline_idx):
-                    if text[k] == "$" and text[k - 1] != "\\":
+                    if text[k] == "$" and text[k - 1] != "\\" and text[k - 1] not in (" ", "\t"):
                         if k + 1 >= n or (text[k + 1] != "$" and not text[k + 1].isdigit()):
                             found_close = k
                             break

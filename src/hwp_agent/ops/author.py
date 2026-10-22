@@ -252,14 +252,16 @@ _FOOTNOTE_REF_RE = re.compile(r"\[\^([^\]\s]+)\]")
 _FOOTNOTE_DEF_RE = re.compile(r"^\[\^([^\]\s]+)\]:[ \t]?(.*)$")
 
 
-def extract_footnote_defs(markdown: str) -> tuple[str, dict[str, str]]:
+def extract_footnote_defs(
+    markdown: str, *, math: bool = True
+) -> tuple[str, dict[str, str]]:
     """Split ``[^id]: text`` definition lines out of *markdown*.
 
     Returns ``(body_markdown_without_definitions, {id: text})``. A definition's
     continuation lines (indented, non-blank) are folded into one note text, matching
     pandoc. The ``[^id]`` references stay in the body text — they are turned into
     footnote controls at run-emit time, each looked up in the returned map."""
-    markdown = mask_escapes(markdown)
+    markdown = mask_escapes(markdown, math=math)
     defs: dict[str, str] = {}
     out: list[str] = []
     lines = markdown.split("\n")
@@ -536,7 +538,7 @@ def parse_markdown(markdown: str, *, math: bool = True) -> list[Block | TableBlo
     resolved into runs at fill time via :func:`inline_segments`. Pipe tables
     (header row + ``|---|`` delimiter + body rows) become :class:`TableBlock`.
     """
-    markdown = mask_escapes(markdown)
+    markdown = mask_escapes(markdown, math=math)
     markdown = _HTML_COMMENT_RE.sub("", markdown)
     blocks: list[Block | TableBlock] = []
     para: list[str] = []
@@ -1881,7 +1883,7 @@ def fill_from_markdown(
 
     # pull Markdown footnote definitions ([^id]: …) out of the body; the [^id]
     # references stay in the text and become Hangul footnote controls at emit time.
-    markdown, fn_defs = extract_footnote_defs(markdown)
+    markdown, fn_defs = extract_footnote_defs(markdown, math=math)
 
     # strip AI:INSTRUCTION paragraphs (directions, not content)
     inst_style = roles.get(INSTRUCTION)

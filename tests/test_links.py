@@ -570,10 +570,18 @@ def test_mask_escapes_preserves_math_spans() -> None:
     inline_math = r"$x \, y \_ z$"
     assert mask_escapes(inline_math) == inline_math
 
+    # Digit-leading inline math (Codex review finding)
+    digit_math = r"$5 \, x$"
+    assert mask_escapes(digit_math) == digit_math
+
     mixed = r"\- 하이픈과 $a \\ b$ 수식"
     m = mask_escapes(mixed)
     assert r"$a \\ b$" in m
     assert chr(0xE100 + ord("-")) in m
+
+    # When math conversion is disabled (math=False), $ is treated as regular text
+    no_math = r"$x \_ y$"
+    assert unmask_escapes(mask_escapes(no_math, math=False)) == "$x _ y$"
 
 
 def test_link_pieces_unmasks_destination_url() -> None:

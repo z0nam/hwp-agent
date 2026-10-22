@@ -26,6 +26,64 @@ from __future__ import annotations
 import itertools
 import random
 import re
+import string
+
+_PUNCT = set(string.punctuation)
+
+
+def mask_escapes(text: str) -> str:
+    r"""Mask CommonMark backslash-escaped ASCII punctuation with private-use characters.
+
+    CommonMark rule: backslash followed by an ASCII punctuation character
+    (! " # $ % & ' ( ) * + , - . / : ; < = > ? @ [ \ ] ^ _ ` { | } ~) represents
+    that literal character and does not trigger Markdown formatting (headings,
+    bullets, ordered lists, pipe tables, bold/italic, links, etc.).
+
+    Backslash followed by a non-punctuation character (e.g. C:\Users, \n) is kept.
+    Inside code spans (`...`), backslashes are preserved verbatim and not unescaped.
+    """
+    i = 0
+    n = len(text)
+    out: list[str] = []
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            if i + 1 < n and text[i + 1] in _PUNCT:
+                out.append(chr(0xE100 + ord(text[i + 1])))
+                i += 2
+            else:
+                out.append("\\")
+                i += 1
+        elif ch == "`":
+            # Count opening backticks
+            j = i
+            while j < n and text[j] == "`":
+                j += 1
+            fence_len = j - i
+            fence = "`" * fence_len
+            close_idx = text.find(fence, j)
+            if close_idx != -1:
+                # Code span: keep verbatim without unescaping backslashes
+                out.append(text[i : close_idx + fence_len])
+                i = close_idx + fence_len
+            else:
+                out.append(fence)
+                i = j
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def unmask_escapes(text: str) -> str:
+    """Restore private-use characters mapped by :func:`mask_escapes` to ASCII punctuation."""
+    if not text:
+        return text
+    return "".join(
+        chr(ord(c) - 0xE100) if 0xE121 <= ord(c) <= 0xE17E else c
+        for c in text
+    )
+
 
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 
@@ -85,11 +143,12 @@ def _trim_url(url: str) -> str:
     return url
 
 
-def link_pieces(text: str) -> list[tuple[str, str | None]]:
+def link_pieces(text: str, *, unmask: bool = True) -> list[tuple[str, str | None]]:
     """Split *text* into ``(text, url)`` pieces; ``url`` is None for plain text.
 
     ``[표시](https://…)`` → ``("표시", "https://…")``; a bare URL links to itself.
     Text without links comes back as a single plain piece."""
+    text = mask_escapes(text)
     pieces: list[tuple[str, str | None]] = []
 
     def plain(s: str) -> None:
@@ -122,7 +181,10 @@ def link_pieces(text: str) -> list[tuple[str, str | None]]:
             merged[-1] = (merged[-1][0] + t, None)
         else:
             merged.append((t, u))
+    if unmask:
+        return [(unmask_escapes(t), u) for t, u in merged] or [(unmask_escapes(text), None)]
     return merged or [(text, None)]
+
 
 
 def has_links(text: str) -> bool:

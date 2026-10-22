@@ -16,8 +16,10 @@ from hwp_agent.ops.links import (
     audit_links,
     command_for_url,
     link_pieces,
+    mask_escapes,
     rendered_text,
     should_left_align,
+    unmask_escapes,
     url_from_command,
 )
 
@@ -519,5 +521,45 @@ def test_table_caption_links_and_formatting(tmp_path: Path) -> None:
     for cap in captions:
         auto_nums = cap.findall(f".//{_HP}autoNum[@numType='TABLE']")
         assert len(auto_nums) == 1
+
+
+# --------------------------------------------------------------------------- #
+# backslash escapes (issue #52)
+# --------------------------------------------------------------------------- #
+def test_mask_escapes_commonmark_ascii_punctuation() -> None:
+    puncts = r"!\"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"
+    for p in puncts:
+        src = f"\\{p}"
+        m = mask_escapes(src)
+        assert m == chr(0xE100 + ord(p)), f"failed for {p}"
+        assert unmask_escapes(m) == p
+
+    # non-punctuation preserved
+    assert unmask_escapes(mask_escapes(r"C:\Users\x")) == r"C:\Users\x"
+    assert unmask_escapes(mask_escapes(r"\n 새줄")) == r"\n 새줄"
+
+    # code spans preserve backslashes verbatim
+    code_sample = r"코드 `\-` 와 `` `\*` `` 는 그대로"
+    assert unmask_escapes(mask_escapes(code_sample)) == code_sample
+
+
+def test_link_pieces_escaped_brackets() -> None:
+    # Escaped opening bracket does not become a markdown link [text](url);
+    # instead [text]( stays plain text and the URL inside parens is autolinked.
+    res = link_pieces(r"\[제주연구원\](https://www.jri.re.kr) 참고")
+    assert res == [
+        ("[제주연구원](", None),
+        ("https://www.jri.re.kr", "https://www.jri.re.kr"),
+        (") 참고", None),
+    ]
+
+    # Without escape, it is a Markdown link
+    res_unescaped = link_pieces("[제주연구원](https://www.jri.re.kr) 참고")
+    assert res_unescaped == [("제주연구원", "https://www.jri.re.kr"), (" 참고", None)]
+
+    # Escaped characters inside link label are unescaped
+    res2 = link_pieces(r"[제주 \*연구원\*](https://www.jri.re.kr)")
+    assert res2 == [("제주 *연구원*", "https://www.jri.re.kr")]
+
 
 

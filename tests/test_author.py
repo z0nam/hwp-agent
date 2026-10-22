@@ -2410,6 +2410,88 @@ def test_neutralize_reference_table_caption_token_split_across_multiple_t() -> N
     assert "<표 1> {{table_template:sample}}" == cap_txt
 
 
+# --------------------------------------------------------------------------- #
+# backslash escapes (issue #52)
+# --------------------------------------------------------------------------- #
+def test_parse_markdown_escaped_blocks() -> None:
+    from hwp_agent.ops.author import Block
+
+    md = (
+        "\\- 하이픈 문단\n\n"
+        "\\* 별표 문단\n\n"
+        "\\# 샵 문단\n\n"
+        "1\\. 숫자 문단\n\n"
+        "- 일반 불릿\n\n"
+        "# 일반 제목\n\n"
+        "| 열1 | 열2 |\n"
+        "|---|---|\n"
+        "| a \\| b | c |\n"
+    )
+    blocks = parse_markdown(md)
+    kinds = [b.kind for b in blocks if isinstance(b, Block)]
+    assert kinds == [
+        "paragraph",
+        "paragraph",
+        "paragraph",
+        "paragraph",
+        "bullet",
+        "heading",
+    ]
+
+    tbl = [b for b in blocks if isinstance(b, TableBlock)][0]
+    assert len(tbl.rows[1]) == 2
+    from hwp_agent.ops.links import unmask_escapes
+    assert unmask_escapes(tbl.rows[1][0]) == "a | b"
+    assert unmask_escapes(tbl.rows[1][1]) == "c"
+
+
+def test_inline_segments_escaped_emphasis() -> None:
+    segs = inline_segments(r"본문 \*굵게 아님\* 과 **굵게**")
+    from hwp_agent.ops.links import unmask_escapes
+    plain_parts = [unmask_escapes(s.text) for s in segs if not s.bold and not s.italic]
+    bold_parts = [unmask_escapes(s.text) for s in segs if s.bold]
+    assert "*굵게 아님*" in "".join(plain_parts)
+    assert bold_parts == ["굵게"]
+
+
+def test_fill_from_markdown_escapes(tmp_path: Path) -> None:
+    out = tmp_path / "escapes.hwpx"
+    md = (
+        r"\- 하이픈 문단" + "\n\n"
+        r"\* 별표 문단" + "\n\n"
+        r"\# 샵 문단" + "\n\n"
+        r"1\. 숫자 문단" + "\n\n"
+        r"본문 \*굵게 아님\* 과 **굵게**[^1]" + "\n\n"
+        r"경로 C:\Users\x 는 그대로" + "\n\n"
+        r"코드 `\-` 는 그대로" + "\n\n\n"
+        r"| 열1 | 열2 |" + "\n"
+        r"|---|---|" + "\n"
+        r"| a \| b | c |" + "\n\n"
+        r"[^1]: 각주 안 \-" + "\n"
+    )
+    tpl = REPO_ROOT / "src" / "hwp_agent" / "assets" / "default-template.hwpx"
+    fill_from_markdown(tpl, md, output=out)
+    from hwpx.document import HwpxDocument
+    doc = HwpxDocument.open(str(out))
+    all_texts = []
+    for p in doc.paragraphs:
+        ts = [t.text for t in p.element.findall(f".//{_HP}t") if t.text]
+        if ts:
+            all_texts.append("".join(ts))
+
+    assert any(t == "- 하이픈 문단" for t in all_texts)
+    assert any(t == "* 별표 문단" for t in all_texts)
+    assert any(t == "# 샵 문단" for t in all_texts)
+    assert any(t == "1. 숫자 문단" for t in all_texts)
+    assert any("본문 *굵게 아님* 과" in t for t in all_texts)
+    assert any(t == r"경로 C:\Users\x 는 그대로" for t in all_texts)
+    assert any("코드 `\\-` 는 그대로" in t for t in all_texts)
+    assert any("a | b" in t for t in all_texts)
+    assert any("각주 안 -" in t for t in all_texts)
+
+
+
+
 
 
 

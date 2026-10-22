@@ -39,8 +39,10 @@ from .links import (
     link_inner_xml,
     link_pieces,
     link_run_xml,
+    mask_escapes,
     rendered_text,
     should_left_align,
+    unmask_escapes,
 )
 from .styles import INSTRUCTION, bullet_glyph_name, read_style_system, role_map
 from .tablewidth import CHAR_W, compute_column_widths
@@ -218,6 +220,7 @@ def inline_segments(text: str) -> list[Segment]:
 
     Math spans (``$…$``) are opaque here — they stay verbatim inside a segment and
     become equation objects at emit time."""
+    text = mask_escapes(text)
     text, spans = _mask_math(text)
     segments: list[Segment] = []
     pos = 0
@@ -256,6 +259,7 @@ def extract_footnote_defs(markdown: str) -> tuple[str, dict[str, str]]:
     continuation lines (indented, non-blank) are folded into one note text, matching
     pandoc. The ``[^id]`` references stay in the body text — they are turned into
     footnote controls at run-emit time, each looked up in the returned map."""
+    markdown = mask_escapes(markdown)
     defs: dict[str, str] = {}
     out: list[str] = []
     lines = markdown.split("\n")
@@ -371,8 +375,8 @@ def _build_footnote_run(
     l_char = link_char if link_char is not None else fn_char
     l_attr = f' charPrIDRef="{attr(l_char)}"' if l_char is not None else ""
     rest = "".join(
-        f"<hp:run{l_attr}>{link_inner_xml(t, u)}</hp:run>" if u is not None
-        else f"<hp:run{p_char}><hp:t>{_xml_escape(t)}</hp:t></hp:run>"
+        f"<hp:run{l_attr}>{link_inner_xml(unmask_escapes(t), u)}</hp:run>" if u is not None
+        else f"<hp:run{p_char}><hp:t>{_xml_escape(unmask_escapes(t))}</hp:t></hp:run>"
         for t, u in pieces
     )
     xml = (
@@ -386,7 +390,7 @@ def _build_footnote_run(
         f'<hp:run{p_char}>'
         f'<hp:ctrl><hp:autoNum num="{number}" numType="FOOTNOTE">'
         f"<hp:autoNumFormat{fmt_attrs}/></hp:autoNum></hp:ctrl>"
-        f"<hp:t>{_xml_escape(first)}</hp:t></hp:run>{rest}"
+        f"<hp:t>{_xml_escape(unmask_escapes(first))}</hp:t></hp:run>{rest}"
         f"</hp:p></hp:subList></hp:footNote></hp:ctrl></hp:run>"
     )
     return etree.fromstring(xml)
@@ -397,6 +401,7 @@ def _split_table_row(line: str) -> list[str]:
 
     A ``|`` inside ``$…$`` math (``\\left| x \\right|``) is part of the formula,
     not a column break."""
+    line = mask_escapes(line)
     s, spans = _mask_math(line.strip())
     if s.startswith("|"):
         s = s[1:]
@@ -531,6 +536,7 @@ def parse_markdown(markdown: str, *, math: bool = True) -> list[Block | TableBlo
     resolved into runs at fill time via :func:`inline_segments`. Pipe tables
     (header row + ``|---|`` delimiter + body rows) become :class:`TableBlock`.
     """
+    markdown = mask_escapes(markdown)
     markdown = _HTML_COMMENT_RE.sub("", markdown)
     blocks: list[Block | TableBlock] = []
     para: list[str] = []
@@ -1103,7 +1109,7 @@ class _CaptionParaAdapter:
         from lxml import etree
 
         c_attr = f' charPrIDRef="{char_pr_id_ref}"' if char_pr_id_ref is not None else ""
-        esc = _escape_xml(text)
+        esc = _escape_xml(unmask_escapes(text))
         run = etree.fromstring(f'<hp:run xmlns:hp="{_HP}"{c_attr}><hp:t>{esc}</hp:t></hp:run>')
         self.element.append(run)
         return run
@@ -1135,7 +1141,7 @@ def _fill_caption_runs(
         return
 
     if run_writer is None:
-        texts[-1].text = f"{framing} {title}".strip()
+        texts[-1].text = unmask_escapes(f"{framing} {title}".strip())
         return
 
     texts[-1].text = f"{framing} " if framing else ""
@@ -1143,7 +1149,7 @@ def _fill_caption_runs(
     base_char = base_run.get("charPrIDRef") if base_run is not None else None
     p_el = base_run.getparent() if base_run is not None else cap_el.find(f".//{{{_HP}}}p")
     if p_el is None:
-        texts[-1].text = f"{framing} {title}".strip()
+        texts[-1].text = unmask_escapes(f"{framing} {title}".strip())
         return
 
     lsa = p_el.find(f"{{{_HP}}}linesegarray")
@@ -1229,7 +1235,7 @@ def _style_cell(
     if text_writer is not None:  # resolves [^id] footnote references in the cell
         text_writer(cp, plain_text(text), zone.char, zone.char)
     else:
-        cp.add_run(plain_text(text), char_pr_id_ref=zone.char)
+        cp.add_run(unmask_escapes(plain_text(text)), char_pr_id_ref=zone.char)
 
 
 def _text_width(section) -> int | None:
@@ -1972,20 +1978,21 @@ def fill_from_markdown(
     def emit_link(para, label: str, url: str, char) -> None:
         from lxml import etree
 
-        para.element.append(etree.fromstring(link_run_xml(label, url, link_char(char))))
+        xml = link_run_xml(unmask_escapes(label), url, link_char(char))
+        para.element.append(etree.fromstring(xml))
         result.links += 1
 
     def emit_text(para, s: str, char) -> None:
         """Add *s* as a run, with each link in it as a hyperlink-field run."""
-        pieces = link_pieces(s) if links else [(s, None)]
+        pieces = link_pieces(s, unmask=False) if links else [(s, None)]
         if all(u is None for _, u in pieces):
-            para.add_run(s, char_pr_id_ref=char)
+            para.add_run(unmask_escapes(s), char_pr_id_ref=char)
             return
 
         for t, u in pieces:
             if u is None:
                 if t:
-                    para.add_run(t, char_pr_id_ref=char)
+                    para.add_run(unmask_escapes(t), char_pr_id_ref=char)
             else:
                 emit_link(para, t, u, char)
         if pieces[-1][1] is not None:
@@ -2020,7 +2027,7 @@ def fill_from_markdown(
         if not math:
             write_plain(para, text, char, ref_char)
             return
-        lp = link_pieces(text) if links else [(text, None)]
+        lp = link_pieces(text, unmask=False) if links else [(text, None)]
         if any(u is not None and "$" in t + u for t, u in lp):
             # a link holding a $: links first, so math never splits it apart — a link
             # is one field run, and math in its label stays text (an equation can't

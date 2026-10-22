@@ -32,6 +32,25 @@ jobs:
             -Uri "https://github.com/z0nam/hwp-agent/releases/download/converter-jar/hwp2hwpx.jar" `
             -OutFile "vendor/hwp2hwpx.jar"
 
+      # 소스의 버전은 0.0.0+dev 다. 태그로 빌드할 때만 태그 값(v 뗀 것, 예 2026.10.22.1 —
+      # PEP 440·Inno 4자리 모두 유효)을 찍어 exe·설치기 --version 이 릴리스 번호를 말하게 한다.
+      - name: Stamp version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}".Substring(1)
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          function Stamp($path, $pattern, $repl) {
+            $text = [IO.File]::ReadAllText($path)
+            $new = [regex]::Replace($text, $pattern, $repl, 'Multiline')
+            if ($new -eq $text) { throw "버전 자리를 못 찾음: $path" }
+            [IO.File]::WriteAllText($path, $new, $utf8)
+          }
+          Stamp pyproject.toml '^version = ".*"' "version = `"$v`""
+          Stamp src/hwp_agent/__init__.py '^__version__ = ".*"' "__version__ = `"$v`""
+          Stamp installer/hwp-agent.iss '^#define AppVer ".*"' "#define AppVer `"$v`""
+          Write-Host "version $v"
+
       - name: Install package + MCP + PyInstaller
         shell: pwsh
         run: |

@@ -2,8 +2,9 @@ name: Build Windows exe
 
 # Builds a standalone hwp-agent.exe (no Python needed by the user) with the
 # converter jar bundled inside, and publishes it to the "windows-exe" release.
-# Run manually from the Actions tab, when you push a tag like v0.1.0, or from calver.yml
-# (which dispatches it for each automatic date tag vYYYY.MM.DD.N).
+# Runs from calver.yml (dispatched for each automatic date tag vYYYY.MM.DD.N) or when you push
+# a v* tag. Only tag runs stamp the version and publish; a manual run on a branch just builds
+# and uploads the workflow artifact (pick a tag in "Use workflow from" to republish).
 
 on:
   workflow_dispatch:
@@ -113,7 +114,10 @@ jobs:
             dist/hwp-agent.exe
             installer/Output/hwp-agent-setup.exe
 
+      # Only a tag build publishes. A manual run on a branch carries the 0.0.0+dev version,
+      # so it stops at the workflow artifact above instead of replacing the public release.
       - name: Publish to the windows-exe release
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

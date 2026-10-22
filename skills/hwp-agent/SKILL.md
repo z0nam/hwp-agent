@@ -25,7 +25,7 @@ The original `.hwp` is the source of truth and is **never modified**. The
   its tools (`convert_hwp_to_hwpx`, `analyze_form_slots`, `fill_form_slots`,
   `extract_to_markdown`, …) when they cover the step.
 - **CLI** (Codex, Hermes, terminal): `hwp-agent` on PATH. Verify with
-  `hwp-agent --version`. Install with `uv tool install hwp-agent` from this repo
+  `hwp-agent --version`. Install with `uv tool install git+https://github.com/z0nam/hwp-agent` (pin a release with `...hwp-agent@v0.2.0`; not on PyPI)
   or the Windows installer `hwp-agent-setup.exe`.
 - `.hwp` → `.hwpx` conversion needs Java 17+ and the converter jar. Fetch the jar
   once with `hwp-agent setup` (the Windows installer bundles both). Editing an

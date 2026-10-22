@@ -17,7 +17,10 @@ v1 scope is deliberately small:
 * inline emphasis (run-level **bold** / *italic*) is **not** detected — runs come
   out as plain text. Worth doing once an extracted draft actually needs it.
 * images: a ``<hp:pic>`` is emitted as the paragraph's caption text only; the
-  image bytes aren't extracted (use ``hwp-agent image list`` for that).
+  image bytes aren't extracted (use ``hwp-agent image list`` for that). A figure
+  table built by ``write`` (issue #31) comes back as ``![title](path){#fig_X}`` —
+  the source path and anchor ``write`` recorded in the picture's alt text — with its
+  출처/주 lines under it.
 * body-only mode (``body_only=True``) skips the front matter (cover, TOC, …) by
   dropping everything before the first level-1 heading.
 * footnotes: each ``<hp:footNote>`` becomes a ``[^n]`` reference at its position and
@@ -37,6 +40,7 @@ from pathlib import Path
 from hwpx.document import HwpxDocument
 
 from .equation import math_pieces
+from .figures import FIGURE_FRAMING_RE, figure_parts, figure_source
 from .links import hyperlink_url
 from .styles import role_map
 
@@ -57,7 +61,10 @@ def extract_markdown(path: str | Path, *, body_only: bool = False) -> str:
             tbl = paragraph.element.find(f".//{{{_HP}}}tbl")
             if tbl is not None:
                 if started:
-                    _emit_table(lines, tbl, notes)
+                    if (fig := figure_parts(tbl)) is not None:
+                        _emit_figure(lines, tbl, fig[0], notes)
+                    else:
+                        _emit_table(lines, tbl, notes)
                 continue
             role, level = _classify(paragraph, doc, role_of)
             if body_only and not started:
@@ -319,6 +326,34 @@ def _emit_table(lines: list[str], tbl, notes: list[str] | None = None) -> None:
     lines.append("|" + "|".join(["---"] * col_cnt) + "|")
     for row in grid[1:]:
         lines.append(row_md(row))
+    lines.append("")
+
+
+def _emit_figure(lines: list[str], tbl, pic, notes: list[str]) -> None:
+    """A ``write`` figure table as ``![title](path){#id}`` + its note lines.
+
+    The inverse of the figure path in ``write``: the caption minus its ``[그림 …]``
+    framing is the alt text (links in it come back as ``[text](url)``), the path and
+    ``{#id}`` come from the picture's alt text, and each paragraph of the lower cell
+    is one 출처/주 line directly under the image line.
+    """
+    cap = tbl.find(f"{{{_HP}}}caption")
+    title = " ".join(
+        _p_text(p, notes, deep=True).strip() for p in cap.iter(f"{{{_HP}}}p")
+    ).strip() if cap is not None else ""
+    title = FIGURE_FRAMING_RE.sub("", title, count=1).strip()
+    path, label = figure_source(pic)
+    path = path or ""
+    if any(c.isspace() for c in path) or ")" in path:
+        path = f"<{path}>"
+    anchor = f"{{#{label}}}" if label else ""
+    lines.append(f"![{title}]({path}){anchor}")
+    rows = tbl.findall(f"{{{_HP}}}tr")
+    for tr in rows[1:]:
+        for p in tr.iter(f"{{{_HP}}}p"):
+            text = _p_text(p, notes, deep=True).strip()
+            if text:
+                lines.append(text)
     lines.append("")
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import zipfile
 from pathlib import Path
 
@@ -204,7 +205,10 @@ def test_toc_links_are_not_urls_and_pairs_match() -> None:
     well-formed field pairs for check."""
     assert not [i for i in audit_package(TOC_LINKS) if i.kind == "field"]
     md = extract_markdown(TOC_LINKS)
-    assert "](" not in md
+    # no [text](url) link; this report's figures (1×2 tables, #31) do come back as
+    # ![title](file) image lines, which are not links
+    assert not re.search(r"(?<!!)\[[^\]]*\]\(", md)
+    assert "![다층 인공신경망의 구조](DNN_structure.png)" in md
 
 
 def test_audit_reports_broken_pair() -> None:

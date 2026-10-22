@@ -1,7 +1,7 @@
 {
   "name": "hwp-agent",
   "displayName": "HWP 편집 (hwp-agent)",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "HWP/HWPX 문서를 DOCX 왕복 없이 원본 형식 그대로 변환·서식 채우기·작성·추출한다.",
   "author": { "name": "Namun Cho", "url": "https://github.com/z0nam" },
   "homepage": "https://github.com/z0nam/hwp-agent",

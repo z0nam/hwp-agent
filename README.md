@@ -101,7 +101,10 @@ in Hangul (e.g. a fresh `write` output), and `pdf`/`docx`. hwp-agent picks, in o
 
 1. **hwp2pdf** — Hangul itself, through the conversion server of the separate
    [hwp2pdf](https://github.com/z0nam/hwp2pdf) project (`hwp2pdf serve`, Windows +
-   Hancom Office). Exact. DOCX needs it.
+   Hancom Office). Exact. DOCX needs it. Hangul may save a long document with only
+   its first pages laid out; `fit tails` then judges the remaining paragraphs with
+   rhwp and reports the split (e.g. `문단 한글 22 · rhwp 57`). Without rhwp they are
+   left unjudged and the result says `일부만 판정` rather than "no targets".
 2. **rhwp** — a stand-alone renderer. Runs anywhere, but its line breaks can
    differ from Hangul's; results are labelled `rhwp 조판 기준(한글과 다를 수 있음)`.
 3. **none** — `fit tails` prints `판정 엔진 없음` with the reason for each engine

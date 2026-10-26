@@ -268,7 +268,7 @@ def build_mapping(
             column_labels |= {normalize_label(k) for k in _COLUMNS[section]}
 
     for slot in spec.slots:
-        if slot.kind not in ("cell", "placeholder"):
+        if slot.kind not in ("cell", "placeholder", "label"):
             continue
         key = slot.cell_path or slot.locator
         label = normalize_label(slot.name)

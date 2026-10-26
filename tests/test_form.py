@@ -267,3 +267,111 @@ def test_autofit_min_width_pins_column(tmp_path: Path) -> None:
     s = autofit_table(_EXAMPLE, 0, min_widths={0: 20000}, output=tmp_path / "af2.hwpx")
     assert s["new_widths"][0] >= 20000  # the pinned floor is honoured
     assert sum(s["new_widths"]) == s["total"]
+
+
+def _make_label_slots_fixture(path: Path) -> Path:
+    from hwpx.document import HwpxDocument
+
+    doc = HwpxDocument.new()
+    doc.add_table(1, 1)
+
+    sec_obj = doc.sections[0]
+    sec = sec_obj.element
+    ps = sec.findall(q("p"))
+    p_tbl = ps[1]
+    tbl_idx = list(sec).index(p_tbl)
+
+    def _make_p(text: str, is_empty: bool = False):
+        p = etree.Element(q("p"), {"paraPrIDRef": "0", "styleIDRef": "0"})
+        run = etree.SubElement(p, q("run"), {"charPrIDRef": "0"})
+        if not is_empty:
+            t = etree.SubElement(run, q("t"))
+            t.text = text
+        return p
+
+    before_labels = [
+        _make_p("□ 과제유형 : "),
+        _make_p("□ 과 제 명 : "),
+        _make_p("□ 과제책임 : "),
+        _make_p("□ 과제기간 :     .   .   . ~     .   .   ."),
+        _make_p("□ 변경사항 :"),
+    ]
+    for offset, p in enumerate(before_labels):
+        sec.insert(tbl_idx + offset, p)
+
+    after_labels = [
+        _make_p("□ 변경사유 :"),
+        _make_p("", is_empty=True),
+        _make_p("□ 동의함"),
+    ]
+    for p in after_labels:
+        sec.append(p)
+
+    sec_obj.mark_dirty()
+    doc.save_to_path(str(path))
+    return path
+
+
+def test_label_and_section_slots_analysis_and_fill(tmp_path: Path) -> None:
+    """Issue #66: label: and section: discovery, checkbox false positives fixed."""
+    fixture_path = _make_label_slots_fixture(tmp_path / "label_form.hwpx")
+    spec = analyze_form(fixture_path)
+
+    by_kind: dict[str, list] = {}
+    for s in spec.slots:
+        by_kind.setdefault(s.kind, []).append(s)
+
+    labels = {s.locator: s for s in by_kind.get("label", [])}
+    assert "label:과제유형" in labels
+    assert "label:과 제 명" in labels  # preserves raw label with whitespace
+    assert "label:과제책임" in labels
+    assert "label:과제기간" in labels
+    assert labels["label:과제기간"].current == ".   .   . ~     .   .   ."
+
+    sections = {s.locator: s for s in by_kind.get("section", [])}
+    assert "section:변경사유" in sections
+    assert "section:변경사항" not in sections  # table header is not a section slot
+    assert "label:변경사항" not in labels
+
+    # Checkbox false positives: label lines must not be classified as checkboxes
+    checkboxes = {s.locator: s for s in by_kind.get("checkbox", [])}
+    assert "checkbox:동의함" in checkboxes
+    assert "checkbox:과제유형" not in checkboxes
+    assert "checkbox:과" not in checkboxes
+    assert "checkbox:과 제 명" not in checkboxes
+    assert "checkbox:변경사항" not in checkboxes
+    assert "checkbox:변경사유" not in checkboxes
+
+    # Fill test: support whitespace-insensitive matching (label:과제명 -> 과 제 명)
+    out_path = tmp_path / "filled.hwpx"
+    res = fill_form(
+        fixture_path,
+        {
+            "label:과제유형": "일반",
+            "label:과제명": "제주 생태 연구",
+            "label:과제책임": "홍길동",
+            "label:과제기간": "2026. 3. 1. ~ 2026. 12. 31.",
+            "section:변경사유": "- 사유 1: 환경 변화\n- 사유 2: 예산 조정",
+            "checkbox:동의함": "on",
+        },
+        output=out_path,
+    )
+    assert not res.missing
+    assert len(res.filled) == 6
+
+    # Verify filled content
+    from hwpx.document import HwpxDocument
+
+    filled_doc = HwpxDocument.open(str(out_path))
+    sec = filled_doc.sections[0].element
+    ps_text = ["".join(p.itertext()) for p in sec.findall(q("p"))]
+
+    assert "□ 과제유형 : 일반" in ps_text
+    assert "□ 과 제 명 : 제주 생태 연구" in ps_text
+    assert "□ 과제책임 : 홍길동" in ps_text
+    assert "□ 과제기간 : 2026. 3. 1. ~ 2026. 12. 31." in ps_text
+    assert "□ 변경사항 :" in ps_text
+    assert "□ 변경사유 :" in ps_text
+    assert "- 사유 1: 환경 변화" in ps_text
+    assert "- 사유 2: 예산 조정" in ps_text
+    assert "■ 동의함" in ps_text

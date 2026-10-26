@@ -11,6 +11,9 @@ let an AI (or a saved profile) fill it to fit the form. Slot kinds:
 * **checkbox** — a ``□``/``■`` toggle next to a label (``□ 동의함`` → ``■ 동의함``).
 * **inline** — a tab-separated field where the value is the ``.tail`` of an
   ``<hp:tab>`` inside an ``<hp:t>`` (e.g. 보안각서 "소속  ____" lines).
+* **label** — a paragraph label followed by a value on the same line (e.g. ``□ 과 제 명 : ____``).
+* **section** — empty paragraphs directly following a section label paragraph
+  (e.g. ``□ 변경사유 :``).
 
 Table navigation reuses python-hwpx's span-aware logical grid (so merged cells
 and nested tables resolve correctly), then edits the located ``<hp:tc>`` lxml
@@ -37,6 +40,12 @@ PLACEHOLDER_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
 CHECKBOX_OFF, CHECKBOX_ON = "□", "■"
 _CHECKBOX_PAIRS = ((CHECKBOX_OFF, CHECKBOX_ON), ("☐", "☑"), ("◻", "◼"))
+_SYMBOL_CHARS = r"□■○●\-\–\—ㆍ·\*"
+_LABEL_LINE_RE = re.compile(
+    r"^[\s]*["
+    + _SYMBOL_CHARS
+    + r"]?\s*(?P<raw_label>[^:：\n]+?)\s*[:：](?P<tail>[\s.~·\-년월일]*)$"
+)
 # Map a human direction onto python-hwpx's grid directions.
 _DIR_NORM = {
     "right": "right",
@@ -64,7 +73,7 @@ class FormSlot:
     """One fillable position in a form."""
 
     name: str  # placeholder name, label-cell text, checkbox/inline label
-    kind: str  # "placeholder" | "cell" | "checkbox" | "inline"
+    kind: str  # "placeholder" | "cell" | "checkbox" | "inline" | "label" | "section"
     locator: str  # fill key: "{{name}}" / "<label> > right" / "checkbox:.." / "tab:.."
     current: str = ""  # current target text ("" for an empty/template slot)
     table_index: int | None = None
@@ -876,6 +885,13 @@ def _checkbox_slots(roots) -> list[FormSlot]:
                     after = txt[idx + 1 :].strip()
                     before = txt[:idx].strip()
                     if after:  # "□ 동의함" — label follows the glyph
+                        if ":" in after or "：" in after:
+                            colon_idx = (
+                                after.find(":") if ":" in after else after.find("：")
+                            )
+                            tail = after[colon_idx + 1 :]
+                            if re.fullmatch(r"[\s.~·\-년월일]*", tail):
+                                continue
                         label = after.split()[0]
                     elif before:  # "…동의합니다. □" — label precedes the glyph
                         label = before.split()[-1].strip(".·,)：:")
@@ -911,6 +927,195 @@ def _inline_slots(roots) -> list[FormSlot]:
     return slots
 
 
+def _label_and_section_slots(roots) -> list[FormSlot]:
+    slots: list[FormSlot] = []
+    seen: set[str] = set()
+    for root in roots:
+        ps = root.findall(q("p"))
+        n = len(ps)
+        for i, p in enumerate(ps):
+            if p.find(f".//{q('tbl')}") is not None:
+                continue
+            full_text = "".join(p.itertext()).strip()
+            if not full_text:
+                continue
+            m = _LABEL_LINE_RE.match(full_text)
+            if not m:
+                continue
+            raw_label = m.group("raw_label").strip()
+            if not raw_label:
+                continue
+            tail = (m.group("tail") or "").strip()
+
+            # If followed immediately by a table, it's a table caption/header,
+            # not a section/label slot
+            if i + 1 < n and ps[i + 1].find(f".//{q('tbl')}") is not None:
+                continue
+
+            # Count consecutive empty paragraphs
+            empty_count = 0
+            j = i + 1
+            while j < n:
+                pj = ps[j]
+                if pj.find(f".//{q('tbl')}") is not None:
+                    break
+                if "".join(pj.itertext()).strip():
+                    break
+                empty_count += 1
+                j += 1
+
+            if empty_count >= 1:
+                loc = f"section:{raw_label}"
+                if loc not in seen:
+                    seen.add(loc)
+                    slots.append(
+                        FormSlot(
+                            name=raw_label,
+                            kind="section",
+                            locator=loc,
+                            current="",
+                        )
+                    )
+            else:
+                loc = f"label:{raw_label}"
+                if loc not in seen:
+                    seen.add(loc)
+                    slots.append(
+                        FormSlot(
+                            name=raw_label,
+                            kind="label",
+                            locator=loc,
+                            current=tail,
+                        )
+                    )
+    return slots
+
+
+def _norm_slot_label(s: str) -> str:
+    """Normalize label for matching by stripping whitespace."""
+    return re.sub(r"\s+", "", s)
+
+
+def _set_label_slot(roots, target_label: str, value: str) -> bool:
+    target_norm = _norm_slot_label(target_label)
+    for root in roots:
+        ps = root.findall(q("p"))
+        for p in ps:
+            if p.find(f".//{q('tbl')}") is not None:
+                continue
+            full_text = "".join(p.itertext()).strip()
+            m = _LABEL_LINE_RE.match(full_text)
+            if not m:
+                continue
+            raw_label = m.group("raw_label").strip()
+            if _norm_slot_label(raw_label) != target_norm:
+                continue
+
+            runs = p.findall(q("run"))
+            colon_t = None
+            colon_idx = -1
+            target_run_idx = -1
+            for r_idx, run in enumerate(runs):
+                for t in run.findall(q("t")):
+                    txt = t.text or ""
+                    c = txt.find(":")
+                    if c < 0:
+                        c = txt.find("：")
+                    if c >= 0:
+                        colon_t = t
+                        colon_idx = c
+                        target_run_idx = r_idx
+                        break
+                if colon_t is not None:
+                    break
+
+            if colon_t is None:
+                continue
+
+            prefix = colon_t.text[: colon_idx + 1]
+            colon_t.text = f"{prefix} {value}"
+
+            for extra_run in runs[target_run_idx + 1 :]:
+                p.remove(extra_run)
+
+            for lsa in p.findall(q("linesegarray")):
+                p.remove(lsa)
+
+            return True
+    return False
+
+
+def _set_section_slot(roots, target_label: str, value: str) -> bool:
+    target_norm = _norm_slot_label(target_label)
+    for root in roots:
+        ps = root.findall(q("p"))
+        for i, p in enumerate(ps):
+            if p.find(f".//{q('tbl')}") is not None:
+                continue
+            full_text = "".join(p.itertext()).strip()
+            m = _LABEL_LINE_RE.match(full_text)
+            if not m:
+                continue
+            raw_label = m.group("raw_label").strip()
+            if _norm_slot_label(raw_label) != target_norm:
+                continue
+
+            empty_ps = []
+            j = i + 1
+            while j < len(ps):
+                pj = ps[j]
+                if pj.find(f".//{q('tbl')}") is not None:
+                    break
+                if "".join(pj.itertext()).strip():
+                    break
+                empty_ps.append(pj)
+                j += 1
+
+            if not empty_ps:
+                return False
+
+            template_p = empty_ps[0]
+            first_run = template_p.find(q("run"))
+            char_pr_id = (
+                first_run.get("charPrIDRef") if first_run is not None else None
+            )
+
+            lines = value.splitlines() if value else [""]
+            if not lines:
+                lines = [""]
+
+            new_ps = []
+            for line in lines:
+                np = copy.deepcopy(template_p)
+                for lsa in np.findall(q("linesegarray")):
+                    np.remove(lsa)
+                runs = np.findall(q("run"))
+                for r in runs[1:]:
+                    np.remove(r)
+                if runs:
+                    r0 = runs[0]
+                    for child in list(r0):
+                        r0.remove(child)
+                    t = _sub(r0, q("t"))
+                    t.text = line
+                else:
+                    r0 = _sub(np, q("run"))
+                    if char_pr_id is not None:
+                        r0.set("charPrIDRef", char_pr_id)
+                    t = _sub(r0, q("t"))
+                    t.text = line
+                new_ps.append(np)
+
+            insert_idx = list(root).index(p) + 1
+            for ep in empty_ps:
+                root.remove(ep)
+            for k, np in enumerate(new_ps):
+                root.insert(insert_idx + k, np)
+
+            return True
+    return False
+
+
 def _roots(doc: HwpxDocument):
     return [s.element for s in doc.sections]
 
@@ -936,6 +1141,7 @@ def analyze_form(hwpx_path: Path | str, *, precise: bool = True) -> FormSpec:
     slots.extend(_label_cell_slots(doc, precise=precise))
     slots.extend(_checkbox_slots(roots))
     slots.extend(_inline_slots(roots))
+    slots.extend(_label_and_section_slots(roots))
     return FormSpec(slots=slots)
 
 
@@ -974,12 +1180,28 @@ def _apply_one(
             return False
         return _set_tab_tail(t, value, occurrence=int(occ) if occ else 0)
 
+    if key.startswith("label:"):
+        return _set_label_slot(roots, key[len("label:") :], value)
+
+    if key.startswith("section:"):
+        return _set_section_slot(roots, key[len("section:") :], value)
+
     if " > " in key:  # "<label> > right|below|left|above"
         label, _, direction = key.partition(" > ")
         tc = _locate_label_cell(doc, label, direction)
         return _set_cell_text_overwrite(tc, value) if tc is not None else False
 
     slot = by_name.get(key)
+    if slot is None:
+        key_norm = _norm_slot_label(key)
+        for s in by_name.values():
+            if (
+                _norm_slot_label(s.name) == key_norm
+                or _norm_slot_label(s.locator) == key_norm
+            ):
+                slot = s
+                break
+
     if slot is not None and slot.kind == "placeholder":
         return _replace_text_everywhere(roots, slot.locator, value) > 0
     if slot is not None and slot.kind == "cell":
@@ -994,6 +1216,10 @@ def _apply_one(
     if slot is not None and slot.kind == "inline":
         t = _resolve_tab_anchor(roots, slot.name)
         return _set_tab_tail(t, value) if t is not None else False
+    if slot is not None and slot.kind == "label":
+        return _set_label_slot(roots, slot.name, value)
+    if slot is not None and slot.kind == "section":
+        return _set_section_slot(roots, slot.name, value)
 
     # last resort: treat the key as a placeholder token
     return _replace_text_everywhere(roots, f"{{{{{key}}}}}", value) > 0
@@ -1053,6 +1279,8 @@ def fill_form(
     * ``"cell:<table>:<row>:<col>"`` — a cell by address,
     * ``"checkbox:<label>"`` with value ``on``/``off``,
     * ``"tab:<anchor>[:occurrence]"`` — an inline tab-tail field,
+    * ``"label:<label>"`` — a paragraph label whose colon-tail value is overwritten,
+    * ``"section:<label>"`` — multiline narrative filling empty paragraphs under a label,
     * a ``{{placeholder}}`` name.
 
     Unrecognized / non-matching keys are reported in ``missing``.

@@ -46,6 +46,11 @@ _LABEL_LINE_RE = re.compile(
     + _SYMBOL_CHARS
     + r"]?\s*(?P<raw_label>[^:：\n]+?)\s*[:：](?P<tail>[\s.~·\-년월일]*)$"
 )
+_LABEL_LINE_MATCH_RE = re.compile(
+    r"^[\s]*["
+    + _SYMBOL_CHARS
+    + r"]?\s*(?P<raw_label>[^:：\n]+?)\s*[:：](?P<tail>.*)$"
+)
 # Map a human direction onto python-hwpx's grid directions.
 _DIR_NORM = {
     "right": "right",
@@ -927,6 +932,18 @@ def _inline_slots(roots) -> list[FormSlot]:
     return slots
 
 
+def _is_empty_para(p) -> bool:
+    """True if paragraph contains no text and no visual controls or objects."""
+    if "".join(p.itertext()).strip():
+        return False
+    for tag in (
+        "tbl", "pic", "equation", "container", "ole", "drawObj", "video"
+    ):
+        if p.find(f".//{q(tag)}") is not None:
+            return False
+    return True
+
+
 def _label_and_section_slots(roots) -> list[FormSlot]:
     slots: list[FormSlot] = []
     seen: set[str] = set()
@@ -957,9 +974,7 @@ def _label_and_section_slots(roots) -> list[FormSlot]:
             j = i + 1
             while j < n:
                 pj = ps[j]
-                if pj.find(f".//{q('tbl')}") is not None:
-                    break
-                if "".join(pj.itertext()).strip():
+                if not _is_empty_para(pj):
                     break
                 empty_count += 1
                 j += 1
@@ -1004,7 +1019,7 @@ def _set_label_slot(roots, target_label: str, value: str) -> bool:
             if p.find(f".//{q('tbl')}") is not None:
                 continue
             full_text = "".join(p.itertext()).strip()
-            m = _LABEL_LINE_RE.match(full_text)
+            m = _LABEL_LINE_MATCH_RE.match(full_text)
             if not m:
                 continue
             raw_label = m.group("raw_label").strip()
@@ -1034,6 +1049,14 @@ def _set_label_slot(roots, target_label: str, value: str) -> bool:
 
             prefix = colon_t.text[: colon_idx + 1]
             colon_t.text = f"{prefix} {value}"
+            for ch in list(colon_t):
+                colon_t.remove(ch)
+
+            target_run = runs[target_run_idx]
+            run_children = list(target_run)
+            c_pos = run_children.index(colon_t)
+            for extra in run_children[c_pos + 1 :]:
+                target_run.remove(extra)
 
             for extra_run in runs[target_run_idx + 1 :]:
                 p.remove(extra_run)
@@ -1053,7 +1076,7 @@ def _set_section_slot(roots, target_label: str, value: str) -> bool:
             if p.find(f".//{q('tbl')}") is not None:
                 continue
             full_text = "".join(p.itertext()).strip()
-            m = _LABEL_LINE_RE.match(full_text)
+            m = _LABEL_LINE_MATCH_RE.match(full_text)
             if not m:
                 continue
             raw_label = m.group("raw_label").strip()
@@ -1064,9 +1087,7 @@ def _set_section_slot(roots, target_label: str, value: str) -> bool:
             j = i + 1
             while j < len(ps):
                 pj = ps[j]
-                if pj.find(f".//{q('tbl')}") is not None:
-                    break
-                if "".join(pj.itertext()).strip():
+                if not _is_empty_para(pj):
                     break
                 empty_ps.append(pj)
                 j += 1

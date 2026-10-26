@@ -779,3 +779,18 @@ def test_write_fit_tails_partial_layout(tmp_path: Path, capsys, fake_hwp2pdf, no
     assert ret == 0 and out.is_file()
     assert "일부만 판정" in cap.out and "판정 못함" in cap.out
     assert "줄 배치가 없는 문단" in cap.err
+
+
+def test_partial_layout_unlaunchable_rhwp_keeps_hangul_results(
+    tmp_path: Path, fake_hwp2pdf
+) -> None:
+    # review #67: an rhwp that cannot even start must not lose the Hangul-judged part
+    noexec = tmp_path / "rhwp"
+    noexec.write_text("#!/bin/sh\nexit 0\n")
+    noexec.chmod(0o644)
+    _partial_resave(fake_hwp2pdf, laid_out=3)
+    det = detect_tail_fits_with_engine(_bare(tmp_path), max_chars=4, rhwp_bin=str(noexec))
+    assert det.engine == "hwp2pdf" and det.partial
+    assert det.counts == {"hwp2pdf": 2, "rhwp": 0, "no_layout": 3, "unmatched": 0}
+    assert {c.text_preview[:3] for c in det.candidates} == {"[A]", "[B]"}
+    assert any("판정 못함 — rhwp 실행 실패" in n for n in det.notes)

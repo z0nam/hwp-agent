@@ -800,9 +800,12 @@ def _judge_unlaid_with_rhwp(
         return [], 0, f"{lead}는 판정 못함 — rhwp 없음 — {rhwp_search_desc(rhwp_arg)}"
     if not body:
         return [], 0, f"{lead}는 판정 못함 — 본문 밖(각주) 문단은 rhwp가 문단별로 보고하지 않음"
-    cands = _detect_with_rhwp(
-        src, header_xml, section_blobs, body, rhwp_bin, max_chars, min_spacing, min_ratio
-    )
+    try:
+        cands = _detect_with_rhwp(
+            src, header_xml, section_blobs, body, rhwp_bin, max_chars, min_spacing, min_ratio
+        )
+    except OSError as exc:  # not executable, bad interpreter: keep the Hangul results
+        return [], 0, f"{lead}는 판정 못함 — rhwp 실행 실패 ({rhwp_bin}: {exc.strerror or exc})"
     if cands is None:
         return [], 0, f"{lead}는 판정 못함 — rhwp 실행 실패 ({rhwp_bin} dump-pages)"
     if len(body) == len(unlaid):

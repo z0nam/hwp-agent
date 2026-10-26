@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import zipfile
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -623,3 +624,158 @@ def test_malformed_hwp2pdf_config_falls_through(tmp_path: Path, monkeypatch, no_
     det = detect_tail_fits_with_engine(SAMPLE, max_chars=4)
     assert det.engine == "none"
     assert any("설정 오류" in n for n in det.notes)
+
+
+# --------------------------------------------------------------------------- #
+# #65 hwp2pdf re-save laid out only the first pages: rest judged by rhwp
+# --------------------------------------------------------------------------- #
+def _partial_resave(fake, laid_out: int) -> None:
+    from conftest import resave_with_linesegs
+
+    def convert(data: bytes, fmt: str) -> bytes:
+        return resave_with_linesegs(data, laid_out=laid_out)
+
+    fake.convert = convert
+
+
+def _bare(tmp_path: Path) -> Path:
+    bare = tmp_path / "bare.hwpx"
+    _drop_linesegs(SAMPLE, bare)
+    return bare
+
+
+def test_partial_layout_without_rhwp_reports_partial(
+    tmp_path: Path, fake_hwp2pdf, no_rhwp
+) -> None:
+    _partial_resave(fake_hwp2pdf, laid_out=3)  # [S] [A] [B] laid out; [C] [D] [E] not
+    det = detect_tail_fits_with_engine(_bare(tmp_path), max_chars=4)
+    assert det.engine == "hwp2pdf" and det.judged and det.partial
+    assert det.counts == {"hwp2pdf": 2, "rhwp": 0, "no_layout": 3, "unmatched": 0}
+    assert det.coverage == "한글 2 · 판정 못함 3"
+    assert "한글 2 · 판정 못함 3" in det.engine_label
+    assert {c.text_preview[:3] for c in det.candidates} == {"[A]", "[B]"}
+    assert all(c.engine == "hwp2pdf" for c in det.candidates)
+    assert any("줄 배치가 없는 문단 3개는 판정 못함" in n and "rhwp 없음" in n
+               for n in det.notes)
+
+
+def test_partial_layout_empty_result_is_not_no_tails(
+    tmp_path: Path, fake_hwp2pdf, no_rhwp
+) -> None:
+    # the laid-out paragraph has no tail: must not read as "대상 없음"
+    from conftest import resave_with_linesegs
+
+    fake_hwp2pdf.convert = lambda data, fmt: resave_with_linesegs(data, tail=30, laid_out=2)
+    det = detect_tail_fits_with_engine(_bare(tmp_path), max_chars=4)
+    assert det.candidates == [] and det.partial
+    report = format_tail_fit_report(
+        det.candidates, engine_label=det.engine_label, partial=det.partial
+    )
+    assert "일부만 판정" in report and "대상 없음이 아님" in report
+    assert "대상 문단 없음" not in report
+
+
+def test_partial_layout_rest_judged_by_rhwp(tmp_path: Path, fake_hwp2pdf) -> None:
+    rhwp = resolve_rhwp()
+    if not rhwp:
+        pytest.skip("rhwp CLI not available")
+    bare = _bare(tmp_path)
+    _partial_resave(fake_hwp2pdf, laid_out=3)
+    det = detect_tail_fits_with_engine(bare, max_chars=4)
+    assert det.engine == "hwp2pdf" and not det.partial
+    assert det.counts == {"hwp2pdf": 2, "rhwp": 3, "no_layout": 0, "unmatched": 0}
+    assert det.coverage == "한글 2 · rhwp 3"
+    assert any("문단 3개는 rhwp로 판정" in n for n in det.notes)
+    by_engine = {c.text_preview[:3]: c.engine for c in det.candidates}
+    assert by_engine["[A]"] == by_engine["[B]"] == "hwp2pdf"
+    rhwp_judged = [c for c in det.candidates if c.engine == "rhwp"]
+    assert rhwp_judged
+    # rhwp-judged paragraphs get exactly what the rhwp engine alone measures
+    fake_hwp2pdf.hwp_running = ["777"]
+    alone = detect_tail_fits_with_engine(bare, max_chars=4)
+    assert alone.engine == "rhwp"
+
+    def key(c):
+        return (c.para_index, c.total_lines, c.target_lines, c.target_spacing,
+                c.target_ratio, c.fittable, c.skip_reason)
+
+    assert {key(c) for c in rhwp_judged} == {
+        key(c) for c in alone.candidates if c.para_index in {3, 4, 5}
+    }
+    # and they can be applied together
+    out = tmp_path / "out.hwpx"
+    n = apply_tail_fits(bare, out, candidates=det.candidates)
+    assert n == sum(c.fittable for c in det.candidates) and audit_package(out) == []
+
+
+def test_full_layout_never_calls_rhwp(tmp_path: Path, fake_hwp2pdf) -> None:
+    # regression: a fully laid-out re-save is judged on Hangul alone, as before
+    failing = tmp_path / "rhwp"
+    failing.write_text("#!/bin/sh\necho called >> \"$0.log\"\nexit 1\n")
+    failing.chmod(0o755)
+    det = detect_tail_fits_with_engine(_bare(tmp_path), max_chars=4, rhwp_bin=str(failing))
+    assert det.engine == "hwp2pdf" and not det.partial and det.notes == []
+    assert det.counts == {"hwp2pdf": 5, "rhwp": 0, "no_layout": 0, "unmatched": 0}
+    assert det.coverage == "한글 5"
+    assert not (tmp_path / "rhwp.log").exists()
+    assert all(c.tail_chars == 2 and c.total_lines == 3 for c in det.candidates)
+
+
+def test_text_mismatch_and_missing_layout_counted_apart(
+    tmp_path: Path, fake_hwp2pdf, no_rhwp
+) -> None:
+    from conftest import resave_with_linesegs
+
+    def convert(data: bytes, fmt: str) -> bytes:
+        out = zipfile.ZipFile(BytesIO(resave_with_linesegs(data, laid_out=5)))  # [E] unlaid
+        buf = BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for info in out.infolist():
+                blob = out.read(info.filename)
+                if info.filename == "Contents/section0.xml":
+                    blob = blob.replace(b"[D]", b"[X]")  # no longer matches
+                z.writestr(info, blob)
+        return buf.getvalue()
+
+    fake_hwp2pdf.convert = convert
+    det = detect_tail_fits_with_engine(_bare(tmp_path), max_chars=4)
+    assert det.counts == {"hwp2pdf": 3, "rhwp": 0, "no_layout": 1, "unmatched": 1}
+    assert det.coverage == "한글 3 · 판정 못함 1 · 맞출 수 없음 1"
+    assert any("텍스트가 맞지 않는 문단 1개" in n for n in det.notes)
+    assert any("줄 배치가 없는 문단 1개는 판정 못함" in n for n in det.notes)
+
+
+def test_no_layout_at_all_falls_through(tmp_path: Path, fake_hwp2pdf, no_rhwp) -> None:
+    _partial_resave(fake_hwp2pdf, laid_out=0)
+    det = detect_tail_fits_with_engine(_bare(tmp_path), max_chars=4)
+    assert det.engine == "none"
+    assert any("hwp2pdf 판정 실패" in n and "linesegarray" in n for n in det.notes)
+
+
+def test_cli_fit_tails_partial_json_and_text(
+    tmp_path: Path, capsys, fake_hwp2pdf, no_rhwp
+) -> None:
+    _partial_resave(fake_hwp2pdf, laid_out=3)
+    bare = _bare(tmp_path)
+    assert main(["fit", "tails", str(bare), "--json", "--dry-run"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["engine"] == "hwp2pdf" and data["judged"] is True and data["partial"] is True
+    assert data["paragraphs"] == {"hwp2pdf": 2, "rhwp": 0, "no_layout": 3, "unmatched": 0}
+    assert {c["engine"] for c in data["candidates"]} == {"hwp2pdf"}
+    assert main(["fit", "tails", str(bare), "--dry-run"]) == 0
+    cap = capsys.readouterr()
+    assert "일부만 판정" in cap.out and "한글 2 · 판정 못함 3" in cap.out
+    assert "판정 못함" in cap.err
+
+
+def test_write_fit_tails_partial_layout(tmp_path: Path, capsys, fake_hwp2pdf, no_rhwp) -> None:
+    _partial_resave(fake_hwp2pdf, laid_out=2)
+    para = "지역 공공서비스의 품질을 높이기 위한 방안을 검토함. " * 6
+    md = tmp_path / "content.md"
+    md.write_text(f"# 서론\n\n{para}\n\n{para}\n\n{para}\n", encoding="utf-8")
+    out = tmp_path / "out.hwpx"
+    ret = main(["write", str(md), "-o", str(out), "--fit-tails"])
+    cap = capsys.readouterr()
+    assert ret == 0 and out.is_file()
+    assert "일부만 판정" in cap.out and "판정 못함" in cap.out
+    assert "줄 배치가 없는 문단" in cap.err

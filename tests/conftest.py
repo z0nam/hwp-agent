@@ -33,9 +33,13 @@ def _isolate_hwp2pdf(monkeypatch, tmp_path_factory) -> None:
         monkeypatch.delenv(var, raising=False)
 
 
-def resave_with_linesegs(data: bytes, tail: int = 2) -> bytes:
+def resave_with_linesegs(data: bytes, tail: int = 2, laid_out: int | None = None) -> bytes:
     """Fake "Hangul re-save": give every paragraph lacking a linesegarray a
-    three-line layout whose last line holds ``tail`` characters."""
+    three-line layout whose last line holds ``tail`` characters.
+
+    ``laid_out`` mimics Hangul saving after laying out only the first pages
+    (#65): only the first ``laid_out`` text paragraphs get a layout, the rest
+    are saved with none."""
     from hwp_agent.ops.fit_tails import _HP, _para_text
 
     src = zipfile.ZipFile(BytesIO(data))
@@ -45,9 +49,18 @@ def resave_with_linesegs(data: bytes, tail: int = 2) -> bytes:
             blob = src.read(info.filename)
             if re.search(r"Contents/section\d+\.xml$", info.filename):
                 root = etree.fromstring(blob)
+                seen = 0
                 for p in root.iter(f"{{{_HP}}}p"):
                     text = _para_text(p)
-                    if not text or p.find(f"{{{_HP}}}linesegarray") is not None:
+                    if not text:
+                        continue
+                    seen += 1
+                    if laid_out is not None and seen > laid_out:
+                        lsa = p.find(f"{{{_HP}}}linesegarray")
+                        if lsa is not None:
+                            p.remove(lsa)
+                        continue
+                    if p.find(f"{{{_HP}}}linesegarray") is not None:
                         continue
                     lsa = etree.SubElement(p, f"{{{_HP}}}linesegarray")
                     last = max(len(text) - tail, 2)

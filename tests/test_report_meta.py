@@ -367,3 +367,35 @@ def test_split_front_matter() -> None:
     assert meta == {"title": "A\nB", "co_researchers": ["x 1", "y 2"], "note": "l1\nl2"}
     assert body == "# H\n"
     assert split_front_matter("# no front matter\n---\n") == ({}, "# no front matter\n---\n")
+
+
+@pytest.mark.skipif(not STRATEGY.is_file(), reason="baked house form not present")
+def test_padded_slot_tokens_fill_and_expand(tmp_path: Path) -> None:
+    """``{{ co_researcher }}`` / ``{{ title }}`` written with padding still fill (#69 review)."""
+    tpl = tmp_path / "padded.hwpx"
+    shutil.copyfile(STRATEGY, tpl)
+    doc = HwpxDocument.open(str(tpl))
+    for sec in doc.sections:
+        for t in sec.element.iter(f"{_HP}t"):
+            for slot in ("co_researcher", "title"):
+                if t.text and "{{" + slot + "}}" in t.text:
+                    t.text = t.text.replace("{{" + slot + "}}", "{{ " + slot + " }}")
+        sec.mark_dirty()
+    doc.save_to_path(str(tpl))
+    apply_report_meta(tpl, META, use_profile=False)
+    colophon = _texts(tpl, -1)
+    left = " ".join(residual_tokens(tpl))  # only the never-written {{intro}}/{{body}}… remain
+    assert "co_researcher" not in left and "title" not in left
+    assert "공동연구   갑을병  제주연구원 연구위원" in colophon
+    assert any("정무기" in t for t in colophon)
+    assert "가상 연구의\n두 줄 제목" in _texts(tpl, 0)
+
+
+@pytest.mark.skipif(not STRATEGY.is_file(), reason="baked house form not present")
+def test_preview_text_reflects_filled_cover(tmp_path: Path) -> None:
+    """Preview/PrvText.txt is regenerated after the cover fill (#69 review)."""
+    _, out = _build(tmp_path, META)
+    with zipfile.ZipFile(out) as z:
+        prv = z.read("Preview/PrvText.txt").decode("utf-8")
+    assert "{{" not in prv
+    assert "홍길동" in prv

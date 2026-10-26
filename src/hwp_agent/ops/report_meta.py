@@ -527,6 +527,21 @@ def _expand_co_researchers(doc: HwpxDocument, count: int) -> list[str]:
     return names
 
 
+def _canonicalize_tokens(doc: HwpxDocument) -> None:
+    """Rewrite meta slots written loosely (``{{ co_researcher }}``) as ``{{co_researcher}}``.
+
+    Token discovery tolerates the padding, but the paragraph-level steps (line
+    expansion, dropping) and ``fill_form``'s locators use the exact form."""
+    for sec in doc.sections:
+        for p in sec.element.iter(_hp("p")):
+            for m in RESIDUAL_TOKEN_RE.finditer(_full_text(p)):
+                name = m.group(1).strip()
+                canon = "{{" + name + "}}"
+                if m.group(0) != canon and _slot_parts(name)[0] in META_SLOTS:
+                    if _replace_in_para(p, m.group(0), canon):
+                        sec.mark_dirty()
+
+
 def _drop_slot_paragraphs(doc: HwpxDocument, slot: str) -> int:
     """Remove paragraphs holding nothing but ``{{slot}}`` (an optional slot left
     empty — e.g. no 부제: its blank line would push the 판권 past one page)."""
@@ -610,6 +625,7 @@ def apply_report_meta(
                 "meta.json(--meta) 또는 MD 프런트매터로 채우거나 이후 form fill 로 채우세요"
             )
     elif tokens:
+        _canonicalize_tokens(doc)
         co = norm.get("co_researcher") or []
         has_co = any(_slot_parts(t)[0] == "co_researcher" for t in tokens)
         co_names = _expand_co_researchers(doc, len(co)) if has_co else []
@@ -645,6 +661,11 @@ def apply_report_meta(
             )
         doc = HwpxDocument.open(str(path))
         _newlines_to_breaks(doc)
+        # the body step wrote Preview/PrvText.txt while the cover still read
+        # {{title}}…; regenerate it from the filled document
+        from .author import _update_preview_parts
+
+        _update_preview_parts(doc)
         doc.save_to_path(str(path))
 
     title = (norm.get("title") or "").replace("\n", " ").strip() or (

@@ -18,5 +18,33 @@
       "strip": true,
       "keep_heading": true
     }
-  ]
+  ],
+  "meta_slots": {
+    "_note": "표지·판권 예시 문자열 → 메타 슬롯 (#32). 키는 이 서식 예시에 그대로 있는 문자열(섹션 안에서 정확히 한 문단)이라 서식 개정으로 예시가 바뀌면 굽기가 실패한다 — 그때 키를 새 예시로 고친다. 판권의 '정책연구 2026-00'은 네 서식 공통 예시라 이 서식의 총서명을 기본값으로 둔다. 채움은 build/write --meta (ops/report_meta.py).",
+    "cover": {
+      "section": 0,
+      "replace": {
+        "센터연구 2026-04": "{{report_series:센터연구}} {{report_number}}",
+        "제주 경제전망 2026": "{{title}}",
+        ": 선순환과 악순환의 전환점": "{{subtitle}}",
+        "○○○·△△△": "{{authors}}"
+      }
+    },
+    "colophon": {
+      "section": -1,
+      "replace": {
+        "정책연구 2026-00": "{{report_series:센터연구}} {{report_number}}",
+        "제주 경제전망 2026": "{{title}}",
+        ": 선순환과 악순환의 전환점": "{{subtitle}}",
+        "강영준 제주연구원 연구위원": "{{lead_researcher}}",
+        "윤형석 제주대학교 전기에너지과 산학협력교수": "{{co_researcher}}",
+        "2026년 ○○월": "{{pub_date}}",
+        "유 영 봉": "{{publisher}}",
+        "978-89-6010-000-0 00000": "{{isbn}}"
+      },
+      "append": {
+        "인 쇄 처": "{{printer}}"
+      }
+    }
+  }
 }

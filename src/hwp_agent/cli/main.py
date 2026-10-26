@@ -855,6 +855,8 @@ def _cmd_fit_tails(args: argparse.Namespace) -> int:
             "min_ratio": min_ratio,
             "engine": detection.engine,
             "judged": detection.judged,
+            "partial": detection.partial,
+            "paragraphs": detection.counts,
             "notes": detection.notes,
             "candidates": [c.as_dict() for c in candidates],
             "fittable_count": sum(1 for c in candidates if c.fittable),
@@ -890,6 +892,7 @@ def _cmd_fit_tails(args: argparse.Namespace) -> int:
         min_spacing=min_spacing,
         min_ratio=min_ratio,
         engine_label=detection.engine_label,
+        partial=detection.partial,
     )
     print(report)
 
@@ -938,8 +941,9 @@ def _fit_tails_in_place(path: Path) -> None:
     for note in detection.notes:
         print(f"  note: {note}", file=sys.stderr)
     fitted = apply_tail_fits(path, path, candidates=detection.candidates)
+    partial = " — 일부만 판정" if detection.partial else ""
     print(
-        f"  --fit-tails: {fitted} paragraph widow tail(s) fitted "
+        f"  --fit-tails: {fitted} paragraph widow tail(s) fitted{partial} "
         f"[판정: {detection.engine_label}]"
     )
 

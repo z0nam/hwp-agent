@@ -345,7 +345,7 @@ wheels = [
 
 [[package]]
 name = "hwp-agent"
-version = "0.2.1"
+version = "0.0.0+dev"
 source = { editable = "." }
 dependencies = [
     { name = "python-hwpx" },

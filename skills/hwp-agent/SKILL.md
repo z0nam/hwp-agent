@@ -297,6 +297,47 @@ table** with the picture on top (scaled to the text width, aspect kept, capped a
   via `--chapter`. `{{chapter_number=3}}` **forces** a value inline (wins over
   `--chapter`) — a worst-case override.
 
+### Cover / colophon metadata (표지·판권) — `--meta` or front matter
+
+The baked JI house forms (`examples/house-forms/{정책,전략,기반,센터}과제_서식.normalized.hwpx`)
+carry `{{title}}`·`{{report_number}}`·`{{lead_researcher}}`·`{{pub_date}}`·`{{isbn}}`…
+on the 표지 and 판권. `build` (and `write`) fill them after the body is placed,
+from `"meta": "meta.json"` in the manifest, `--meta meta.json`, or a `---` front
+matter block at the top of a Markdown file (stripped from the body; flat
+`key: value`, `key:` + `- item` lists, `key: |` blocks — Korean keys like `제목`,
+`연구책임`, `공동연구`, `발행일` work too):
+
+```json
+{
+  "title": "제주 관광 수요 전망을 위한\n기초 연구",
+  "report_series": "미래기획연구",
+  "report_number": "2026-01",
+  "lead_researcher": "홍길동  제주연구원 연구위원",
+  "co_lead": [],
+  "co_researchers": ["김갑을  제주연구원 연구위원", "이병정  제주연구원 위촉연구원"],
+  "pub_date": "2026-08",
+  "end_date": "2026-08-31",
+  "printer": "○○인쇄",
+  "isbn": "979-11-00000-00-0   00000"
+}
+```
+
+- `\n` in the title is a line break on the cover. `pub_date` `2026-08` → `2026년 8월`.
+- 앞표지 shows 연구책임 + 공동책임 (`co_lead`) names only (2026 서식); 판권 lists
+  `co_lead` then `co_researchers`, one line each (spacer lines above are removed so
+  판권 stays one page). `authors` overrides the cover line.
+- `publisher` (발행인) defaults from `end_date` — the 원장 on the project's end date
+  (≤2026-10-05 유영봉, ≥2026-10-06 강창민; source `agent-rules/docs/ji-facts.md`).
+- `report_series` defaults to the form's own series (`{{report_series:전략연구}}`).
+- Missing values: with metadata given, an empty slot is **blanked** (never left
+  as `{{…}}`) and missing required ones (title, report_number, lead_researcher,
+  pub_date, publisher, isbn) are listed in a warning. With **no** metadata at all,
+  the slots stay for a later `form fill` and one warning names them.
+- `content.hpf` 문서 정보: `opf:title` ← meta title (else the Markdown's first
+  heading); `creator` ← meta `creator`, else the 연구책임 name, else `--author`,
+  else the `name` in `~/.config/hwp-agent/profile.json` (nothing else is read
+  from the profile — personal data is never cover metadata).
+
 ### Tables (Markdown pipe tables → HWPX)
 
 - Markdown (GFM) tables are **rectangular only** — no merged cells. For merged
@@ -358,8 +399,8 @@ reference **explicitly**:
 | `hwp-agent form analyze FILE.hwpx --grid [--json]` | list every table cell with its `cell:<t>:<r>:<c>` fill path — use when the cell you want already has text |
 | `hwp-agent form fill FILE.hwpx --set K=V [-o OUT]` | fill slots by name |
 | `hwp-agent form fill FILE.hwpx [--delete-rows cell:T:S-E] [--append-rows cell:T:+N] [--repeat-group cell:T:S-E:+N] --set ...` | restructure table rows first (delete → append/repeat → set), cell formats kept (issue #43) |
-| `hwp-agent write C.md --template FILE.hwpx [--chapter N] [--table-template CAPTION] [--equal-columns] [-o OUT]` | write Markdown into a template (`author` = alias). Generated tables size columns by content by default; `--equal-columns` keeps them equal |
-| `hwp-agent build MANIFEST.json [-o OUT]` | assemble a multi-section report — a JSON manifest maps markers (`summary`/`intro`/`body`/`references`) to Markdown file(s) (a list is concatenated); each part fills its `{{marker}}` in its own section. On forms whose odd-page side wing (쪽날개) is baked into the master-page background picture (JI 과제 forms), each chapter's odd pages get that chapter's HEADING_1 title as a vertical text wing; `"chapter_header": false` in the manifest turns this off |
+| `hwp-agent write C.md --template FILE.hwpx [--chapter N] [--table-template CAPTION] [--equal-columns] [--meta META.json] [--author NAME] [-o OUT]` | write Markdown into a template (`author` = alias). Generated tables size columns by content by default; `--equal-columns` keeps them equal. `--meta`/front matter fills the 표지·판권 slots; sets the document title/creator (see "Cover / colophon metadata") |
+| `hwp-agent build MANIFEST.json [--meta META.json] [--author NAME] [-o OUT]` | assemble a multi-section report — a JSON manifest maps markers (`summary`/`intro`/`body`/`references`) to Markdown file(s) (a list is concatenated); each part fills its `{{marker}}` in its own section. On forms whose odd-page side wing (쪽날개) is baked into the master-page background picture (JI 과제 forms), each chapter's odd pages get that chapter's HEADING_1 title as a vertical text wing; `"chapter_header": false` in the manifest turns this off. Then fills the 표지·판권 slots from `"meta"` / `--meta` / front matter (see "Cover / colophon metadata") |
 | `hwp-agent image list FILE.hwpx [--json]` | list figure image slots (ref, format, px size, caption) |
 | `hwp-agent image replace FILE.hwpx IMG --ref image7 [--fit aspect\|none] [-o OUT]` | swap one figure image in place (`--caption "[그림 …]"` also targets it) |
 | `hwp-agent meta FILE.hwpx [--set K=V]` | read/set document metadata |

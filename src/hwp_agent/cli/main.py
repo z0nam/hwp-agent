@@ -1074,7 +1074,22 @@ def _cmd_write(args: argparse.Namespace) -> int:
         return 2
     if args.template is None:
         print(f"using {describe_template_source(None)} template: {template}")
-    markdown = Path(args.md).read_text(encoding="utf-8")
+    from ..ops.report_meta import (
+        finish_report_meta,
+        first_heading,
+        load_meta,
+        meta_keys,
+        split_front_matter,
+    )
+
+    front, markdown = split_front_matter(Path(args.md).read_text(encoding="utf-8"))
+    front = meta_keys(front)
+    try:
+        meta_file = load_meta(args.meta) if args.meta else {}
+    except (OSError, ValueError) as exc:
+        print(f"error: bad --meta: {exc}", file=sys.stderr)
+        return 2
+    meta = {**front, **meta_file} if (front or args.meta) else None
     # in-place default targets the markdown's stem, never the (possibly shared)
     # template — writing back onto the bundled default would corrupt it.
     default_out = args.output or Path(args.md).with_suffix(".hwpx")
@@ -1098,10 +1113,15 @@ def _cmd_write(args: argparse.Namespace) -> int:
         literal_bullets=getattr(args, "literal_bullets", False),
         base_dir=Path(args.md).parent,
     )
+    finish_report_meta(
+        result, gr.target, meta,
+        fallback_title=first_heading(markdown), author=args.author,
+    )
     if getattr(args, "fit_tails", False):
         _fit_tails_in_place(gr.target)
     _guard_finalize(gr)
     print(f"placed {result.placed} block(s) -> {gr.target}")
+    _print_meta(result.meta)
     if result.links:
         print(f"  linked {result.links} URL(s) as hyperlink fields")
     if result.equations:
@@ -1115,6 +1135,38 @@ def _cmd_write(args: argparse.Namespace) -> int:
     for warning in result.warnings:
         print(f"  warning: {warning}", file=sys.stderr)
     return 0
+
+
+def _print_meta(meta: dict | None) -> None:
+    """One line on the cover/colophon fill and the document properties (#32)."""
+    if not meta:
+        return
+    if meta.get("filled") or meta.get("blank"):
+        line = f"  cover/colophon: filled {len(meta['filled'])} slot(s)"
+        if meta.get("blank"):
+            line += f", blanked {', '.join(meta['blank'])}"
+        print(line)
+    props = [f"{k}={meta[k]!r}" for k in ("title", "creator") if meta.get(k)]
+    if props:
+        print(f"  document info: {', '.join(props)}")
+
+
+def _add_meta_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--meta",
+        type=Path,
+        default=None,
+        metavar="JSON",
+        help="cover/colophon metadata (title, report_number, lead_researcher, "
+        "co_researchers, pub_date, isbn, …) filled into the {{…}} slots; Markdown "
+        "front matter works too. Without either, the slots are left for form fill",
+    )
+    p.add_argument(
+        "--author",
+        default=None,
+        help="document creator (content.hpf) when the metadata names none "
+        "(default: the 연구책임 name, else the profile's name)",
+    )
 
 
 def _cmd_build(args: argparse.Namespace) -> int:
@@ -1146,6 +1198,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
             link_align=getattr(args, "link_align", None),
             literal_numbering=getattr(args, "literal_numbering", None),
             literal_bullets=getattr(args, "literal_bullets", None),
+            meta=args.meta,
+            author=args.author,
         )
     except (OSError, ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -1159,6 +1213,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         _fit_tails_in_place(gr.target)
     _guard_finalize(gr)
     print(f"assembled {result.placed} block(s) -> {gr.target}")
+    _print_meta(result.meta)
     if result.links:
         print(f"  linked {result.links} URL(s) as hyperlink fields")
     if result.equations:
@@ -1754,6 +1809,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="shorten widow tail lines (layout: saved linesegarray > hwp2pdf > rhwp; "
         "warns and skips if none)",
     )
+    _add_meta_args(wr)
     wr.add_argument("-o", "--output", type=Path, default=None, help="output file")
     wr.set_defaults(func=_cmd_write)
 
@@ -1786,6 +1842,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="shorten widow tail lines (layout: saved linesegarray > hwp2pdf > rhwp; "
         "warns and skips if none)",
     )
+    _add_meta_args(bd)
     bd.set_defaults(func=_cmd_build)
 
     return parser

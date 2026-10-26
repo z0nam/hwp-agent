@@ -117,7 +117,12 @@ MD에 markdown 파이프표가 **이미 존재** → `write`가 조판함. 갭�
   - 캡션 문자열 생성 규약(`<표 Ⅲ-1> 제목` / `[그림 Ⅳ-2] 제목`)도 여기서.
   - 표·그림·목차가 공유. **먼저 세운다.**
 
-## B. 표지·판권 슬롯 + 메타데이터
+## B. 표지·판권 슬롯 + 메타데이터 — **완료 (#32, 2026-10-26)**
+> 기관 서식 4종(정책·전략·기반·센터)에 `overrides/*.json` `meta_slots` 로 슬롯 13개를
+> 굽고, `build`/`write` 가 `meta.json`·프런트매터로 채운다(`ops/report_meta.py`,
+> 문서정보 `opf:title`·`creator` 포함). 답안지 대조는 연구기획전략실 3차 편집본 PDF
+> (미래기획연구 2025-06, 1020)로 했다 — `…_편집_인용반영.hwpx` 는 .docx 만 남아 있음.
+> 남은 것: 판권 아래 "비매품/무료 · ISBN (PDF)" 블록·바코드는 서식에 없어 범위 밖.
 - **B1. 슬롯화**: bake config `cover`/`colophon` 슬롯맵(예시 문자열→`{{title}}`·`{{report_number}}`·`{{lead_researcher}}`·`{{pub_date}}`·`{{isbn}}`…). `정책과제-template.hwpx`의 검증된 매핑을 config로 이식(문자열 매칭은 서식별이라 override처럼 per-form).
 - **B2. 메타 채움**: `meta.json`(또는 MD 프론트매터)→기존 `form fill`. 파이프라인 `build`가 write(본문)+form fill(메타) 순차.
 - 검증: 표지에 실제 제목·연구진, 판권에 발행정보 → 답안지 표지/판권과 대조.

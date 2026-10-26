@@ -110,7 +110,8 @@ def download_source(file_id: str, dest: Path) -> None:
 
 
 def load_config(name: str) -> dict:
-    """overrides/<name>.json 전체. {"styles": {name→ROLE}, "body": {"section": N}}."""
+    """overrides/<name>.json 전체. {"styles": {name→ROLE}, "sections": […],
+    "meta_slots": {"cover": …, "colophon": …}}."""
     f = OVERRIDE_DIR / f"{name}.json"
     if not f.is_file():
         return {}
@@ -907,6 +908,14 @@ def bake_one(src: Path, out: Path, workdir: Path, config: dict | None = None) ->
         placed_markers.append(f"s{spec['section']}:{{{{{mk}}}}}{tag}")
     if placed_markers:
         summary["body_marker"] = " ".join(placed_markers)
+
+    # 표지·판권 예시 문자열 → {{title}}·{{report_number}}… 슬롯 (#32). 예시가 바뀐
+    # 개정본이면 ValueError — 이 서식만 실패로 남고 나머지는 계속 굽는다.
+    if config.get("meta_slots"):
+        from hwp_agent.ops.report_meta import bake_meta_slots
+
+        slots = bake_meta_slots(out, config["meta_slots"])
+        summary["meta_slots"] = len(slots)
     return summary
 
 
@@ -1114,6 +1123,7 @@ def main() -> int:
                 f"[{summ['classification_before']}→{summ['classification_after']}, "
                 f"선언 {summ['declarations']}"
                 + (f", 마커 {summ['body_marker']}" if summ.get("body_marker") else "")
+                + (f", 메타슬롯 {summ['meta_slots']}" if summ.get("meta_slots") else "")
                 + "]")
         except Exception as e:  # noqa: BLE001 — 한 파일 실패가 전체를 막지 않게
             log(f"✗ 실패: {name}: {e}")

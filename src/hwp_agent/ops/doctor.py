@@ -298,12 +298,17 @@ def _warnings(r: dict) -> list[str]:
         out.append(f"integrity [{e['kind']}] {e['where']}: {e['detail']}")
     # a marker appearing more than once is ambiguous — write/build can't tell which
     # paragraph should receive the content (PR #16 P1/P2 class of bug)
+    from .report_meta import META_SLOTS
     from .template import STANDARD_TEMPLATE_MARKERS, TABLE_TOKEN_RE
 
     dup_total: dict[str, int] = {}
     for e in r.get("markers") or []:
         dup_total[e["token"]] = dup_total.get(e["token"], 0) + e["count"]
     for token, total in dup_total.items():
+        # cover/colophon slots (#32) are filled by value, not by placement — the same
+        # {{title}} on 표지 and 판권 is intended, and build --meta consumes them
+        if token.strip("{} ").partition(":")[0].strip() in META_SLOTS:
+            continue
         if total > 1:
             out.append(
                 f"marker {token} appears {total}× — ambiguous; write/build can't tell which "

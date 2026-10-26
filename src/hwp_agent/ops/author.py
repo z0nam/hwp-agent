@@ -197,6 +197,7 @@ class AuthorResult:
     equations: int = 0  # equation objects created ($…$ / $$…$$)
     figures: int = 0  # figure tables created (![alt](path))
     warnings: list[str] = field(default_factory=list)
+    meta: dict | None = None  # cover/colophon fill summary (report_meta.MetaResult)
 
     def as_dict(self) -> dict:
         return {
@@ -209,6 +210,7 @@ class AuthorResult:
             "equations": self.equations,
             "figures": self.figures,
             "warnings": self.warnings,
+            "meta": self.meta,
         }
 
 
@@ -2829,6 +2831,8 @@ def build_report(
     link_align: str | None = None,
     literal_numbering: bool | None = None,
     literal_bullets: bool | None = None,
+    meta: Path | str | dict | None = None,
+    author: str | None = None,
 ) -> AuthorResult:
     """Assemble a multi-section report from a JSON manifest into one template.
 
@@ -2855,8 +2859,25 @@ def build_report(
     Optional manifest keys ``"links"`` (default true) / ``"blue_links"`` mirror the
     ``write`` options, as does ``"math"`` (default true); the *links* /
     *blue_links* / *math* arguments override them.
+
+    Cover/colophon metadata (#32): ``"meta"`` names a ``meta.json`` (or holds the
+    object inline); a part file may instead open with a ``---`` front-matter block
+    (stripped from the body). The *meta* argument (``--meta``) overrides the
+    manifest's, and both override front matter. After the parts land, the
+    ``{{title}}``·``{{report_number}}``… slots are filled through ``form fill`` and
+    ``content.hpf``'s title/creator are set — see
+    :func:`~hwp_agent.ops.report_meta.apply_report_meta` (*author* is the
+    ``--author`` fallback for creator).
     """
     import json
+
+    from .report_meta import (
+        finish_report_meta,
+        first_heading,
+        load_meta,
+        meta_keys,
+        split_front_matter,
+    )
 
     mpath = Path(manifest)
     data = json.loads(mpath.read_text(encoding="utf-8"))
@@ -2869,28 +2890,35 @@ def build_report(
     parts_cfg = data.get("parts", {})
     part_order = ("summary", "intro", "body", "references", "appendix")
     parts: list[tuple[str, str]] = []
+    front: dict = {}  # merged front matter, earlier files win
     for name in part_order:
         if name not in parts_cfg:
             continue
         files = parts_cfg[name]
         if isinstance(files, str):
             files = [files]
-        # each file names its images relative to its own folder; rebase before
-        # joining (paths that don't exist there fall back to the manifest folder)
-        md = "\n\n".join(
-            rebase_figure_paths(
-                Path(_resolve(f)).read_text(encoding="utf-8"), Path(_resolve(f)).parent
-            )
-            for f in files
-        )
-        parts.append(("{{" + name + "}}", md))
+        texts = []
+        for f in files:
+            fm, text = split_front_matter(Path(_resolve(f)).read_text(encoding="utf-8"))
+            front = {**meta_keys(fm), **front}
+            # each file names its images relative to its own folder; rebase before
+            # joining (paths that don't exist there fall back to the manifest folder)
+            texts.append(rebase_figure_paths(text, Path(_resolve(f)).parent))
+        parts.append(("{{" + name + "}}", "\n\n".join(texts)))
     if not parts:
         raise ValueError("manifest has no 'parts' to assemble")
+
+    meta_src = meta if meta is not None else data.get("meta")
+    if isinstance(meta_src, str):
+        meta_src = _resolve(meta_src)
+    meta_dict = None
+    if meta_src is not None or front:
+        meta_dict = {**front, **load_meta(meta_src)}
 
     out = output if output is not None else data.get("output")
     if out is not None and not Path(out).is_absolute():
         out = str(base / out)
-    return fill_sections(
+    result = fill_sections(
         template,
         parts,
         output=out,
@@ -2913,3 +2941,8 @@ def build_report(
         ),
         base_dir=base,
     )
+    fallback_title = next((t for _, md in parts if (t := first_heading(md))), None)
+    finish_report_meta(
+        result, out or template, meta_dict, fallback_title=fallback_title, author=author
+    )
+    return result

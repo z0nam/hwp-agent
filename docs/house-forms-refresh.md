@@ -26,9 +26,13 @@ outline 선언이 없는 **flat 스타일**이라 `hwp-agent write` 가 그대�
 - **로컬 마운트 대신 WORKS API(`works` CLI).** launchd 백그라운드는 NAVER WORKS
   CloudStorage **FileProvider 마운트를 못 서비스**해 `open()` 이 무한 대기한다(실증됨).
   서비스계정 위임 API 로 받으면 헤드리스·이식 가능하고 이 행이 사라진다.
-- **normalize 만 (초벌구이).** 견고한 스타일 기반 변환. 예시 본문을 걷어내는 완전
-  golden template(슬롯·지침) 스켈레톤화는 표지/판권 문자열 매칭이 서식마다 달라
-  개정 자동화에 취약하므로 **자동 범위에서 제외** — 필요할 때 사람이 수동 큐레이션
+- **normalize + 마커 + 표지·판권 슬롯.** 견고한 스타일 기반 변환에 더해, 서식별
+  `overrides/<서식>.json` 설정대로 본문 섹션 마커(`sections`)와 표지·판권 메타 슬롯
+  (`meta_slots`, #32)을 굽는다. 슬롯은 "예시 문자열 → `{{title}}`" 매핑이라 서식마다
+  선언하고, **예시 문자열이 개정으로 바뀌면 그 서식의 굽기가 실패**한다(로그·DM 에 ✗) —
+  조용히 반쯤 슬롯화된 서식이 나가지 않게. 그때 키를 새 예시로 고친다. 슬롯 값은
+  `build`/`write --meta`(또는 MD 프런트매터)가 채운다(`ops/report_meta.py`).
+  나머지 golden template 스켈레톤화(지침 문단 등)는 수동 큐레이션
   (참고: [golden-template.md](golden-template.md)).
 - **자동 커밋은 PR 로만, main 직접 push 안 함.** normalize 산출물은 한글에서
   **육안검증**(보안경고·레이아웃·F6 영문이름) 후 사람이 머지한다.

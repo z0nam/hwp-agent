@@ -33,6 +33,15 @@ def _isolate_hwp2pdf(monkeypatch, tmp_path_factory) -> None:
         monkeypatch.delenv(var, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_profile(monkeypatch, tmp_path_factory) -> None:
+    """write/build fall back to the profile's name for the document creator (#32);
+    never let the suite read the developer's real ~/.config/hwp-agent/profile.json."""
+    monkeypatch.setenv(
+        "HWP_AGENT_PROFILE", str(tmp_path_factory.getbasetemp() / "no-profile.json")
+    )
+
+
 def resave_with_linesegs(data: bytes, tail: int = 2) -> bytes:
     """Fake "Hangul re-save": give every paragraph lacking a linesegarray a
     three-line layout whose last line holds ``tail`` characters."""

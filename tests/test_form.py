@@ -267,3 +267,191 @@ def test_autofit_min_width_pins_column(tmp_path: Path) -> None:
     s = autofit_table(_EXAMPLE, 0, min_widths={0: 20000}, output=tmp_path / "af2.hwpx")
     assert s["new_widths"][0] >= 20000  # the pinned floor is honoured
     assert sum(s["new_widths"]) == s["total"]
+
+
+def _make_label_slots_fixture(path: Path) -> Path:
+    from hwpx.document import HwpxDocument
+
+    doc = HwpxDocument.new()
+    doc.add_table(1, 1)
+
+    sec_obj = doc.sections[0]
+    sec = sec_obj.element
+    ps = sec.findall(q("p"))
+    p_tbl = ps[1]
+    tbl_idx = list(sec).index(p_tbl)
+
+    def _make_p(text: str, is_empty: bool = False):
+        p = etree.Element(q("p"), {"paraPrIDRef": "0", "styleIDRef": "0"})
+        run = etree.SubElement(p, q("run"), {"charPrIDRef": "0"})
+        if not is_empty:
+            t = etree.SubElement(run, q("t"))
+            t.text = text
+        return p
+
+    before_labels = [
+        _make_p("□ 과제유형 : "),
+        _make_p("□ 과 제 명 : "),
+        _make_p("□ 과제책임 : "),
+        _make_p("□ 과제기간 :     .   .   . ~     .   .   ."),
+        _make_p("□ 변경사항 :"),
+    ]
+    for offset, p in enumerate(before_labels):
+        sec.insert(tbl_idx + offset, p)
+
+    after_labels = [
+        _make_p("□ 변경사유 :"),
+        _make_p("", is_empty=True),
+        _make_p("□ 동의함"),
+    ]
+    for p in after_labels:
+        sec.append(p)
+
+    sec_obj.mark_dirty()
+    doc.save_to_path(str(path))
+    return path
+
+
+def test_label_and_section_slots_analysis_and_fill(tmp_path: Path) -> None:
+    """Issue #66: label: and section: discovery, checkbox false positives fixed."""
+    fixture_path = _make_label_slots_fixture(tmp_path / "label_form.hwpx")
+    spec = analyze_form(fixture_path)
+
+    by_kind: dict[str, list] = {}
+    for s in spec.slots:
+        by_kind.setdefault(s.kind, []).append(s)
+
+    labels = {s.locator: s for s in by_kind.get("label", [])}
+    assert "label:과제유형" in labels
+    assert "label:과 제 명" in labels  # preserves raw label with whitespace
+    assert "label:과제책임" in labels
+    assert "label:과제기간" in labels
+    assert labels["label:과제기간"].current == ".   .   . ~     .   .   ."
+
+    sections = {s.locator: s for s in by_kind.get("section", [])}
+    assert "section:변경사유" in sections
+    assert "section:변경사항" not in sections  # table header is not a section slot
+    assert "label:변경사항" not in labels
+
+    # Checkbox false positives: label lines must not be classified as checkboxes
+    checkboxes = {s.locator: s for s in by_kind.get("checkbox", [])}
+    assert "checkbox:동의함" in checkboxes
+    assert "checkbox:과제유형" not in checkboxes
+    assert "checkbox:과" not in checkboxes
+    assert "checkbox:과 제 명" not in checkboxes
+    assert "checkbox:변경사항" not in checkboxes
+    assert "checkbox:변경사유" not in checkboxes
+
+    # Fill test: support whitespace-insensitive matching (label:과제명 -> 과 제 명)
+    out_path = tmp_path / "filled.hwpx"
+    res = fill_form(
+        fixture_path,
+        {
+            "label:과제유형": "일반",
+            "label:과제명": "제주 생태 연구",
+            "label:과제책임": "홍길동",
+            "label:과제기간": "2026. 3. 1. ~ 2026. 12. 31.",
+            "section:변경사유": "- 사유 1: 환경 변화\n- 사유 2: 예산 조정",
+            "checkbox:동의함": "on",
+        },
+        output=out_path,
+    )
+    assert not res.missing
+    assert len(res.filled) == 6
+
+    # Verify filled content
+    from hwpx.document import HwpxDocument
+
+    filled_doc = HwpxDocument.open(str(out_path))
+    sec = filled_doc.sections[0].element
+    ps_text = ["".join(p.itertext()) for p in sec.findall(q("p"))]
+
+    assert "□ 과제유형 : 일반" in ps_text
+    assert "□ 과 제 명 : 제주 생태 연구" in ps_text
+    assert "□ 과제책임 : 홍길동" in ps_text
+    assert "□ 과제기간 : 2026. 3. 1. ~ 2026. 12. 31." in ps_text
+    assert "□ 변경사항 :" in ps_text
+    assert "□ 변경사유 :" in ps_text
+    assert "- 사유 1: 환경 변화" in ps_text
+    assert "- 사유 2: 예산 조정" in ps_text
+    assert "■ 동의함" in ps_text
+
+    # Re-fill (overwrite) test: ensure previously filled labels can be updated (#68 review finding)
+    out_path2 = tmp_path / "refilled.hwpx"
+    res2 = fill_form(
+        out_path,
+        {
+            "label:과제유형": "특별",
+            "label:과제명": "수정된 연구",
+        },
+        output=out_path2,
+    )
+    assert not res2.missing
+    assert len(res2.filled) == 2
+    filled_doc2 = HwpxDocument.open(str(out_path2))
+    ps_text2 = ["".join(p.itertext()) for p in filled_doc2.sections[0].element.findall(q("p"))]
+    assert "□ 과제유형 : 특별" in ps_text2
+    assert "□ 과 제 명 : 수정된 연구" in ps_text2
+
+
+def test_label_slot_clears_tab_and_trailing_content(tmp_path: Path) -> None:
+    """Issue #68 review finding: trailing inline objects (<hp:tab/> etc.) must be cleared."""
+    from hwpx.document import HwpxDocument
+
+    doc = HwpxDocument.new()
+    sec = doc.sections[0].element
+    p = etree.SubElement(sec, q("p"), {"paraPrIDRef": "0", "styleIDRef": "0"})
+    run = etree.SubElement(p, q("run"), {"charPrIDRef": "0"})
+    t = etree.SubElement(run, q("t"))
+    t.text = "□ 기간 :"
+    tab = etree.SubElement(t, q("tab"))
+    tab.tail = " . . . ~ . . ."
+    extra_run = etree.SubElement(p, q("run"), {"charPrIDRef": "0"})
+    extra_t = etree.SubElement(extra_run, q("t"))
+    extra_t.text = " (추가안내)"
+
+    doc.sections[0].mark_dirty()
+    fixture = tmp_path / "tab_label.hwpx"
+    doc.save_to_path(str(fixture))
+
+    out = tmp_path / "tab_label_out.hwpx"
+    res = fill_form(fixture, {"label:기간": "2026. 10. 26."}, output=out)
+    assert not res.missing
+    filled = HwpxDocument.open(str(out))
+    filled_p = filled.sections[0].element.findall(q("p"))[-1]
+    assert "".join(filled_p.itertext()) == "□ 기간 : 2026. 10. 26."
+    assert filled_p.find(f".//{q('tab')}") is None
+
+
+def test_section_slot_preserves_picture_paragraph(tmp_path: Path) -> None:
+    """Issue #68 review finding: non-text objects like pic must not be treated as empty."""
+    from hwpx.document import HwpxDocument
+
+    doc = HwpxDocument.new()
+    sec = doc.sections[0].element
+    p_label = etree.SubElement(sec, q("p"), {"paraPrIDRef": "0", "styleIDRef": "0"})
+    r_label = etree.SubElement(p_label, q("run"), {"charPrIDRef": "0"})
+    t_label = etree.SubElement(r_label, q("t"))
+    t_label.text = "□ 변경사유 :"
+
+    p_empty = etree.SubElement(sec, q("p"), {"paraPrIDRef": "0", "styleIDRef": "0"})
+    etree.SubElement(p_empty, q("run"), {"charPrIDRef": "0"})
+
+    # Paragraph with a picture object (no text)
+    p_pic = etree.SubElement(sec, q("p"), {"paraPrIDRef": "0", "styleIDRef": "0"})
+    r_pic = etree.SubElement(p_pic, q("run"), {"charPrIDRef": "0"})
+    etree.SubElement(r_pic, q("pic"), {"id": "123"})
+
+    doc.sections[0].mark_dirty()
+    fixture = tmp_path / "sec_pic.hwpx"
+    doc.save_to_path(str(fixture))
+
+    out = tmp_path / "sec_pic_out.hwpx"
+    res = fill_form(fixture, {"section:변경사유": "서술 내용"}, output=out)
+    assert not res.missing
+
+    filled = HwpxDocument.open(str(out))
+    ps = filled.sections[0].element.findall(q("p"))
+    # The picture paragraph must still exist!
+    assert any(p.find(f".//{q('pic')}") is not None for p in ps)
+    assert any("서술 내용" in "".join(p.itertext()) for p in ps)

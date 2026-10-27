@@ -5,12 +5,18 @@ name: Build Windows exe
 # Runs from calver.yml (dispatched for each automatic date tag vYYYY.MM.DD.N) or when you push
 # a v* tag. Only tag runs stamp the version and publish; a manual run on a branch just builds
 # and uploads the workflow artifact (pick a tag in "Use workflow from" to republish).
+# A pull request that touches the installer or this workflow also builds, so the installer
+# smoke test (silent install + uninstall) runs before merge; it never publishes.
 
 on:
   workflow_dispatch:
   push:
     tags:
       - "v*"
+  pull_request:
+    paths:
+      - "installer/**"
+      - ".github/workflows/windows-exe.yml"
 
 permissions:
   contents: write

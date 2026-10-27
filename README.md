@@ -93,10 +93,10 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 runtime; install a JRE 17+ (e.g. [Temurin](https://adoptium.net/)) to run
 `convert`. HWPX-only use (editing, `form fill`) needs no Java at all.
 
-### Layout engines (for `fit tails`, `pdf`, `docx`, `verify`)
+### Layout engines (for `fit tails`, `fit pages`, `pdf`, `docx`, `verify`)
 
 Everything above works without these. They matter only when hwp-agent has to
-know **how Hangul lays a document out** — `fit tails` on a document never saved
+know **how Hangul lays a document out** — `fit tails`/`fit pages` on a document never saved
 in Hangul (e.g. a fresh `write` output), and `pdf`/`docx`/`verify`. hwp-agent picks, in order:
 
 1. **hwp2pdf-cli** (`pdf`, `docx`, `verify` only) — Hangul itself on *this* Windows
@@ -111,10 +111,13 @@ in Hangul (e.g. a fresh `write` output), and `pdf`/`docx`/`verify`. hwp-agent pi
    its first pages laid out; `fit tails` then judges the remaining paragraphs with
    rhwp and reports the split (e.g. `문단 한글 22 · rhwp 57`). Without rhwp they are
    left unjudged and the result says `일부만 판정` rather than "no targets".
+   `fit pages` judges page by page the same way: pages Hangul laid out are judged
+   on Hangul's layout, the rest with rhwp, and each page shows `[한글]` or `[rhwp]`.
 3. **rhwp** — a stand-alone renderer. Runs anywhere, but its line breaks can
    differ from Hangul's; results are labelled `rhwp 조판 기준(한글과 다를 수 있음)`.
-4. **none** — `fit tails` prints `판정 엔진 없음` with the reason for each engine
-   and exits 3 (`write`/`build --fit-tails` only warn and still write the file).
+4. **none** — `fit tails`/`fit pages` print `판정 엔진 없음` with the reason for each
+   engine and exit 3 (`write`/`build --fit-tails`/`--fit-pages` only warn and still
+   write the file).
 
 **hwp2pdf is never used while Hangul is running on that machine** (or the
 server has other jobs queued): hwp-agent does not open a second Hangul next to

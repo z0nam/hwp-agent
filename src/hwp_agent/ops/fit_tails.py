@@ -716,21 +716,51 @@ class TailFitDetection:
         return f"{label} — 문단 {self.coverage}" if self.coverage else label
 
 
-def _hwp2pdf_linesegs(
+def usable_hwp2pdf(
+    hwp2pdf: Hwp2PdfClient | None, use_hwp2pdf: bool, notes: list[str]
+) -> Hwp2PdfClient | None:
+    """The hwp2pdf client to judge with, or None with the reason added to *notes*.
+
+    Skipped when told not to, not configured, unreachable, or the node overlaps
+    a running Hangul / queued job (#61) — never forced.
+    """
+    if not use_hwp2pdf:
+        notes.append("hwp2pdf 미사용 — 호출하지 않도록 지정됨")
+        return None
+    try:
+        client = hwp2pdf or Hwp2PdfClient(resolve_hwp2pdf_config())
+    except ValueError as exc:  # malformed hwp2pdf.json: hwp2pdf is unavailable
+        notes.append(f"hwp2pdf 미사용 — 설정 오류: {exc}")
+        return None
+    st = client.status("hwpx")
+    if not st.usable:
+        notes.append(f"hwp2pdf 미사용 — {st.reason}")
+        return None
+    return client
+
+
+def hwp2pdf_resave_sections(
     client: Hwp2PdfClient, src: Path, section_names: list[str]
-) -> dict[str, list[tuple[str, list]]]:
-    """Re-save *src* through hwp2pdf (Hangul) and read back each paragraph's
-    ``(text, linesegs)`` per section, in document order. The re-saved file is
-    only measured, never returned."""
+) -> dict[str, bytes]:
+    """Re-save *src* through hwp2pdf (Hangul) and return the re-saved section
+    XML blobs. The re-saved file is only measured, never returned."""
     with tempfile.TemporaryDirectory() as td:
         resaved = Path(td) / "resaved.hwpx"
         client.convert(src, resaved, "hwpx")
         try:
             with zipfile.ZipFile(str(resaved)) as z:
                 names = set(z.namelist())
-                blobs = {s: z.read(s) for s in section_names if s in names}
+                return {s: z.read(s) for s in section_names if s in names}
         except zipfile.BadZipFile as exc:
             raise Hwp2PdfError(f"hwp2pdf가 돌려준 HWPX를 열 수 없음: {exc}") from None
+
+
+def _hwp2pdf_linesegs(
+    client: Hwp2PdfClient, src: Path, section_names: list[str]
+) -> dict[str, list[tuple[str, list]]]:
+    """Re-save *src* through hwp2pdf (Hangul) and read back each paragraph's
+    ``(text, linesegs)`` per section, in document order."""
+    blobs = hwp2pdf_resave_sections(client, src, section_names)
     out: dict[str, list[tuple[str, list]]] = {}
     for sname, blob in blobs.items():
         root = etree.fromstring(blob)
@@ -903,53 +933,41 @@ def detect_tail_fits_with_engine(
         return done(cands, "document", [])
 
     notes: list[str] = []
-    if use_hwp2pdf:
+    client = usable_hwp2pdf(hwp2pdf, use_hwp2pdf, notes)
+    if client is not None:
         try:
-            client = hwp2pdf or Hwp2PdfClient(resolve_hwp2pdf_config())
-        except ValueError as exc:  # malformed hwp2pdf.json: hwp2pdf is unavailable
-            client = None
-            notes.append(f"hwp2pdf 미사용 — 설정 오류: {exc}")
-        st = client.status("hwpx") if client else None
-        if st is None:
-            pass
-        elif st.usable:
-            try:
-                layout = _hwp2pdf_linesegs(client, src, list(section_blobs))
-                laid, unlaid, missed = _with_hangul_layout(eligible, layout)
-                if not laid and not unlaid:
-                    raise Hwp2PdfError("다시 저장한 문서의 문단을 원본과 맞출 수 없음")
-                if not laid:
-                    raise Hwp2PdfError("다시 저장한 문서에 줄 배치(linesegarray)가 없음")
-                cands = []
-                for e in laid:
-                    hangul = _hangul_tail(e, max_chars)
-                    if hangul:
-                        cands.append(replace(
-                            _heuristic_candidate(e, *hangul, min_spacing, min_ratio),
-                            engine="hwp2pdf",
-                        ))
-                counts = {"hwp2pdf": len(laid), "rhwp": 0, "no_layout": len(unlaid),
-                          "unmatched": missed}
-                if unlaid:
-                    rhwp_cands, n_rhwp, note = _judge_unlaid_with_rhwp(
-                        src, header_xml, section_blobs, unlaid, resolved_rhwp, rhwp_bin,
-                        max_chars, min_spacing, min_ratio,
-                    )
-                    cands += rhwp_cands
-                    counts["rhwp"] = n_rhwp
-                    counts["no_layout"] -= n_rhwp
-                    notes.append(note)
-                if missed:
-                    notes.append(
-                        f"hwp2pdf 문서와 텍스트가 맞지 않는 문단 {missed}개는 판정에서 제외"
-                    )
-                return done(cands, "hwp2pdf", notes, counts)
-            except Hwp2PdfError as exc:
-                notes.append(f"hwp2pdf 판정 실패 — {exc}")
-        else:
-            notes.append(f"hwp2pdf 미사용 — {st.reason}")
-    else:
-        notes.append("hwp2pdf 미사용 — 호출하지 않도록 지정됨")
+            layout = _hwp2pdf_linesegs(client, src, list(section_blobs))
+            laid, unlaid, missed = _with_hangul_layout(eligible, layout)
+            if not laid and not unlaid:
+                raise Hwp2PdfError("다시 저장한 문서의 문단을 원본과 맞출 수 없음")
+            if not laid:
+                raise Hwp2PdfError("다시 저장한 문서에 줄 배치(linesegarray)가 없음")
+            cands = []
+            for e in laid:
+                hangul = _hangul_tail(e, max_chars)
+                if hangul:
+                    cands.append(replace(
+                        _heuristic_candidate(e, *hangul, min_spacing, min_ratio),
+                        engine="hwp2pdf",
+                    ))
+            counts = {"hwp2pdf": len(laid), "rhwp": 0, "no_layout": len(unlaid),
+                      "unmatched": missed}
+            if unlaid:
+                rhwp_cands, n_rhwp, note = _judge_unlaid_with_rhwp(
+                    src, header_xml, section_blobs, unlaid, resolved_rhwp, rhwp_bin,
+                    max_chars, min_spacing, min_ratio,
+                )
+                cands += rhwp_cands
+                counts["rhwp"] = n_rhwp
+                counts["no_layout"] -= n_rhwp
+                notes.append(note)
+            if missed:
+                notes.append(
+                    f"hwp2pdf 문서와 텍스트가 맞지 않는 문단 {missed}개는 판정에서 제외"
+                )
+            return done(cands, "hwp2pdf", notes, counts)
+        except Hwp2PdfError as exc:
+            notes.append(f"hwp2pdf 판정 실패 — {exc}")
 
     if resolved_rhwp is None:
         notes.append(f"rhwp 없음 — {rhwp_search_desc(rhwp_bin)}")

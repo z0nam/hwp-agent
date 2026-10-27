@@ -966,6 +966,93 @@ def _fit_tails_in_place(path: Path) -> None:
     )
 
 
+def _tails_first(src: Path, td: str, quiet: bool) -> Path:
+    """``--fit-tails`` with ``fit pages``: widow tails first (#40), into a temp copy."""
+    from ..ops import apply_tail_fits, detect_tail_fits_with_engine
+
+    detection = detect_tail_fits_with_engine(src)
+    if not detection.judged:
+        print("note: 꼬리 줄 압축 미적용 — 판정 엔진 없음", file=sys.stderr)
+        return src
+    work = Path(td) / src.name
+    fitted = apply_tail_fits(src, work, candidates=detection.candidates)
+    if not quiet:
+        print(f"꼬리 줄 압축 먼저: {fitted}개 문단 [판정: {detection.engine_label}]")
+    return work
+
+
+def _cmd_fit_pages(args: argparse.Namespace) -> int:
+    import json
+    import tempfile
+
+    from ..ops import fit_pages, format_page_fit_no_engine_report, format_page_fit_report
+
+    src = Path(args.file)
+    dry_run = args.dry_run
+    with tempfile.TemporaryDirectory() as td:
+        work = _tails_first(src, td, args.json) if args.fit_tails else src
+        gr = None if dry_run else _guard_output(args.output or src)
+        detection = fit_pages(
+            work,
+            None if dry_run else gr.target,
+            dry_run=dry_run,
+            max_spacing_cut=args.max_spacing_cut,
+            max_linespacing_cut=args.max_linespacing_cut,
+            gap_threshold=args.gap_threshold,
+            max_lines=args.max_lines,
+        )
+        if gr is not None and detection.judged:
+            _guard_finalize(gr, quiet=args.json)
+    if args.json:
+        print(json.dumps({
+            "file": str(src),
+            "dry_run": dry_run,
+            "engine": detection.engine,
+            "judged": detection.judged,
+            "pages_by_engine": detection.pages,
+            "notes": detection.notes,
+            "applied": detection.applied,
+            "fits": [f.as_dict() for f in detection.fits],
+            "output": None if gr is None or not detection.judged else str(gr.target),
+        }, ensure_ascii=False, indent=2))
+        return 0 if detection.judged else _FIT_NO_ENGINE
+    if not detection.judged:
+        print(format_page_fit_no_engine_report(detection), file=sys.stderr)
+        return _FIT_NO_ENGINE
+    for note in detection.notes:
+        print(f"note: {note}", file=sys.stderr)
+    print(format_page_fit_report(detection, dry_run))
+    if dry_run:
+        print("\n(--dry-run: 실제 변경은 적용되지 않았습니다. 쪽마다 따로 본 추정이며,"
+              " 적용할 때는 앞 쪽부터 한 곳씩 적용하고 다시 조판해 확인합니다)")
+    else:
+        print(f"\n적용 완료: {detection.applied}곳 -> {gr.target}")
+    return 0
+
+
+def _fit_pages_in_place(path: Path) -> None:
+    """``write``/``build --fit-pages``: fill pages in place; warn, never fail."""
+    from ..ops import fit_pages
+
+    detection = fit_pages(path, path)
+    if not detection.judged:
+        print(
+            "  warning: --fit-pages 미적용 — 판정 엔진 없음 (문서는 그대로 생성)",
+            file=sys.stderr,
+        )
+        for note in detection.notes:
+            print(f"    - {note}", file=sys.stderr)
+        return
+    for note in detection.notes:
+        print(f"  note: {note}", file=sys.stderr)
+    manual = sum(1 for f in detection.fits if f.status == "unfittable" and f.kind == "gap")
+    extra = f", 여백 과다 {manual}쪽은 수동 판단 필요" if manual else ""
+    print(
+        f"  --fit-pages: {detection.applied} page(s) pulled back{extra} "
+        f"[판정: {detection.engine_label}]"
+    )
+
+
 def _cmd_image(args: argparse.Namespace) -> int:
     import json
 
@@ -1141,6 +1228,8 @@ def _cmd_write(args: argparse.Namespace) -> int:
     )
     if getattr(args, "fit_tails", False):
         _fit_tails_in_place(gr.target)
+    if getattr(args, "fit_pages", False):
+        _fit_pages_in_place(gr.target)
     _guard_finalize(gr)
     print(f"placed {result.placed} block(s) -> {gr.target}")
     _print_meta(result.meta)
@@ -1233,6 +1322,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
         wings = apply_chapter_headers(gr.target)
     if getattr(args, "fit_tails", False):
         _fit_tails_in_place(gr.target)
+    if getattr(args, "fit_pages", False):
+        _fit_pages_in_place(gr.target)
     _guard_finalize(gr)
     print(f"assembled {result.placed} block(s) -> {gr.target}")
     _print_meta(result.meta)
@@ -1709,6 +1800,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ft.set_defaults(func=_cmd_fit_tails)
 
+    fp = fit_sub.add_parser(
+        "pages",
+        help="pull a short chunk back onto the previous page by slightly tightening "
+        "that page's paragraph/line spacing (report-only when it cannot fit)",
+    )
+    fp.add_argument("file", type=Path, help="HWPX file to inspect or adjust")
+    fp.add_argument(
+        "-o", "--output", type=Path, default=None, help="output path (default: in-place)",
+    )
+    fp.add_argument(
+        "--max-spacing-cut", type=int, default=50,
+        help="largest cut of paragraph spacing before/after, %% (default: 50)",
+    )
+    fp.add_argument(
+        "--max-linespacing-cut", type=int, default=10,
+        help="largest cut of line spacing, %% of its value (default: 10, 160%%→144%%)",
+    )
+    fp.add_argument(
+        "--gap-threshold", type=float, default=25.0,
+        help="bottom band (%% of the body height) reported as too large (default: 25)",
+    )
+    fp.add_argument(
+        "--max-lines", type=int, default=3,
+        help="largest chunk (lines) pulled back from a nearly full page (default: 3)",
+    )
+    fp.add_argument(
+        "--fit-tails", action="store_true", default=False,
+        help="shorten widow tail lines first (fit tails), then fill pages",
+    )
+    fp.add_argument(
+        "--dry-run", action="store_true", default=False,
+        help="report per page without modifying the file",
+    )
+    fp.add_argument("--json", action="store_true", default=False, help="emit the report as JSON")
+    fp.set_defaults(func=_cmd_fit_pages)
+
     ins = sub.add_parser(
         "instructions", help="show a template's AI:INSTRUCTION directions and {{slots}}"
     )
@@ -1842,6 +1969,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="shorten widow tail lines (layout: saved linesegarray > hwp2pdf > rhwp; "
         "warns and skips if none)",
     )
+    wr.add_argument(
+        "--fit-pages",
+        action="store_true",
+        default=False,
+        help="pull short chunks back onto the previous page after --fit-tails "
+        "(layout: saved linesegarray > hwp2pdf > rhwp; warns and skips if none)",
+    )
     _add_meta_args(wr)
     wr.add_argument("-o", "--output", type=Path, default=None, help="output file")
     wr.set_defaults(func=_cmd_write)
@@ -1874,6 +2008,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="shorten widow tail lines (layout: saved linesegarray > hwp2pdf > rhwp; "
         "warns and skips if none)",
+    )
+    bd.add_argument(
+        "--fit-pages",
+        action="store_true",
+        default=False,
+        help="pull short chunks back onto the previous page after --fit-tails "
+        "(layout: saved linesegarray > hwp2pdf > rhwp; warns and skips if none)",
     )
     _add_meta_args(bd)
     bd.set_defaults(func=_cmd_build)

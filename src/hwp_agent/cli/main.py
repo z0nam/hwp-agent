@@ -1002,7 +1002,7 @@ def _cmd_fit_pages(args: argparse.Namespace) -> int:
             max_lines=args.max_lines,
         )
         if gr is not None and detection.judged:
-            _guard_finalize(gr)
+            _guard_finalize(gr, quiet=args.json)
     if args.json:
         print(json.dumps({
             "file": str(src),

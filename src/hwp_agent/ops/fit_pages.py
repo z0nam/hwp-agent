@@ -353,7 +353,10 @@ def _hangul_pages(
                 stop = pi
                 break
             for li, (vp, h, sp) in enumerate(segs):
-                if cur is None or (prev_vp is not None and vp < prev_vp):
+                # an intended break starts a page even when vertpos does not drop
+                # (a one-line page followed by the same spacing-before)
+                if (cur is None or (prev_vp is not None and vp < prev_vp)
+                        or (li == 0 and infos[pi].forced and cur.blocks)):
                     number += 1
                     cur = _Page(number, s_idx, engine, [], 0, doc.body[name], 0,
                                 forced=cur is None or (li == 0 and infos[pi].forced))

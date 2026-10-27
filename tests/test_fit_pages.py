@@ -429,3 +429,19 @@ def test_parse_rhwp_pages(tmp_path: Path) -> None:
     assert p2.blocks[0].lines == [(1000, 600)] and p2.blocks[0].last
     assert p1.bottom == 18750  # 250px; the split paragraph adds no spacing-after
     assert p2.bottom == 4500 - 500  # 60px minus paragraph 3's spacing-after
+
+
+def test_intended_break_splits_pages_at_equal_vertpos(tmp_path: Path) -> None:
+    """review #78: a pageBreak starts a page even if vertpos does not drop."""
+    from hwp_agent.ops.fit_pages import _hangul_pages, _read_doc
+
+    doc = _read_doc(make_doc(tmp_path / "d.hwpx", [("참고 1", True)]))
+    root = etree.fromstring(doc.sections["Contents/section0.xml"])
+    for p in root.findall(_q(HP, "p")):
+        lsa = etree.SubElement(p, _q(HP, "linesegarray"))
+        etree.SubElement(lsa, _q(HP, "lineseg"), textpos="0", vertpos="500",
+                         vertsize="1000", spacing="600")
+    pages, uncovered = _hangul_pages(doc, {"Contents/section0.xml": etree.tostring(root)},
+                                     "hwp2pdf")
+    assert [p.number for p in pages] == [1, 2] and not uncovered
+    assert pages[1].forced

@@ -2,7 +2,7 @@
   "mcpServers": {
     "hwp-agent": {
       "command": "uvx",
-      "args": ["--from", "${CLAUDE_PLUGIN_ROOT}", "--with", "mcp>=1.2,<2", "hwp-agent", "mcp"]
+      "args": ["--python", "3.12", "--from", "${CLAUDE_PLUGIN_ROOT}", "--with", "mcp>=1.2,<2", "hwp-agent", "mcp"]
     }
   }
 }

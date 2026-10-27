@@ -254,7 +254,9 @@ For non-technical users, two zero-terminal surfaces — see **[docs/serving.md](
 
 This repository is also a Claude plugin (`.claude-plugin/plugin.json`): the
 skill below plus the stdio MCP server, started with
-`uvx --from <plugin dir> --with "mcp>=1.2,<2" hwp-agent mcp` (needs [uv](https://docs.astral.sh/uv/) on PATH).
+`uvx --python 3.12 --from <plugin dir> --with "mcp>=1.2,<2" hwp-agent mcp` (needs [uv](https://docs.astral.sh/uv/) on PATH).
+Python is pinned to 3.12 because uv otherwise picks the newest Python, for which lxml may have
+no binary wheel yet (then the MCP server cannot start without a C toolchain; #75).
 Jeju Research Institute staff get it through the JAIX marketplace
 ([jeju-inst/jaix-kit](https://github.com/jeju-inst/jaix-kit)), pinned to a tested release:
 

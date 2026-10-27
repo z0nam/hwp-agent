@@ -239,6 +239,14 @@ def test_cli_pdf_says_which_engine(tmp_path: Path, fake_cli, capsys) -> None:
     assert ret == 0 and "via hwp2pdf-cli · 한컴 · 이 PC" in cap.out
 
 
+def test_cli_timeout_reaches_local_cli_without_server_config(tmp_path: Path, fake_cli) -> None:
+    # no server configured (conftest): --timeout must still bound the local CLI
+    ret = main(["pdf", str(_src(tmp_path)), "-o", str(tmp_path / "o.pdf"),
+                "--engine", "local", "--timeout", "5"])
+    args = _call(tmp_path)["args"]
+    assert ret == 0 and args[args.index("--timeout") + 1] == "5"
+
+
 def test_cli_docx_engine_local(tmp_path: Path, fake_cli, capsys) -> None:
     ret = main(["docx", str(_src(tmp_path)), "-o", str(tmp_path / "o.docx"),
                 "--engine", "local"])

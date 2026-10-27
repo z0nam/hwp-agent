@@ -505,7 +505,7 @@ def _render_cmd(args: argparse.Namespace, *, fmt: str, engine: str) -> int:
         return 2
     result = render_document(
         src, out, fmt=fmt, engine=engine, config=config,
-        rhwp_bin=getattr(args, "rhwp", None),
+        rhwp_bin=getattr(args, "rhwp", None), timeout=getattr(args, "timeout", None),
     )
     if result.note:
         print(f"note: {result.note}", file=sys.stderr)

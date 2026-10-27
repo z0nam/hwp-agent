@@ -56,11 +56,12 @@ def _backends(
     rhwp_bin: str | None,
     render_fn: RenderFn | None,
     hwp2pdf_cli: str | None,
+    timeout: int | None = None,
 ) -> list[RenderBackend]:
+    if timeout is None and config is not None:
+        timeout = config.convert_timeout
     make = {
-        "local": lambda: LocalHwp2PdfBackend(
-            hwp2pdf_cli, config.convert_timeout if config else None,
-        ),
+        "local": lambda: LocalHwp2PdfBackend(hwp2pdf_cli, timeout),
         "remote": lambda: RemoteHwp2PdfBackend(config, transport),
         "rhwp": lambda: LocalRhwpBackend(rhwp_bin, render_fn),
     }
@@ -112,6 +113,7 @@ def render_document(
     rhwp_bin: str | None = None,
     render_fn: RenderFn | None = None,
     hwp2pdf_cli: str | None = None,
+    timeout: int | None = None,
 ) -> RenderResult:
     """Render *src* → *out* in *fmt*, trying *engine*'s chain in order. Never raises
     for expected failures — returns a :class:`RenderResult` with a helpful ``stderr``.
@@ -120,12 +122,15 @@ def render_document(
     that was tried and declined (Hangul open, queue, conversion error) is skipped
     with its reason collected on ``RenderResult.note`` of the eventual success,
     or joined into ``stderr`` when nothing rendered.
+
+    ``timeout`` (seconds) bounds the local CLI even when no server is configured;
+    the server's own budget stays ``config.convert_timeout``.
     """
     out = Path(out)
     engine = resolve_engine(engine)
     if config is None:
         config = resolve_hwp2pdf_config()
-    chain = _backends(engine, config, transport, rhwp_bin, render_fn, hwp2pdf_cli)
+    chain = _backends(engine, config, transport, rhwp_bin, render_fn, hwp2pdf_cli, timeout)
     capable = [b for b in chain if b.supports(fmt)]
     if not capable:
         return RenderResult(

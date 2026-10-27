@@ -1222,6 +1222,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
             literal_bullets=getattr(args, "literal_bullets", None),
             meta=args.meta,
             author=args.author,
+            toc=getattr(args, "toc", None),
         )
     except (OSError, ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -1244,6 +1245,12 @@ def _cmd_build(args: argparse.Namespace) -> int:
         print(f"  placed {result.figures} figure(s)")
     if wings is not None and wings.count:
         print(f"  set the side wing (쪽날개) of {wings.count} chapter(s)")
+    if result.toc:
+        t = result.toc
+        print(
+            f"  목차: 차례 {t['headings']} · 표 차례 {t['tables']} · 그림 차례 {t['figures']} "
+            "(쪽 번호는 한글에서 차례 새로 고침)"
+        )
     if result.unmapped_roles:
         print(f"  unmapped (fell back to BODY): {', '.join(result.unmapped_roles)}")
     for warning in result.warnings:
@@ -1874,6 +1881,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="shorten widow tail lines (layout: saved linesegarray > hwp2pdf > rhwp; "
         "warns and skips if none)",
+    )
+    bd.add_argument(
+        "--no-toc",
+        dest="toc",
+        action="store_false",
+        default=None,
+        help="keep the template's 목차 as is (default: rewrite 차례·표 차례·그림 차례 "
+        "from the headings and captions; page numbers are left for Hangul's "
+        "차례 새로 고침)",
     )
     _add_meta_args(bd)
     bd.set_defaults(func=_cmd_build)

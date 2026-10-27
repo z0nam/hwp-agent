@@ -108,6 +108,23 @@ jobs:
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\hwp-agent.iss
           Get-ChildItem installer\Output
 
+      # The [Code] section only runs when the installer runs: ISCC accepts an unknown
+      # constant like {userprofile} and the wizard then dies before its first page. Install
+      # and uninstall once, silently, on the runner to catch that class of error.
+      - name: Smoke-test installer (silent install + uninstall)
+        shell: pwsh
+        run: |
+          $p = Start-Process installer\Output\hwp-agent-setup.exe -Wait -PassThru `
+            -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LOG=setup.log'
+          Get-Content setup.log -Tail 20
+          if ($p.ExitCode -ne 0) { throw "installer exit $($p.ExitCode)" }
+          $exe = Join-Path $env:LOCALAPPDATA 'hwp-agent\hwp-agent.exe'
+          if (-not (Test-Path $exe)) { throw "not installed: $exe" }
+          & $exe --version
+          $u = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'hwp-agent') -Filter 'unins*.exe' | Select -First 1
+          $q = Start-Process $u.FullName -Wait -PassThru -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'
+          if ($q.ExitCode -ne 0) { throw "uninstaller exit $($q.ExitCode)" }
+
       - uses: actions/upload-artifact@v4
         with:
           name: hwp-agent-windows

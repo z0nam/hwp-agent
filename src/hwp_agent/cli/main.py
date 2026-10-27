@@ -486,7 +486,7 @@ def _cmd_form(args: argparse.Namespace) -> int:
 def _render_cmd(args: argparse.Namespace, *, fmt: str, engine: str) -> int:
     import dataclasses
 
-    from ..render import render_document, resolve_hwp2pdf_config
+    from ..render import ENGINE_LABELS, render_document, resolve_engine, resolve_hwp2pdf_config
 
     src: Path = args.input
     if not src.is_file():
@@ -498,6 +498,11 @@ def _render_cmd(args: argparse.Namespace, *, fmt: str, engine: str) -> int:
     if config is not None and getattr(args, "timeout", None):
         config = dataclasses.replace(config, convert_timeout=args.timeout)
 
+    try:
+        engine = resolve_engine(engine)
+    except ValueError as exc:  # bad $HWP_AGENT_RENDER_ENGINE
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     result = render_document(
         src, out, fmt=fmt, engine=engine, config=config,
         rhwp_bin=getattr(args, "rhwp", None),
@@ -505,7 +510,8 @@ def _render_cmd(args: argparse.Namespace, *, fmt: str, engine: str) -> int:
     if result.note:
         print(f"note: {result.note}", file=sys.stderr)
     if result.ok:
-        print(f"wrote {out}  (via {result.backend})")
+        label = ENGINE_LABELS.get(result.backend, "")
+        print(f"wrote {out}  (via {result.backend}{f' · {label}' if label else ''})")
         return 0
     print(f"error: {result.stderr}", file=sys.stderr)
     return result.returncode or 1
@@ -516,7 +522,7 @@ def _cmd_pdf(args: argparse.Namespace) -> int:
 
 
 def _cmd_docx(args: argparse.Namespace) -> int:
-    return _render_cmd(args, fmt="docx", engine="hwp2pdf")
+    return _render_cmd(args, fmt="docx", engine=args.engine)
 
 
 def _cmd_verify_bands(args: argparse.Namespace) -> int:
@@ -579,8 +585,11 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     try:
         result = verify_document(
             args.file, dpi=args.dpi, model=args.model, max_pages=args.max_pages,
-            rhwp_bin=args.rhwp,
+            rhwp_bin=args.rhwp, engine=args.engine,
         )
+    except ValueError as exc:  # bad $HWP_AGENT_RENDER_ENGINE
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except FileNotFoundError as exc:  # rhwp binary missing (.hwp/.hwpx input)
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -601,10 +610,19 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         print(f"error: {result.error}", file=sys.stderr)
         return 1
     status = "PASS" if result.passed else "FAIL"
+    via = ""
+    if result.engine:
+        from ..render import ENGINE_LABELS
+
+        via = f", via {result.engine} · {ENGINE_LABELS.get(result.engine, '')}"
     print(
         f"{status}  {result.pdf}  "
-        f"({len(result.pages)}/{result.page_count} pages @ {result.dpi}dpi, {result.model})"
+        f"({len(result.pages)}/{result.page_count} pages @ {result.dpi}dpi, {result.model}{via})"
     )
+    if result.engine == "rhwp":
+        print("  note: rhwp 렌더라 쪽나눔·간격은 한컴과 다를 수 있음 — 레이아웃 판정은 참고용")
+    if result.engine_note:
+        print(f"  note: {result.engine_note}")
     for p in result.pages:
         mark = "✓" if p.ok else "✗"
         print(f"  {mark} p.{p.page}")
@@ -1528,7 +1546,12 @@ def build_parser() -> argparse.ArgumentParser:
     vfy.add_argument(
         "file",
         type=Path,
-        help="PDF (Hancom-rendered, authoritative), or .hwp/.hwpx (rendered locally via rhwp)",
+        help="PDF (Hancom-rendered, authoritative), or .hwp/.hwpx (rendered first; "
+        "see --engine)",
+    )
+    vfy.add_argument(
+        "--engine", choices=("auto", "hwp2pdf", "local", "remote", "rhwp"), default=None,
+        help="render engine for .hwp/.hwpx input (same as `pdf --engine`; default auto)",
     )
     vfy.add_argument(
         "--rhwp", default=None,
@@ -1553,7 +1576,7 @@ def build_parser() -> argparse.ArgumentParser:
     vfy.set_defaults(func=_cmd_verify)
 
     rpdf = sub.add_parser(
-        "pdf", help="render an HWP/HWPX to PDF (hwp2pdf-serve if usable, else rhwp)",
+        "pdf", help="render an HWP/HWPX to PDF (Hancom via hwp2pdf if usable, else rhwp)",
     )
     rpdf.add_argument("input", type=Path, help="source .hwp/.hwpx file")
     rpdf.add_argument(
@@ -1561,8 +1584,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="destination .pdf (default: alongside input)",
     )
     rpdf.add_argument(
-        "--engine", choices=("auto", "hwp2pdf", "rhwp"), default="auto",
-        help="auto = hwp2pdf if reachable and not overlapping a running Hangul, else rhwp",
+        "--engine", choices=("auto", "hwp2pdf", "local", "remote", "rhwp"), default=None,
+        help="auto (default, or $HWP_AGENT_RENDER_ENGINE) = hwp2pdf-cli on this PC → "
+        "hwp2pdf server → rhwp, skipping any that would overlap a running Hangul; "
+        "hwp2pdf = Hancom only (cli → server); local / remote / rhwp = that one only",
     )
     rpdf.add_argument("--rhwp", default=None, help="path to the rhwp CLI (Tier-1)")
     rpdf.add_argument(
@@ -1576,7 +1601,7 @@ def build_parser() -> argparse.ArgumentParser:
     rpdf.set_defaults(func=_cmd_pdf)
 
     rdocx = sub.add_parser(
-        "docx", help="render an HWP/HWPX to DOCX (hwp2pdf-serve only)",
+        "docx", help="render an HWP/HWPX to DOCX (Hancom only: hwp2pdf-cli → server)",
     )
     rdocx.add_argument("input", type=Path, help="source .hwp/.hwpx file")
     rdocx.add_argument(
@@ -1585,6 +1610,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rdocx.add_argument(
         "--config", type=Path, default=None, help="hwp2pdf server config",
+    )
+    rdocx.add_argument(
+        "--engine", choices=("hwp2pdf", "local", "remote"), default="hwp2pdf",
+        help="hwp2pdf = this PC's hwp2pdf-cli, else the server; local / remote = that one only",
     )
     rdocx.add_argument(
         "--timeout", type=int, default=None, dest="timeout",

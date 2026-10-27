@@ -26,8 +26,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..render.rhwp import RenderFn
-from ..render.rhwp import resolve_rhwp as _resolve_rhwp
-from ..render.rhwp import rhwp_render_fn as _rhwp_render_fn
 
 DEFAULT_MODEL = "claude-opus-4-8"
 DEFAULT_DPI = 150
@@ -76,6 +74,8 @@ class VerifyResult:
     model: str
     pages: list[PageVerdict] = field(default_factory=list)  # pages actually checked
     error: str = ""  # set when a guard failed (missing/empty/corrupt PDF)
+    engine: str = ""  # what rendered an .hwp/.hwpx input ("hwp2pdf-cli" | "hwp2pdf" | "rhwp")
+    engine_note: str = ""  # why a preferred engine was skipped (one line)
 
     @property
     def passed(self) -> bool:
@@ -101,6 +101,8 @@ class VerifyResult:
             "problem_pages": self.problem_pages,
             "pages": [p.as_dict() for p in self.pages],
             "error": self.error,
+            "engine": self.engine,
+            "engine_note": self.engine_note,
         }
 
 
@@ -165,9 +167,8 @@ def verify_pdf(
 
 
 # --------------------------------------------------------------------------- #
-# .hwp/.hwpx input — render to PDF locally via rhwp, then verify (Tier 1).
-# The rhwp helpers (_resolve_rhwp / _rhwp_render_fn / RenderFn) live in
-# hwp_agent.render.rhwp and are imported above.
+# .hwp/.hwpx input — render to PDF through hwp_agent.render (Hancom engine when
+# available, else rhwp), then verify.
 # --------------------------------------------------------------------------- #
 def verify_hwp(
     hwp_path: str | Path,
@@ -178,16 +179,19 @@ def verify_hwp(
     max_pages: int | None = None,
     rhwp_bin: str | None = None,
     render_fn: RenderFn | None = None,
+    engine: str | None = None,
 ) -> VerifyResult:
-    """Render an .hwp/.hwpx to PDF (via rhwp) then verify it, all locally.
+    """Render an .hwp/.hwpx to PDF then verify it.
 
-    Tier-1 verification: needs **no Hancom**. rhwp's layout differs from Hancom on
-    exact pagination/spacing (see ``docs/output-verification.md``), so this is for
-    *content / gross* defects (missing figures, blank pages, broken tables); use the
-    Hancom-rendered PDF path (:func:`verify_pdf`) for authoritative layout sign-off.
+    The PDF comes from :func:`hwp_agent.render.render_document` (``engine``: see
+    there; default ``auto`` = hwp2pdf-cli on this PC → hwp2pdf server → rhwp), and
+    ``VerifyResult.engine`` says which one. Only a Hancom render (``hwp2pdf-cli`` /
+    ``hwp2pdf``) is authoritative for layout; rhwp differs on exact pagination and
+    spacing (see ``docs/output-verification.md``), so an rhwp verdict covers
+    *content / gross* defects (missing figures, blank pages, broken tables) only.
 
-    ``render_fn`` is injectable (like ``vision_fn``) so tests run without the rhwp
-    binary. The reported ``pdf`` is the original source path.
+    ``render_fn`` is injectable (like ``vision_fn``) so tests run without any
+    engine; it is recorded as ``rhwp``. The reported ``pdf`` is the source path.
     """
     hwp_path = Path(hwp_path)
     result = VerifyResult(pdf=str(hwp_path), page_count=0, dpi=dpi, model=model)
@@ -195,27 +199,34 @@ def verify_hwp(
         result.error = f"input not found: {hwp_path}"
         return result
 
-    render = render_fn
-    if render is None:
-        rb = _resolve_rhwp(rhwp_bin)
-        if rb is None:
-            raise FileNotFoundError(
-                "rhwp not found — install the rhwp CLI on PATH or set RHWP_BIN "
-                "(https://github.com/edwardkim/rhwp/releases)."
-            )
-        render = _rhwp_render_fn(rb)
+    from ..render import render_document
 
     with tempfile.TemporaryDirectory(prefix="hwp_verify_") as td:
         out_pdf = Path(td) / "rendered.pdf"
-        try:
-            render(hwp_path, out_pdf)
-        except Exception as exc:  # noqa: BLE001 — render failure is a guard fail
-            result.error = f"render failed: {exc}"
-            return result
+        if render_fn is not None:
+            engine_used, note = "rhwp", ""
+            try:
+                render_fn(hwp_path, out_pdf)
+            except Exception as exc:  # noqa: BLE001 — render failure is a guard fail
+                result.error = f"render failed: {exc}"
+                return result
+        else:
+            rendered = render_document(hwp_path, out_pdf, fmt="pdf", engine=engine,
+                                       rhwp_bin=rhwp_bin)
+            if not rendered.ok:
+                if rendered.backend == "rhwp" and rendered.returncode == 2:
+                    raise FileNotFoundError(
+                        f"{rendered.stderr} (https://github.com/edwardkim/rhwp/releases)"
+                    )
+                result.error = f"render failed: {rendered.stderr}"
+                result.engine = rendered.backend
+                return result
+            engine_used, note = rendered.backend, rendered.note
         r = verify_pdf(
             out_pdf, dpi=dpi, model=model, vision_fn=vision_fn, max_pages=max_pages
         )
     r.pdf = str(hwp_path)  # report the source, not the temp render
+    r.engine, r.engine_note = engine_used, note
     return r
 
 
@@ -228,12 +239,13 @@ def verify_document(
     max_pages: int | None = None,
     rhwp_bin: str | None = None,
     render_fn: RenderFn | None = None,
+    engine: str | None = None,
 ) -> VerifyResult:
-    """Verify a document, dispatching by extension: .hwp/.hwpx via rhwp, else PDF."""
+    """Verify a document, dispatching by extension: .hwp/.hwpx rendered first, else PDF."""
     if Path(path).suffix.lower() in (".hwp", ".hwpx"):
         return verify_hwp(
             path, dpi=dpi, model=model, vision_fn=vision_fn, max_pages=max_pages,
-            rhwp_bin=rhwp_bin, render_fn=render_fn,
+            rhwp_bin=rhwp_bin, render_fn=render_fn, engine=engine,
         )
     return verify_pdf(path, dpi=dpi, model=model, vision_fn=vision_fn, max_pages=max_pages)
 

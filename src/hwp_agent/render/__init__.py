@@ -1,7 +1,8 @@
 """HWP/HWPX → PDF/DOCX rendering (a new axis, separate from ``convert/``).
 
-Tier 1 ``rhwp`` (local, PDF) and Tier 2 ``hwp2pdf`` (Hancom-authoritative,
-PDF+DOCX, the ``hwp2pdf-serve`` HTTP API) behind one selection (:func:`render_document`). See
+Engines, in ``auto`` order: ``hwp2pdf-cli`` (Hancom on this Windows PC),
+``hwp2pdf`` (Hancom via the ``hwp2pdf-serve`` HTTP API) and ``rhwp`` (local,
+PDF only, approximate) — behind one selection (:func:`render_document`). See
 ``docs/output-verification.md``.
 """
 
@@ -9,6 +10,7 @@ from __future__ import annotations
 
 from .base import RenderBackend, RenderResult
 from .config import Hwp2PdfConfig, resolve_hwp2pdf_config
+from .local_hwp2pdf import LocalHwp2PdfBackend, resolve_hwp2pdf_cli
 from .local_rhwp import LocalRhwpBackend
 from .remote_hwp2pdf import (
     HttpTransport,
@@ -18,7 +20,13 @@ from .remote_hwp2pdf import (
     RemoteHwp2PdfBackend,
 )
 from .rhwp import RenderFn, resolve_rhwp, rhwp_render_fn
-from .select import render_document, select_render_backend
+from .select import (
+    ENGINE_LABELS,
+    ENGINES,
+    render_document,
+    resolve_engine,
+    select_render_backend,
+)
 
 __all__ = [
     "RenderBackend",
@@ -27,6 +35,8 @@ __all__ = [
     "resolve_rhwp",
     "rhwp_render_fn",
     "LocalRhwpBackend",
+    "LocalHwp2PdfBackend",
+    "resolve_hwp2pdf_cli",
     "RemoteHwp2PdfBackend",
     "Hwp2PdfClient",
     "Hwp2PdfError",
@@ -34,6 +44,9 @@ __all__ = [
     "HttpTransport",
     "Hwp2PdfConfig",
     "resolve_hwp2pdf_config",
+    "ENGINES",
+    "ENGINE_LABELS",
+    "resolve_engine",
     "select_render_backend",
     "render_document",
 ]

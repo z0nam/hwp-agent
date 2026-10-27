@@ -29,7 +29,13 @@ def _isolate_hwp2pdf(monkeypatch, tmp_path_factory) -> None:
         "HWP2PDF_CONFIG", str(tmp_path_factory.getbasetemp() / "no-hwp2pdf.json")
     )
     monkeypatch.setenv("HWP2PDF_NO_LOCAL", "1")  # never probe a real local server
-    for var in ("HWP2PDF_SERVER_URL", "HWP2PDF_TOKEN", "HWP2PDF_TOKEN_FILE", "HWP2PDF_TIMEOUT"):
+    # nor read the token a real "hwp2pdf serve --init" saved on this (Windows) machine
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path_factory.getbasetemp() / "no-localappdata"))
+    # never run a real hwp2pdf-cli found on PATH
+    monkeypatch.setenv("HWP2PDF_CLI", str(tmp_path_factory.getbasetemp() / "no-hwp2pdf-cli"))
+    monkeypatch.setattr("hwp_agent.render.local_hwp2pdf.DEFAULT_CLI", "no-such-hwp2pdf-cli")
+    for var in ("HWP2PDF_SERVER_URL", "HWP2PDF_TOKEN", "HWP2PDF_TOKEN_FILE", "HWP2PDF_TIMEOUT",
+                "HWP_AGENT_RENDER_ENGINE"):
         monkeypatch.delenv(var, raising=False)
 
 

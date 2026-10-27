@@ -93,41 +93,55 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 runtime; install a JRE 17+ (e.g. [Temurin](https://adoptium.net/)) to run
 `convert`. HWPX-only use (editing, `form fill`) needs no Java at all.
 
-### Layout engines (for `fit tails`, `pdf`, `docx`)
+### Layout engines (for `fit tails`, `pdf`, `docx`, `verify`)
 
 Everything above works without these. They matter only when hwp-agent has to
 know **how Hangul lays a document out** — `fit tails` on a document never saved
-in Hangul (e.g. a fresh `write` output), and `pdf`/`docx`. hwp-agent picks, in order:
+in Hangul (e.g. a fresh `write` output), and `pdf`/`docx`/`verify`. hwp-agent picks, in order:
 
-1. **hwp2pdf** — Hangul itself, through the conversion server of the separate
+1. **hwp2pdf-cli** (`pdf`, `docx`, `verify` only) — Hangul itself on *this* Windows
+   PC, through the CLI of the separate [hwp2pdf](https://github.com/z0nam/hwp2pdf)
+   project. No server, no token. Found as `$HWP2PDF_CLI`, else `hwp2pdf-cli` on
+   `PATH` (the hwp2pdf installer adds it). Needs a logged-in desktop session: run
+   over SSH (session 0) Hangul's COM server does not start and the CLI fails after
+   about two minutes, so hwp-agent moves on to the next engine.
+2. **hwp2pdf server** — Hangul itself, through the conversion server of the separate
    [hwp2pdf](https://github.com/z0nam/hwp2pdf) project (`hwp2pdf serve`, Windows +
    Hancom Office). Exact. DOCX needs it. Hangul may save a long document with only
    its first pages laid out; `fit tails` then judges the remaining paragraphs with
    rhwp and reports the split (e.g. `문단 한글 22 · rhwp 57`). Without rhwp they are
    left unjudged and the result says `일부만 판정` rather than "no targets".
-2. **rhwp** — a stand-alone renderer. Runs anywhere, but its line breaks can
+3. **rhwp** — a stand-alone renderer. Runs anywhere, but its line breaks can
    differ from Hangul's; results are labelled `rhwp 조판 기준(한글과 다를 수 있음)`.
-3. **none** — `fit tails` prints `판정 엔진 없음` with the reason for each engine
+4. **none** — `fit tails` prints `판정 엔진 없음` with the reason for each engine
    and exits 3 (`write`/`build --fit-tails` only warn and still write the file).
 
-**hwp2pdf is never used while Hangul is running on the server machine** (or the
+**hwp2pdf is never used while Hangul is running on that machine** (or the
 server has other jobs queued): hwp-agent does not open a second Hangul next to
-yours and never closes yours. On your own PC with Hangul open, that means rhwp.
-For Hangul-exact results while you work, point at a server on a machine where
-nobody keeps Hangul open.
+yours and never closes yours. On your own PC with Hangul open, the local CLI
+declines and hwp-agent tries the server, then rhwp. For Hangul-exact results while
+you work, point at a server on a machine where nobody keeps Hangul open.
+
+Every `pdf`/`docx`/`verify` result names the engine (`via hwp2pdf-cli · 한컴 · 이 PC`,
+`via hwp2pdf · 한컴 · 변환 서버`, `via rhwp · 근사 레이아웃`) and, when a preferred
+engine was skipped, a `note:` line saying why. Only the two Hancom engines are
+authoritative for pagination and spacing. Force one with `--engine` or
+`$HWP_AGENT_RENDER_ENGINE`: `auto` (default, the order above), `hwp2pdf` (Hancom
+only: CLI, else server; never rhwp), `local`, `remote`, `rhwp` (that one only).
 
 Setup, by situation:
 
 | You are on | Do this |
 |---|---|
-| Windows PC with hwp2pdf installed | Run `hwp2pdf-cli.exe serve --init` (or its scheduled task). Nothing to configure: hwp-agent finds `127.0.0.1:17650` and the token `serve --init` saved. Used only while Hangul is closed. |
+| Windows PC with hwp2pdf installed | Nothing for `pdf`/`docx`/`verify`: hwp-agent runs `hwp2pdf-cli` from `PATH` (or `$HWP2PDF_CLI`). For `fit tails` also run `hwp2pdf-cli.exe serve --init` (or its scheduled task); hwp-agent then finds `127.0.0.1:17650` and the token `serve --init` saved. Used only while Hangul is closed. |
 | Any PC, shared conversion server | Create `~/.config/hwp-agent/hwp2pdf.json` from [`examples/hwp2pdf.example.json`](examples/hwp2pdf.example.json): `server_url`, and the token in a file named by `token_file` (mode 600) or in `$HWP2PDF_TOKEN`. Never put the token in the JSON or a repo. |
 | No server | Install rhwp: download the binary for your OS from [rhwp releases](https://github.com/edwardkim/rhwp/releases) and put it on `PATH`, or set `$RHWP_BIN` to its path. |
 
 Check what you got with `hwp-agent fit tails FILE.hwpx --dry-run`: the report
 ends with `[판정: …]` naming the engine, or explains why none was available.
-Env overrides: `HWP2PDF_SERVER_URL`, `HWP2PDF_TOKEN`, `HWP2PDF_TOKEN_FILE`,
-`HWP2PDF_TIMEOUT`, `HWP2PDF_NO_LOCAL=1` (skip the `127.0.0.1` probe), `RHWP_BIN`.
+Env overrides: `HWP_AGENT_RENDER_ENGINE`, `HWP2PDF_CLI`, `HWP2PDF_SERVER_URL`,
+`HWP2PDF_TOKEN`, `HWP2PDF_TOKEN_FILE`, `HWP2PDF_TIMEOUT`, `HWP2PDF_NO_LOCAL=1`
+(skip the `127.0.0.1` probe), `RHWP_BIN`.
 
 ## Usage
 
@@ -135,14 +149,15 @@ Env overrides: `HWP2PDF_SERVER_URL`, `HWP2PDF_TOKEN`, `HWP2PDF_TOKEN_FILE`,
 hwp-agent convert report.hwp report.hwpx
 hwp-agent --version
 
-# render HWP/HWPX -> PDF/DOCX. auto = Hancom via the hwp2pdf conversion server
-# (hwp2pdf-serve, a separate project) if usable, else local rhwp for PDF. DOCX is
-# Hancom-only (rhwp can't). hwp2pdf is never used while Hangul is running on the
-# server machine or its queue is busy -- PDF falls back to rhwp (issue #61).
-hwp-agent pdf report.hwpx                 # auto
-hwp-agent pdf report.hwpx --engine rhwp   # force local (no Hancom)
-hwp-agent docx report.hwpx                # DOCX -> hwp2pdf only
-#   hwp2pdf needs ~/.config/hwp-agent/hwp2pdf.json (examples/hwp2pdf.example.json):
+# render HWP/HWPX -> PDF/DOCX. auto = Hancom via hwp2pdf-cli on this Windows PC,
+# else the hwp2pdf conversion server, else local rhwp for PDF. DOCX is Hancom-only
+# (rhwp can't). Neither Hancom engine is used while Hangul is running on its
+# machine (or the server queue is busy). See "Layout engines".
+hwp-agent pdf report.hwpx                    # auto
+hwp-agent pdf report.hwpx --engine hwp2pdf   # Hancom only (cli -> server), never rhwp
+hwp-agent pdf report.hwpx --engine rhwp      # force rhwp (no Hancom)
+hwp-agent docx report.hwpx                   # DOCX -> hwp2pdf-cli, else the server
+#   the server needs ~/.config/hwp-agent/hwp2pdf.json (examples/hwp2pdf.example.json):
 #   server_url + token via $HWP2PDF_TOKEN or token_file
 
 # fill a Korean form: inspect slots, then fill

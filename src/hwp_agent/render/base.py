@@ -4,10 +4,12 @@
 turns an ``.hwp``/``.hwpx`` into a *rendered* terminal artefact (PDF or DOCX)
 for sign-off or distribution — never edited further by hwp-agent.
 
-Two backends implement :class:`RenderBackend`:
+Three backends implement :class:`RenderBackend`:
 
 - ``rhwp`` (Tier 1) — local, PDF only, layout is approximate (rhwp paginates
   ~+25% vs Hancom); good for gross-defect checks, runs anywhere.
+- ``hwp2pdf-cli`` (Tier 2) — Hancom-authoritative PDF+DOCX through the hwp2pdf
+  CLI on this Windows PC (no server, no token).
 - ``hwp2pdf`` (Tier 2) — Hancom-authoritative PDF+DOCX via the ``hwp2pdf-serve``
   HTTP API on a Windows node; the source of truth for precise layout.
 
@@ -28,7 +30,7 @@ class RenderResult:
 
     output_path: Path
     fmt: str  # "pdf" | "docx"
-    backend: str  # "rhwp" | "hwp2pdf"
+    backend: str  # "hwp2pdf-cli" | "hwp2pdf" | "rhwp"
     returncode: int
     stdout: str = ""
     stderr: str = ""
@@ -39,6 +41,11 @@ class RenderResult:
     @property
     def ok(self) -> bool:
         return self.returncode == 0 and Path(self.output_path).is_file()
+
+    @property
+    def authoritative(self) -> bool:
+        """Rendered by Hancom itself (layout is final), not rhwp's approximation."""
+        return self.backend != "rhwp"
 
 
 class RenderBackend(ABC):

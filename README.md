@@ -278,8 +278,13 @@ For a single project instead, symlink it there:
 `ln -s "$PWD/skills/hwp-agent" .claude/skills/hwp-agent`.
 
 Then Claude Code invokes it automatically for HWP/HWPX tasks, or on demand with
-`/hwp-agent`. The skill's `references/` are snapshots of `docs/`; refresh them
-with `cp docs/{template-convention,tables}.md skills/hwp-agent/references/`.
+`/hwp-agent`. `SKILL.md` keeps the common rules and a "Which file to read" table;
+per-workflow detail (`write` Markdown, footnotes·links, equations, figures, cover
+metadata, the command table, `extract`, hand-editing) lives in `references/*.md`
+and is read only for that step, so one invocation stays within the 10k-token
+budget. `references/template-convention.md` and `references/tables.md` are
+snapshots of `docs/`; refresh them with
+`cp docs/{template-convention,tables}.md skills/hwp-agent/references/`.
 
 ## Development
 

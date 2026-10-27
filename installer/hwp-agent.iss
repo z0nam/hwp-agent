@@ -77,23 +77,23 @@ end;
 function IsClaudeCodeInstalled(): boolean;
 begin
   Result :=
-    FileExists(ExpandConstant('{userprofile}\.claude.json')) or
-    DirExists(ExpandConstant('{userprofile}\.claude')) or
-    FileExists(ExpandConstant('{userprofile}\.local\bin\claude.exe')) or
+    FileExists(ExpandConstant('{%USERPROFILE}\.claude.json')) or
+    DirExists(ExpandConstant('{%USERPROFILE}\.claude')) or
+    FileExists(ExpandConstant('{%USERPROFILE}\.local\bin\claude.exe')) or
     FileExists(ExpandConstant('{userappdata}\npm\claude.cmd'));
 end;
 
 function IsCodexInstalled(): boolean;
 begin
   Result :=
-    DirExists(ExpandConstant('{userprofile}\.codex')) or
+    DirExists(ExpandConstant('{%USERPROFILE}\.codex')) or
     FileExists(ExpandConstant('{userappdata}\npm\codex.cmd'));
 end;
 
 function IsGeminiInstalled(): boolean;
 begin
   Result :=
-    DirExists(ExpandConstant('{userprofile}\.gemini')) or
+    DirExists(ExpandConstant('{%USERPROFILE}\.gemini')) or
     FileExists(ExpandConstant('{userappdata}\npm\gemini.cmd'));
 end;
 

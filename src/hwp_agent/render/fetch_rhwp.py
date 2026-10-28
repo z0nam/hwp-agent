@@ -126,7 +126,7 @@ def download_rhwp(*, force: bool = False, url: str | None = None) -> Path:
         return dest
     asset, sha = RHWP_ASSETS[slug]
     src = url or f"{RELEASE_URL}/{asset}"
-    with urllib.request.urlopen(src) as resp:  # noqa: S310
+    with urllib.request.urlopen(src, timeout=120) as resp:  # noqa: S310
         archive = resp.read()
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(asset + ".part")

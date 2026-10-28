@@ -93,6 +93,15 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 runtime; install a JRE 17+ (e.g. [Temurin](https://adoptium.net/)) to run
 `convert`. HWPX-only use (editing, `form fill`) needs no Java at all.
 
+It also downloads **rhwp** — the fallback render engine used when Hangul is open
+on this PC and no hwp2pdf server is set (see "Layout engines"). The version and
+each platform's sha256 are pinned in `src/hwp_agent/render/fetch_rhwp.py`
+(currently v0.8.7 from [edwardkim/rhwp](https://github.com/edwardkim/rhwp), MIT);
+it lands in `%LOCALAPPDATA%\hwp-agent\rhwp` (macOS/Linux
+`~/.local/share/hwp-agent/rhwp`) together with rhwp's own `LICENSE`. A failed
+download only warns. `RHWP_RELEASE_URL` points it at a mirror with the same
+asset names. `jaix setup` pre-fetches the same file from the locked commit.
+
 ### Layout engines (for `fit tails`, `pdf`, `docx`, `verify`)
 
 Everything above works without these. They matter only when hwp-agent has to
@@ -112,7 +121,9 @@ in Hangul (e.g. a fresh `write` output), and `pdf`/`docx`/`verify`. hwp-agent pi
    rhwp and reports the split (e.g. `문단 한글 22 · rhwp 57`). Without rhwp they are
    left unjudged and the result says `일부만 판정` rather than "no targets".
 3. **rhwp** — a stand-alone renderer. Runs anywhere, but its line breaks can
-   differ from Hangul's; results are labelled `rhwp 조판 기준(한글과 다를 수 있음)`.
+   differ from Hangul's; results are labelled `rhwp 조판 기준(한글과 다를 수 있음)`,
+   and a `pdf` rendered by it adds `참고: rhwp 근사 렌더(미리보기용) …`. Found as
+   `$RHWP_BIN`, else `rhwp` on `PATH`, else the copy `hwp-agent setup` downloaded.
 4. **none** — `fit tails` prints `판정 엔진 없음` with the reason for each engine
    and exits 3 (`write`/`build --fit-tails` only warn and still write the file).
 
@@ -135,7 +146,7 @@ Setup, by situation:
 |---|---|
 | Windows PC with hwp2pdf installed | Nothing for `pdf`/`docx`/`verify`: hwp-agent runs `hwp2pdf-cli` from `PATH` (or `$HWP2PDF_CLI`). For `fit tails` also run `hwp2pdf-cli.exe serve --init` (or its scheduled task); hwp-agent then finds `127.0.0.1:17650` and the token `serve --init` saved. Used only while Hangul is closed. |
 | Any PC, shared conversion server | Create `~/.config/hwp-agent/hwp2pdf.json` from [`examples/hwp2pdf.example.json`](examples/hwp2pdf.example.json): `server_url`, and the token in a file named by `token_file` (mode 600) or in `$HWP2PDF_TOKEN`. Never put the token in the JSON or a repo. |
-| No server | Install rhwp: download the binary for your OS from [rhwp releases](https://github.com/edwardkim/rhwp/releases) and put it on `PATH`, or set `$RHWP_BIN` to its path. |
+| No server, or Hangul open | rhwp: `hwp-agent setup` downloads the pinned build (below). Or put any rhwp on `PATH` / set `$RHWP_BIN`. |
 
 Check what you got with `hwp-agent fit tails FILE.hwpx --dry-run`: the report
 ends with `[판정: …]` naming the engine, or explains why none was available.

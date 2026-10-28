@@ -124,7 +124,9 @@ class LocalHwp2PdfBackend(RenderBackend):
             except subprocess.TimeoutExpired:
                 return RenderResult(
                     out, fmt, self.name, 1,
-                    stderr=f"hwp2pdf-cli가 {self.timeout}초 안에 끝나지 않음",
+                    stderr=f"hwp2pdf-cli가 {self.timeout}초 안에 끝나지 않음 — 한글 창에 "
+                           "응답이 필요할 수 있음(예: 첫 실행 '사용성 데이터 수집 동의'). "
+                           "이 PC 화면을 확인",
                 )
             except OSError as exc:
                 return RenderResult(out, fmt, self.name, 2, stderr=f"hwp2pdf-cli 실행 실패: {exc}")

@@ -54,3 +54,12 @@ def test_uninstall_stops_only_this_exe_and_cleans_path():
     assert "RemoveFromUserPath(AppDir)" in step
     # locked exe: deleted at next logon; the folder only if empty
     assert "RunOnce" in step and 'del /f /q "\' + Exe' in step and 'rmdir "\' + AppDir' in step
+
+
+def test_reinstall_cancels_a_pending_cleanup():
+    # 제거 → 다음 로그온 전 재설치: 남은 RunOnce 가 새 exe 를 지우지 않게
+    code = _section("Code")
+    step = code[code.index("procedure CurStepChanged"):code.index("procedure StopOwnProcesses")]
+    assert "ssInstall" in step
+    assert re.search(r"RegDeleteValue\(HKEY_CURRENT_USER,\s*'Software\\Microsoft\\Windows"
+                     r"\\CurrentVersion\\RunOnce',\s*'hwp-agent-uninstall'\)", step)

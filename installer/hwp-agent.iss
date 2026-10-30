@@ -176,6 +176,11 @@ var
   I: Integer;
   GuideText: string;
 begin
+  // 이전 제거가 잠긴 exe 를 지우려고 남긴 RunOnce 가 있으면 지운다 — 다음 로그온 전에 다시
+  // 설치했다면 그 항목이 새로 깐 exe 를 지운다 (#86 리뷰)
+  if CurStep = ssInstall then
+    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\RunOnce',
+      'hwp-agent-uninstall');
   if CurStep = ssPostInstall then
   begin
     ClientsCsv := SelectedClientsCsv();

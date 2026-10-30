@@ -90,6 +90,16 @@ begin
     FileExists(ExpandConstant('{userappdata}\npm\codex.cmd'));
 end;
 
+// jaix(연구원 PC 설치기)가 있으면 Claude Code·Codex 의 hwp-agent 는 jaix 가 플러그인·uvx 로 연결한다.
+// 여기서 그 둘을 등록하면 jaix 의 Codex [mcp_servers.hwp-agent] 를 이 exe 경로로 덮어쓰고, 제거할 때
+// (command 가 이 exe 라서) 그 항목까지 지운다 — 그래서 jaix 가 보이면 둘을 기본으로 끈다 (#85).
+function IsJaixInstalled(): boolean;
+begin
+  Result :=
+    DirExists(ExpandConstant('{localappdata}\jaix')) or
+    (FileSearch('jaix.exe', GetEnv('PATH')) <> '');
+end;
+
 function IsGeminiInstalled(): boolean;
 begin
   Result :=
@@ -98,12 +108,20 @@ begin
 end;
 
 procedure InitializeWizard();
+var
+  Jaix: boolean;
+  Intro: string;
 begin
+  Jaix := IsJaixInstalled();
+  Intro := '이 PC에 설치된 AI가 자동으로 체크되었습니다. 체크한 앱의 설정 파일에 hwp-agent 도구를 자동 등록합니다 (기존 설정은 유지됩니다).';
+  if Jaix then
+    Intro := Intro + #13#10 + #13#10 +
+      'jaix가 설치된 PC라 Claude Code·Codex 체크를 껐습니다 — 이 둘은 jaix가 연결하며, 여기서 체크하면 jaix 설정을 이 설치본으로 덮어씁니다.';
   AiClientPage := CreateInputOptionPage(
     wpSelectTasks,
     'AI 클라이언트 연결 (MCP 자동 등록)',
     '어떤 AI에서 hwp-agent를 쓰시나요?',
-    '이 PC에 설치된 AI가 자동으로 체크되었습니다. 체크한 앱의 설정 파일에 hwp-agent 도구를 자동 등록합니다 (기존 설정은 유지됩니다).',
+    Intro,
     False,
     False
   );
@@ -113,8 +131,8 @@ begin
   AiClientPage.Add('Gemini CLI');
 
   AiClientPage.Values[0] := IsClaudeDesktopInstalled();
-  AiClientPage.Values[1] := IsClaudeCodeInstalled();
-  AiClientPage.Values[2] := IsCodexInstalled();
+  AiClientPage.Values[1] := IsClaudeCodeInstalled() and not Jaix;
+  AiClientPage.Values[2] := IsCodexInstalled() and not Jaix;
   AiClientPage.Values[3] := IsGeminiInstalled();
 
   AiGuidePage := CreateOutputMsgMemoPage(
@@ -198,6 +216,70 @@ begin
         '명령창에서 직접 실행해 주세요:' + #13#10 +
         '  hwp-agent setup --register ' + ClientsCsv;
     end;
+  end;
+end;
+
+// ── 제거 ─────────────────────────────────────────────────────────────────
+// {app}(= %LOCALAPPDATA%\hwp-agent)은 jaix 와 hwp-agent setup 이 받은 hwp2hwpx jar·rhwp 도 담는 폴더다.
+// 그래서 폴더를 통째로 지우지 않는다: Inno 는 자기가 깐 파일만 지우고 폴더는 비었을 때만 지운다.
+// 아래 정리도 이 exe 하나와 빈 폴더만 다룬다 (tests/test_installer_iss.py 가 지킨다).
+
+// Code 탭 등이 MCP 로 띄운 이 경로의 hwp-agent.exe 만 끝낸다. jaix 가 uvx 로 띄운 hwp-agent.exe 는
+// 경로가 달라 건드리지 않는다. 안 끝내면 exe 를 못 지워 "일부 요소를 제거할 수 없습니다" 가 뜬다.
+procedure StopOwnProcesses();
+var
+  ResultCode: Integer;
+  Exe: string;
+begin
+  Exe := ExpandConstant('{app}\hwp-agent.exe');
+  StringChangeEx(Exe, '''', '''''', True);  // PowerShell 작은따옴표 문자열 안이라 ' 를 겹친다
+  // Win32_Process.ExecutablePath 는 32/64비트 어느 쪽 프로세스에서 봐도 채워진다(Get-Process .Path 는 아님)
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | ' +
+    'Where-Object { $_.Name -eq ''hwp-agent.exe'' -and $_.ExecutablePath -eq ''' + Exe + ''' } | ' +
+    'ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; ' +
+    'Start-Sleep -Milliseconds 500"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+// 사용자 PATH 에서 {app} 를 뺀다. 설치 때 [Registry] 로 넣기만 하고 빼는 쪽이 없었다.
+procedure RemoveFromUserPath(Dir: string);
+var
+  OrigPath, P, Target: string;
+  I: Integer;
+begin
+  if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', OrigPath) then
+    exit;
+  P := ';' + OrigPath + ';';
+  Target := ';' + Uppercase(Dir) + ';';
+  I := Pos(Target, Uppercase(P));
+  while I > 0 do
+  begin
+    Delete(P, I, Length(Target) - 1);
+    I := Pos(Target, Uppercase(P));
+  end;
+  P := Copy(P, 2, Length(P) - 2);
+  if P <> OrigPath then
+    RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', P);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Exe, AppDir: string;
+begin
+  if CurUninstallStep = usUninstall then
+    StopOwnProcesses();
+  if CurUninstallStep = usPostUninstall then
+  begin
+    AppDir := ExpandConstant('{app}');
+    Exe := AppDir + '\hwp-agent.exe';
+    RemoveFromUserPath(AppDir);
+    // 그래도 exe 가 잠겨 남았으면 다음 로그온 때 지운다. 사용자 범위 설치라 재부팅 삭제
+    // (uninsrestartdelete, 관리자 필요)를 못 쓴다. rmdir 은 /s 없이 — 폴더가 비었을 때만 지워진다.
+    if FileExists(Exe) then
+      RegWriteStringValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\RunOnce',
+        'hwp-agent-uninstall',
+        ExpandConstant('{cmd}') + ' /c del /f /q "' + Exe + '" & rmdir "' + AppDir + '"');
   end;
 end;
 

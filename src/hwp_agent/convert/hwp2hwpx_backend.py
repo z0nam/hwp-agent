@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
+from .._subproc import decode
 from .base import ConverterBackend, ConvertResult
 
 # <repo>/src/hwp_agent/convert/hwp2hwpx_backend.py -> parents[3] == <repo>
@@ -185,7 +186,7 @@ class Hwp2HwpxBackend(ConverterBackend):
 
         hwpx_path.parent.mkdir(parents=True, exist_ok=True)
         cmd = [self.java_bin, "-jar", str(self.jar_path), str(hwp_path), str(hwpx_path)]
-        proc = subprocess.run(cmd, capture_output=True, text=True)  # noqa: S603
+        proc = subprocess.run(cmd, capture_output=True)  # noqa: S603  (bytes → decode)
 
         normalized: tuple[str, ...] = ()
         if self.normalize and proc.returncode == 0 and hwpx_path.is_file():
@@ -195,7 +196,7 @@ class Hwp2HwpxBackend(ConverterBackend):
             hwpx_path=hwpx_path,
             backend=self.name,
             returncode=proc.returncode,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
+            stdout=decode(proc.stdout),
+            stderr=decode(proc.stderr),
             normalized=normalized,
         )

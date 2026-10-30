@@ -58,10 +58,12 @@ def test_convert_builds_expected_java_command(tmp_path: Path, monkeypatch) -> No
 
     captured: dict[str, list[str]] = {}
 
-    def fake_run(cmd, capture_output, text):  # noqa: ANN001
+    def fake_run(cmd, capture_output, **kw):  # noqa: ANN001
         captured["cmd"] = cmd
+        captured["text"] = kw.get("text")
         out.write_bytes(b"PK\x03\x04")  # pretend the converter wrote output
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        # bytes, decoded by the backend (Java on a Korean Windows prints cp949)
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr="경고".encode("cp949"))
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -69,7 +71,8 @@ def test_convert_builds_expected_java_command(tmp_path: Path, monkeypatch) -> No
     result = backend.convert(src, out)
 
     assert captured["cmd"] == ["java", "-jar", str(jar), str(src), str(out)]
-    assert result.ok is True
+    assert not captured["text"]  # not the locale's codec (hwp-agent#83)
+    assert result.ok is True and isinstance(result.stderr, str) and result.stdout == ""
     assert out.parent.is_dir()  # parent created for us
 
 

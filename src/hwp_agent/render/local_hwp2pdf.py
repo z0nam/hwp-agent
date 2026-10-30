@@ -30,6 +30,13 @@ DEFAULT_CLI = "hwp2pdf-cli"
 DEFAULT_TIMEOUT = 900  # same whole-job budget as the conversion server
 #: hwp2pdf's message when a Hangul is already open (cli.prepare_hwp_processes)
 _HWP_RUNNING = "already running"
+#: hwp2pdf could not bring Hangul up. Measured (Hancom 2022, 2026-10-30): with the
+#: first-run consent window up, COM gives up after ~2 min with CO_E_SERVER_EXEC_FAILURE
+#: ("서버 실행에 실패했습니다", -2146959355) and the CLI says only that it could not start.
+_START_FAILED = (
+    "한글을 시작하지 못했습니다", "Could not start Hancom", "서버 실행에 실패", "-2146959355",
+)
+CONSENT_HINT = "한컴 첫 실행 동의창이 떠 있을 수 있음 — 한글을 한 번 열어 답하세요"
 # env the CLI would read to go *remote*; this backend is the local engine
 _REMOTE_ENV = ("HWP2PDF_SERVER_URL", "HWP2PDF_TOKEN")
 _FLAGS = {"pdf": "--pdf", "docx": "--docx"}
@@ -128,6 +135,8 @@ class LocalHwp2PdfBackend(RenderBackend):
                     reason = "이 PC에서 한글이 실행 중 — 사용자 작업과 겹치지 않도록 쓰지 않음"
                 else:
                     reason = f"hwp2pdf-cli 변환 실패 (exit {proc.returncode}): {_tail(text)}"
+                    if any(m in text for m in _START_FAILED):
+                        reason += f" — {CONSENT_HINT}"
                 return RenderResult(
                     out, fmt, self.name, proc.returncode or 1,
                     stdout=stdout, stderr=reason, busy=busy,

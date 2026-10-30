@@ -16,6 +16,7 @@ from pathlib import Path
 
 from lxml import etree
 
+from .._subproc import decode
 from ..render.config import resolve_hwp2pdf_config
 from ..render.remote_hwp2pdf import Hwp2PdfClient, Hwp2PdfError
 from ..render.rhwp import resolve_rhwp, rhwp_search_desc
@@ -270,11 +271,11 @@ def _rhwp_layout(
 ) -> dict[tuple[int, int], _RhwpPara] | None:
     """Run ``rhwp dump-pages``; None if the subprocess fails or exits nonzero."""
     res = subprocess.run(  # noqa: S603
-        [rhwp_bin, "dump-pages", str(hwpx_path)], capture_output=True, text=True
+        [rhwp_bin, "dump-pages", str(hwpx_path)], capture_output=True
     )
     if res.returncode != 0:
         return None
-    return _parse_dump_pages(res.stdout)
+    return _parse_dump_pages(decode(res.stdout))
 
 
 def _clone_char_pr(

@@ -16,13 +16,13 @@ a private temp folder first and the output moved to the requested path.
 
 from __future__ import annotations
 
-import locale
 import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
+from .._subproc import decode as _decode
 from .base import RenderBackend, RenderResult
 from .remote_hwp2pdf import Hwp2PdfStatus
 
@@ -50,17 +50,6 @@ def resolve_hwp2pdf_cli(explicit: str | None = None) -> str | None:
         if found:
             return found
     return None
-
-
-def _decode(data: bytes | None) -> str:
-    """The CLI prints UTF-8 when it honours ``PYTHONIOENCODING``; the frozen exe on
-    a Korean Windows prints the ANSI code page (cp949) instead."""
-    if not data:
-        return ""
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return data.decode(locale.getpreferredencoding(False) or "cp949", errors="replace")
 
 
 def _tail(text: str, n: int = 3) -> str:

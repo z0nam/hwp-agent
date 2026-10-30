@@ -51,8 +51,56 @@ def test_decode_cp949_locale(monkeypatch):
     assert decode("한글 실행 중".encode("cp949")) == "한글 실행 중"
 
 
-def test_rhwp_failure_keeps_korean_tail(tmp_path, monkeypatch):
-    monkeypatch.setattr("locale.getpreferredencoding", lambda *_a: "cp949")
+def test_decode_prefers_ansi_over_oem(monkeypatch):
+    # OEM 437 decodes any byte; an ANSI-1252 frozen exe's output must not be read as 437
+    monkeypatch.setattr("locale.getpreferredencoding", lambda *_a: "cp1252")
+    monkeypatch.setattr("hwp_agent._subproc._oem", lambda: "cp437")
+    assert decode("café".encode("cp1252")) == "café"
+
+
+def test_decode_falls_to_oem_then_replaces(monkeypatch):
+    monkeypatch.setattr("locale.getpreferredencoding", lambda *_a: "ascii")
+    monkeypatch.setattr("hwp_agent._subproc._oem", lambda: "cp949")
+    assert decode("한글".encode("cp949")) == "한글"
+    monkeypatch.setattr("hwp_agent._subproc._oem", lambda: None)
+    assert "\ufffd" in decode(b"\xff\xfe")
+
+
+@pytest.mark.parametrize("call", ["render", "dump-pages", "java"])
+def test_children_are_read_as_bytes(tmp_path, monkeypatch, call):
+    """The regression itself: no text/encoding mode reaches subprocess.run (hwp-agent#83).
+
+    Patching the locale does not reach ``text=True`` (TextIOWrapper asks C for the
+    locale encoding), so this checks the arguments instead."""
+    import subprocess
+
+    seen = {}
+
+    def fake_run(cmd, **kw):  # noqa: ANN001
+        seen.update(kw)
+        return subprocess.CompletedProcess(cmd, 1, stdout="표".encode(), stderr="오류".encode())
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    if call == "render":
+        with pytest.raises(RuntimeError, match="오류"):
+            rhwp_render_fn("rhwp")(tmp_path / "a.hwpx", tmp_path / "a.pdf")
+    elif call == "dump-pages":
+        from hwp_agent.ops.fit_tails import _rhwp_layout
+
+        assert _rhwp_layout(tmp_path / "a.hwpx", "rhwp") is None
+    else:
+        from hwp_agent.convert.hwp2hwpx_backend import Hwp2HwpxBackend
+
+        jar = tmp_path / "x.jar"
+        jar.write_bytes(b"x")
+        src = tmp_path / "a.hwp"
+        src.write_bytes(b"x")
+        res = Hwp2HwpxBackend(jar_path=jar, normalize=False).convert(src, tmp_path / "a.hwpx")
+        assert res.stderr == "오류"
+    assert seen.get("capture_output") and not seen.get("text") and "encoding" not in seen
+
+
+def test_rhwp_failure_keeps_korean_tail(tmp_path):
     render = rhwp_render_fn(_fake_exe(tmp_path, FAKE_RHWP))
     with pytest.raises(RuntimeError) as err:
         render(tmp_path / "서식.hwpx", tmp_path / "out.pdf")

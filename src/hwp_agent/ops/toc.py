@@ -98,10 +98,11 @@ class TocResult:
 # --------------------------------------------------------------------------- #
 # reading
 # --------------------------------------------------------------------------- #
-def _text(el, *, autonum: bool = False) -> str:
+def _text(el, *, autonum: dict | None = None) -> str:
     """Visible text of a paragraph's own runs (tabs as ``\\t``).
 
-    With *autonum*, an ``<hp:autoNum>`` counts as its ``num`` (caption numbers)."""
+    With *autonum* (from :func:`_autonum_values`), an ``<hp:autoNum>`` shows the
+    number Hangul gives it (caption numbers)."""
     out: list[str] = []
     for run in el.findall(_hp("run")):
         for child in run:
@@ -110,10 +111,39 @@ def _text(el, *, autonum: bool = False) -> str:
                 for sub in child:
                     out.append("\t" if sub.tag == _hp("tab") else "")
                     out.append(sub.tail or "")
-            elif autonum and child.tag == _hp("ctrl"):
+            elif autonum is not None and child.tag == _hp("ctrl"):
                 for an in child.iter(_hp("autoNum")):
-                    out.append(an.get("num", ""))
+                    out.append(str(autonum.get(an, an.get("num", ""))))
     return "".join(out)
+
+
+#: ``<hp:startNum>`` attribute per autoNum ``numType`` (a section restarting a count)
+_START_ATTR = {"TABLE": "tbl", "PICTURE": "pic", "EQUATION": "equation"}
+
+
+def _autonum_values(roots) -> dict:
+    """The number Hangul shows for each ``<hp:autoNum>``, counted in document order.
+
+    The saved ``num`` is only a cache — ``write`` clones one caption for every table,
+    so they all say 1 until Hangul renumbers them. Counting per ``numType`` the way
+    Hangul does: +1 per autoNum, ``<hp:newNum>`` sets the next number, and a
+    section's ``<hp:startNum tbl/pic/equation>`` (non-zero) restarts that count."""
+    counters: dict[str, int] = {}
+    values: dict = {}
+    for root in roots:
+        for el in root.iter(_hp("startNum"), _hp("newNum"), _hp("autoNum")):
+            if el.tag == _hp("startNum"):
+                for kind, attr in _START_ATTR.items():
+                    start = int(el.get(attr, "0") or 0)
+                    if start > 0:
+                        counters[kind] = start - 1
+            elif el.tag == _hp("newNum"):
+                counters[el.get("numType", "")] = int(el.get("num", "1")) - 1
+            else:
+                kind = el.get("numType", "")
+                counters[kind] = counters.get(kind, 0) + 1
+                values[el] = counters[kind]
+    return values
 
 
 def _label(p) -> str:
@@ -150,12 +180,12 @@ def find_toc_section(sections: dict[str, etree._Element]) -> str | None:
     return None
 
 
-def _caption_entries(obj, kind: str) -> TocEntry | None:
+def _caption_entries(obj, kind: str, autonum: dict) -> TocEntry | None:
     cap = obj.find(_hp("caption"))
     if cap is None:
         return None
     text = " ".join(
-        t for p in cap.iter(_hp("p")) if (t := _text(p, autonum=True).strip())
+        t for p in cap.iter(_hp("p")) if (t := _text(p, autonum=autonum).strip())
     )
     if not text:
         return None
@@ -259,6 +289,13 @@ def _fill_headings(root, headings: list[TocEntry], result: TocResult, *, toc_fie
     for _, p, lvl in sample:
         templates.setdefault(lvl, p)
     first_i, last_i = sample[0][0], sample[-1][0]
+    # a previous fill's TABLEOFCONTENTS field: replace through its begin/end paragraphs
+    toc_ids = {fb.get("id") for p in paras for fb in p.iter(_hp("fieldBegin"))
+               if fb.get("type") == "TABLEOFCONTENTS"}
+    marks = [i for i, p in enumerate(paras)
+             if any(fb.get("id") in toc_ids for fb in p.iter(_hp("fieldBegin")))
+             or any(fe.get("beginIDRef") in toc_ids for fe in p.iter(_hp("fieldEnd")))]
+    first_i, last_i = min([first_i, *marks]), max([last_i, *marks])
     # separator between chapters: what sits before the 2nd level-1 sample entry
     gap: list = []
     level1 = [i for i, _, lvl in sample if lvl == 1]
@@ -356,6 +393,7 @@ def fill_toc(
         result.section = toc_part
         after = parts[parts.index(toc_part) + 1:]
         used_ids = {p.get("id") for r in sections.values() for p in r.iter(_hp("p"))}
+        autonum = _autonum_values(sections[n] for n in parts)
         headings: list[TocEntry] = []
         for name in after:
             root = sections[name]
@@ -375,7 +413,7 @@ def fill_toc(
                 kind = {"TABLE": "table", "PICTURE": "figure"}.get(obj.get("numberingType"))
                 if kind is None or obj.get("id", "") in _NO_ID:
                     continue
-                entry = _caption_entries(obj, kind)
+                entry = _caption_entries(obj, kind, autonum)
                 if entry is not None:
                     (result.tables if kind == "table" else result.figures).append(entry)
         toc_root = sections[toc_part]

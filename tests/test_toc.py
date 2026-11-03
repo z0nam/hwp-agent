@@ -183,6 +183,30 @@ def test_cli_no_toc(tmp_path: Path, capsys) -> None:
     assert "목차:" not in capsys.readouterr().out
 
 
+def test_table_list_numbers_follow_document_order(tmp_path: Path) -> None:
+    """Every built caption caches autoNum num=1; the list must count like Hangul."""
+    _, out = _build(tmp_path)
+    texts = [t for t in _texts(_sections(out)["Contents/section1.xml"]) if t]
+    tables = texts[texts.index("표 차례") + 1: texts.index("그림 차례")]
+    nums = [re.search(r"(\d+)\D*가상 표", t).group(1) for t in tables]
+    assert nums[0] != nums[1], tables
+
+
+def test_fill_twice_keeps_one_toc_field_pair(tmp_path: Path) -> None:
+    _, out = _build(tmp_path)
+    again = tmp_path / "again.hwpx"
+    res = fill_toc(out, again)
+    assert len(res.headings) == 5
+    toc = _sections(again)["Contents/section1.xml"]
+    begins = [fb.get("id") for fb in toc.iter(f"{_HP}fieldBegin")
+              if fb.get("type") == "TABLEOFCONTENTS"]
+    ends = [fe for fe in toc.iter(f"{_HP}fieldEnd") if fe.get("fieldid") == TOC_FIELD_ID]
+    assert len(begins) == 1 and len(ends) == 1
+    assert ends[0].get("beginIDRef") == begins[0]
+    assert audit_package_links(again)["broken"] == []
+    assert audit_package(again) == []
+
+
 def test_template_without_toc_section_is_untouched(tmp_path: Path) -> None:
     dst = tmp_path / "copy.hwpx"
     res = fill_toc(DEFAULT_TPL, dst)

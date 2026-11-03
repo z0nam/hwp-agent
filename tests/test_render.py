@@ -222,6 +222,7 @@ def test_cli_pdf_prints_fallback_note(tmp_path: Path, fake_hwp2pdf, capsys, monk
     ret = main(["pdf", str(_src(tmp_path)), "-o", str(tmp_path / "o.pdf")])
     cap = capsys.readouterr()
     assert ret == 0 and "via rhwp" in cap.out
+    assert "rhwp 근사 렌더(미리보기용)" in cap.out  # never mistaken for Hangul's layout
     assert "note: hwp2pdf 미사용" in cap.err
 
 

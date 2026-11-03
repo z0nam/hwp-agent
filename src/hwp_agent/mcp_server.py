@@ -34,10 +34,9 @@ def analyze_form_slots(path: str, grid: bool = False) -> str:
     """List the fillable slots in an HWPX form (labels, checkboxes, cell paths).
 
     Args:
-      path — absolute path to a local .hwpx file.
-      grid — list *every* table cell with its "cell:<t>:<r>:<c>" path and text
-        instead (use when the cell you need already holds text, or to see row
-        coordinates after a row restructure). Same as `form analyze --grid`.
+      path — local .hwpx.
+      grid — list every table cell with its "cell:<t>:<r>:<c>" path and text
+        (when the target cell already holds text, or after a row restructure).
     Returns: JSON {"slots": [...]}, or {"cells": [...]} with grid=true.
     """
     from .ops import analyze_form, dump_grid
@@ -59,31 +58,21 @@ def fill_form_slots(
     allow_table_flow: bool = False,
     precise: bool = True,
 ) -> str:
-    """Fill specific slots in an HWPX form and save to `output`.
+    """Fill slots in an HWPX form and save to `output`.
 
     Args:
-      path — local .hwpx form.
-      mapping_json — JSON object of {slot_key: value} ("{}" to only restructure
-        rows). Keys may be a label ("성명"), a label path ("성명 > right"),
-        "cell:<t>:<r>:<c>", "checkbox:<label>" (value "on"/"off"),
-        "tab:<anchor>", or a "{{placeholder}}". Fills overwrite.
-      output — local path to write the filled .hwpx.
-      delete_rows — ["cell:<t>:<start>-<end>", ...]: delete table rows
-        (0-based, inclusive, numbered as in the original table).
-      append_rows — ["cell:<t>:+<n>", ...]: append n blank copies of the last
-        row (cell formats kept, text cleared).
-      repeat_group — ["cell:<t>:<start>-<end>:+<n>", ...]: insert n blank copies
-        of rows start..end right after end (e.g. a shaded category row + its
-        detail rows).
-        Order is fixed: delete → append/repeat → fill, so mapping "cell:" keys
-        address the rows *after* restructuring. A vertical merge straddling a
-        range boundary is refused (nothing is written).
-      allow_table_flow — let long cell content flow across pages
-        (treatAsChar=0, pageBreak=CELL); changes the table's layout semantics.
-      precise — precise label-cell detection (default); false emits every
-        empty-neighbour cell as a slot (blank templates).
-    Returns: JSON {"rows": [...], "filled": [...], "missing": [...],
-      "warnings": [...]} or {"error": "..."}.
+      path — local .hwpx form; output — path for the filled .hwpx.
+      mapping_json — JSON {slot_key: value} ("{}" = only restructure rows). Keys:
+        label ("성명"), label path ("성명 > right"), "cell:<t>:<r>:<c>",
+        "checkbox:<label>" ("on"/"off"), "tab:<anchor>", "{{placeholder}}".
+      delete_rows — ["cell:<t>:<start>-<end>"] (0-based, inclusive, original rows).
+      append_rows — ["cell:<t>:+<n>"]: n blank copies of the last row.
+      repeat_group — ["cell:<t>:<start>-<end>:+<n>"]: n blank copies of rows
+        start..end after end. Runs delete → append/repeat → fill, so "cell:" keys
+        address the new rows; a merge across a range boundary is refused.
+      allow_table_flow — let long cells flow across pages (changes table layout).
+      precise — precise label detection (default); false = every empty-neighbour cell.
+    Returns: JSON {"rows", "filled", "missing", "warnings"} or {"error"}.
     """
     from .ops import RowOpError, fill_form, parse_row_ops
 
@@ -102,17 +91,13 @@ def fill_form_slots(
 def autofit_table_columns(
     path: str, output: str, table: int = 0, min_width: list[str] | None = None
 ) -> str:
-    """Rebalance a table's column widths by content volume (no text change).
-
-    Same as `form autofit`: the total width is kept; a column with much more text
-    gets more room without starving label columns.
+    """Rebalance a table's column widths by content volume (total width kept, no text change).
 
     Args:
-      path — local .hwpx; output — local path for the result.
-      table — table index in document order (as in "cell:<t>:…" paths).
-      min_width — ["COL=N", ...]: pin a column's minimum width in HWPUNIT.
-    Returns: JSON {"table_index", "ncols", "old_widths", "new_widths", "total"}
-      or {"error": "..."}.
+      path — local .hwpx; output — path for the result.
+      table — table index in document order (as in "cell:<t>:…").
+      min_width — ["COL=N"]: minimum column width in HWPUNIT.
+    Returns: JSON {"table_index", "ncols", "old_widths", "new_widths", "total"} or {"error"}.
     """
     from .ops import autofit_table, parse_min_widths
 
@@ -130,10 +115,9 @@ def fill_form_from_profile(
     """Auto-fill an HWPX form from a saved personal-data profile.
 
     Args:
-      path — local .hwpx form.
-      output — local path to write the filled .hwpx.
-      profile_path — profile JSON path (default: ~/.config/hwp-agent/profile.json).
-      date — pass "today" to fill date/작성일 slots with today's date.
+      path — local .hwpx form; output — path for the filled .hwpx.
+      profile_path — default ~/.config/hwp-agent/profile.json.
+      date — "today" fills date/작성일 slots.
     Returns: JSON {"filled": [{slot, field, value}], "blank": [labels]}.
     """
     from .ops import fill_from_profile
@@ -155,15 +139,24 @@ def _build():
 
     mcp = FastMCP("hwp-agent")
 
+    def register(fn):
+        # Every tool returns a plain string, so the auto-generated outputSchema
+        # ({"result": string}) only adds always-loaded tokens. mcp<1.10 has no
+        # structured_output and never emitted one.
+        try:
+            return mcp.tool(structured_output=False)(fn)
+        except TypeError:
+            return mcp.tool()(fn)
+
     for tool in (
         analyze_form_slots,
         fill_form_slots,
         autofit_table_columns,
         fill_form_from_profile,
     ):
-        mcp.tool()(tool)
+        register(tool)
 
-    @mcp.tool()
+    @register
     def convert_hwp_to_hwpx(src: str, dst: str) -> str:
         """Convert a local .hwp to .hwpx (needs Java + the converter jar).
 
@@ -180,19 +173,14 @@ def _build():
             return f"error: conversion failed (exit {result.returncode}): {result.stderr[:300]}"
         return f"ok: wrote {dst}"
 
-    @mcp.tool()
+    @register
     def normalize_template(path: str, output: str, dry_run: bool = False) -> str:
-        """Declare AI:HEADING_n/AI:BULLET_n styles on a flat HWPX template.
-
-        Detects the numbering ladder of a flat (non-outline) template and writes
-        the AI: role declarations into a container-preserving copy, so classify
-        reports structured and authoring (write) can target its styles.
+        """Declare AI:HEADING_n/AI:BULLET_n styles on a flat HWPX template (for `write`).
 
         Args:
-          path — local flat .hwpx template (never modified).
-          output — local path for the normalized copy.
-          dry_run — plan only; write nothing.
-        Returns: JSON report (actions with rationale, skipped styles, warnings).
+          path — local flat .hwpx (never modified); output — path for the copy.
+          dry_run — plan only.
+        Returns: JSON report (actions, skipped styles, warnings).
         """
         from .ops import apply_normalization, plan_normalization
 
@@ -204,7 +192,7 @@ def _build():
             apply_normalization(path, plan, output)
         return json.dumps(report, ensure_ascii=False)
 
-    @mcp.tool()
+    @register
     def extract_to_markdown(path: str, body_only: bool = False) -> str:
         """Extract an HWPX document's text as Markdown (headings, tables, bullets).
 

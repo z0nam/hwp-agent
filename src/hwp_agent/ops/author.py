@@ -145,7 +145,8 @@ _CAPTION_FRAMING_RE = re.compile(
 # anywhere resolves to that table's autonum text (e.g. "표 부록-3"). Single-brace
 # so they never clash with the template's double-brace tokens. v1 is static
 # substitution at fill time — Hangul's own autonum still renders the caption, so
-# the substitution assumes the "표 {chapter}-{N}" convention. See SKILL.md.
+# the substitution assumes the "표 {chapter}-{N}" convention. See
+# skills/hwp-agent/references/write.md.
 _LABEL_RE = re.compile(r"\{label:([^{}\s]+)\}")
 _REF_RE = re.compile(r"\{ref:([^{}\s]+)\}")
 

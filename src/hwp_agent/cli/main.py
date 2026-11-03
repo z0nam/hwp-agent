@@ -112,6 +112,26 @@ def _cmd_convert(args: argparse.Namespace) -> int:
     return 0
 
 
+def _setup_rhwp(*, force: bool, diag_out) -> None:
+    """Fetch the pinned rhwp (fallback render engine). A failure only warns —
+    conversion works without it; renders then need Hancom (hwp2pdf)."""
+    from ..render.fetch_rhwp import RHWP_VERSION, download_rhwp, installed_version, rhwp_dest
+
+    if installed_version() == RHWP_VERSION and not force:
+        print(f"rhwp {RHWP_VERSION} already present: {rhwp_dest()}", file=diag_out)
+        return
+    print(f"downloading rhwp {RHWP_VERSION} (fallback render engine)\n  to   {rhwp_dest()}",
+          file=diag_out)
+    try:
+        dest = download_rhwp(force=force)
+    except Exception as exc:  # noqa: BLE001 — optional engine; never fail setup over it
+        print(f"warn: could not download rhwp: {exc}", file=sys.stderr)
+        print("  renders will need Hancom (hwp2pdf); retry later or set RHWP_RELEASE_URL.",
+              file=sys.stderr)
+        return
+    print(f"ok: rhwp ready at {dest}", file=diag_out)
+
+
 def _cmd_setup(args: argparse.Namespace) -> int:
     """Fetch the converter jar and/or register the MCP server in AI clients."""
     import json
@@ -168,6 +188,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 "(e.g. Temurin: https://adoptium.net/).",
                 file=sys.stderr,
             )
+        _setup_rhwp(force=args.force, diag_out=diag_out)
         if not has_mcp_action:
             print("\nyou can now run:  hwp-agent convert input.hwp output.hwpx")
             return 0
@@ -486,7 +507,13 @@ def _cmd_form(args: argparse.Namespace) -> int:
 def _render_cmd(args: argparse.Namespace, *, fmt: str, engine: str) -> int:
     import dataclasses
 
-    from ..render import ENGINE_LABELS, render_document, resolve_engine, resolve_hwp2pdf_config
+    from ..render import (
+        ENGINE_LABELS,
+        RHWP_NOTICE,
+        render_document,
+        resolve_engine,
+        resolve_hwp2pdf_config,
+    )
 
     src: Path = args.input
     if not src.is_file():
@@ -512,6 +539,8 @@ def _render_cmd(args: argparse.Namespace, *, fmt: str, engine: str) -> int:
     if result.ok:
         label = ENGINE_LABELS.get(result.backend, "")
         print(f"wrote {out}  (via {result.backend}{f' · {label}' if label else ''})")
+        if result.backend == "rhwp":
+            print(RHWP_NOTICE)
         return 0
     print(f"error: {result.stderr}", file=sys.stderr)
     return result.returncode or 1

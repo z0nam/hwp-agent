@@ -34,6 +34,7 @@ from pathlib import Path
 
 from lxml import etree
 
+from .._subproc import decode
 from ..render.remote_hwp2pdf import Hwp2PdfClient, Hwp2PdfError
 from ..render.rhwp import resolve_rhwp, rhwp_search_desc
 from .container import _rewrite_zip_preserving
@@ -457,7 +458,7 @@ def _rhwp_note_areas(path: Path, rhwp_bin: str) -> dict[int, int]:
     with tempfile.TemporaryDirectory() as td:
         res = subprocess.run(  # noqa: S603
             [rhwp_bin, "export-render-tree", str(path), "-o", td],
-            capture_output=True, text=True,
+            capture_output=True,
         )
         if res.returncode != 0:
             return out
@@ -490,11 +491,11 @@ def _rhwp_pages(path: Path, doc: _Doc, rhwp_bin: str) -> list[_Page] | None:
         bare = Path(td) / "bare.hwpx"
         _strip_all_linesegs(path, bare)
         res = subprocess.run(  # noqa: S603
-            [rhwp_bin, "dump-pages", str(bare)], capture_output=True, text=True
+            [rhwp_bin, "dump-pages", str(bare)], capture_output=True
         )
         if res.returncode != 0:
             return None
-        pages = _parse_rhwp_pages(res.stdout, doc)
+        pages = _parse_rhwp_pages(decode(res.stdout), doc)
         if any(doc.paras[n][pi].notes for n in doc.sections for pi in range(len(doc.paras[n]))):
             areas = _rhwp_note_areas(bare, rhwp_bin)
             for pg in pages:

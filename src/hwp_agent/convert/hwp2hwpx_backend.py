@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -149,6 +150,41 @@ def _resolve_jar(explicit: Path | str | None) -> Path:
     return downloaded if downloaded.is_file() else _DEFAULT_JAR
 
 
+def _java_safe(path: Path | str) -> bool:
+    """Whether ``path`` survives Java's command-line decoding on every Windows.
+
+    The Java launcher reads its arguments in the ANSI code page (GetACP), not UTF-16, so a
+    character outside that code page reaches the JVM as ``?`` (hwp-agent#89). Only ASCII is
+    representable in every code page.
+    """
+    return str(path).isascii()
+
+
+def _make_stage() -> tempfile.TemporaryDirectory[str] | None:
+    """A fresh temp dir with an ASCII path to stage Java's inputs and outputs in.
+
+    The temp dir is ASCII unless the Windows user name is not; then fall back to shared
+    locations outside the user profile. ``None`` means none was usable.
+    """
+    candidates = [tempfile.gettempdir()]
+    candidates += [os.environ[v] for v in ("PUBLIC", "ProgramData") if os.environ.get(v)]
+    for cand in candidates:
+        if not _java_safe(cand):
+            continue
+        try:
+            return tempfile.TemporaryDirectory(prefix="hwp-agent-", dir=cand)
+        except OSError:
+            continue
+    return None
+
+
+def _unstage(text: str, swaps: dict[str, str]) -> str:
+    for staged, real in swaps.items():
+        if staged != real:
+            text = text.replace(staged, real)
+    return text
+
+
 class Hwp2HwpxBackend(ConverterBackend):
     name = "hwp2hwpx"
 
@@ -172,6 +208,10 @@ class Hwp2HwpxBackend(ConverterBackend):
     def is_available(self) -> bool:
         return self.has_jar() and self.has_java()
 
+    def _run_java(self, jar: Path, src: Path, dst: Path) -> subprocess.CompletedProcess:
+        cmd = [self.java_bin, "-jar", str(jar), str(src), str(dst)]
+        return subprocess.run(cmd, capture_output=True)  # noqa: S603  (bytes → decode)
+
     def convert(self, hwp_path: Path | str, hwpx_path: Path | str) -> ConvertResult:
         hwp_path = Path(hwp_path)
         hwpx_path = Path(hwpx_path)
@@ -185,8 +225,28 @@ class Hwp2HwpxBackend(ConverterBackend):
             )
 
         hwpx_path.parent.mkdir(parents=True, exist_ok=True)
-        cmd = [self.java_bin, "-jar", str(self.jar_path), str(hwp_path), str(hwpx_path)]
-        proc = subprocess.run(cmd, capture_output=True)  # noqa: S603  (bytes → decode)
+        stage_dir = _make_stage()
+        if stage_dir is None:  # nowhere ASCII to stage: hand Java the paths as they are
+            proc = self._run_java(self.jar_path, hwp_path, hwpx_path)
+            stdout, stderr = decode(proc.stdout), decode(proc.stderr)
+        else:
+            # Java gets ASCII copies; the result is moved to the real name (hwp-agent#89).
+            with stage_dir as tmp:
+                stage = Path(tmp)
+                jar = self.jar_path
+                if not _java_safe(jar):  # e.g. a frozen exe unpacked under a non-ASCII %TEMP%
+                    jar = stage / "hwp2hwpx.jar"
+                    shutil.copyfile(self.jar_path, jar)
+                staged_in = stage / ("in" + hwp_path.suffix.lower())
+                staged_out = stage / "out.hwpx"
+                shutil.copyfile(hwp_path, staged_in)
+                proc = self._run_java(jar, staged_in, staged_out)
+                if proc.returncode == 0 and staged_out.is_file():
+                    shutil.copyfile(staged_out, hwpx_path)
+                # Messages name the user's files, not the staging copies.
+                swaps = {str(staged_in): str(hwp_path), str(staged_out): str(hwpx_path),
+                         str(jar): str(self.jar_path)}
+                stdout, stderr = (_unstage(decode(b), swaps) for b in (proc.stdout, proc.stderr))
 
         normalized: tuple[str, ...] = ()
         if self.normalize and proc.returncode == 0 and hwpx_path.is_file():
@@ -196,7 +256,7 @@ class Hwp2HwpxBackend(ConverterBackend):
             hwpx_path=hwpx_path,
             backend=self.name,
             returncode=proc.returncode,
-            stdout=decode(proc.stdout),
-            stderr=decode(proc.stderr),
+            stdout=stdout,
+            stderr=stderr,
             normalized=normalized,
         )

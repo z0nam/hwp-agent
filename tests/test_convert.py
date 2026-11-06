@@ -8,7 +8,10 @@ a valid ZIP (HWPX is a ZIP container).
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -61,7 +64,7 @@ def test_convert_builds_expected_java_command(tmp_path: Path, monkeypatch) -> No
     def fake_run(cmd, capture_output, **kw):  # noqa: ANN001
         captured["cmd"] = cmd
         captured["text"] = kw.get("text")
-        out.write_bytes(b"PK\x03\x04")  # pretend the converter wrote output
+        Path(cmd[-1]).write_bytes(b"PK\x03\x04")  # pretend the converter wrote output
         # bytes, decoded by the backend (Java on a Korean Windows prints cp949)
         return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr="경고".encode("cp949"))
 
@@ -70,10 +73,148 @@ def test_convert_builds_expected_java_command(tmp_path: Path, monkeypatch) -> No
     backend = Hwp2HwpxBackend(jar_path=jar, normalize=False)
     result = backend.convert(src, out)
 
-    assert captured["cmd"] == ["java", "-jar", str(jar), str(src), str(out)]
+    java, flag, jar_arg, src_arg, out_arg = captured["cmd"]
+    assert (java, flag, jar_arg) == ("java", "-jar", str(jar))
+    # Java gets ASCII staging copies, never the user's paths (hwp-agent#89)
+    assert src_arg.endswith("in.hwp") and out_arg.endswith("out.hwpx")
+    assert src_arg != str(src) and src_arg.isascii() and out_arg.isascii()
     assert not captured["text"]  # not the locale's codec (hwp-agent#83)
     assert result.ok is True and isinstance(result.stderr, str) and result.stdout == ""
     assert out.parent.is_dir()  # parent created for us
+
+
+# --- non-ASCII paths (hwp-agent#89) ----------------------------------------
+# Java reads its command line in the Windows ANSI code page, so a path outside it reaches
+# the JVM as "?". The backend stages ASCII copies and maps messages back to real names.
+
+ODD_NAME = "한글 경로 🙂"
+
+
+def _fake_java(record: dict, *, rc: int = 0, msg: bytes = b""):
+    def fake_run(cmd, capture_output, **kw):  # noqa: ANN001
+        record["cmd"] = cmd
+        record["src_bytes"] = Path(cmd[3]).read_bytes()
+        if rc == 0:
+            Path(cmd[4]).write_bytes(b"PK\x03\x04")
+        err = msg or f"cannot read {cmd[3]}".encode()
+        return subprocess.CompletedProcess(cmd, rc, stdout=b"", stderr=err)
+
+    return fake_run
+
+
+def test_convert_stages_non_ascii_paths(tmp_path: Path, monkeypatch) -> None:
+    jar = tmp_path / ODD_NAME / "hwp2hwpx.jar"
+    jar.parent.mkdir()
+    jar.write_bytes(b"fake")
+    src = tmp_path / ODD_NAME / "보고서 🙂.HWP"
+    src.write_bytes(b"\xd0\xcf\x11\xe0 payload")
+    out = tmp_path / ODD_NAME / "결과" / "보고서 🙂.hwpx"
+    rec: dict = {}
+    monkeypatch.setattr(subprocess, "run", _fake_java(rec))
+
+    result = Hwp2HwpxBackend(jar_path=jar, normalize=False).convert(src, out)
+
+    assert all(a.isascii() for a in rec["cmd"][2:]), rec["cmd"]  # jar staged too
+    assert rec["src_bytes"] == src.read_bytes()
+    assert result.ok and out.read_bytes() == b"PK\x03\x04"
+    assert result.hwpx_path == out
+    assert not Path(rec["cmd"][3]).parent.exists()  # staging dir cleaned up
+
+
+def test_convert_failure_names_the_original_path(tmp_path: Path, monkeypatch) -> None:
+    jar = tmp_path / "hwp2hwpx.jar"
+    jar.write_bytes(b"fake")
+    src = tmp_path / f"{ODD_NAME}.hwp"
+    src.write_bytes(b"x")
+    out = tmp_path / f"{ODD_NAME}.hwpx"
+    rec: dict = {}
+    monkeypatch.setattr(subprocess, "run", _fake_java(rec, rc=1))
+
+    result = Hwp2HwpxBackend(jar_path=jar).convert(src, out)
+
+    assert not result.ok and not out.exists()
+    assert str(src) in result.stderr and rec["cmd"][3] not in result.stderr
+
+
+def test_cli_convert_error_shows_original_paths(tmp_path: Path, monkeypatch, capsys) -> None:
+    from hwp_agent.cli.main import main
+
+    jar = tmp_path / "hwp2hwpx.jar"
+    jar.write_bytes(b"fake")
+    src = tmp_path / f"{ODD_NAME}.hwp"
+    src.write_bytes(b"x")
+    out = tmp_path / f"{ODD_NAME}.hwpx"
+    monkeypatch.setattr(subprocess, "run", _fake_java({}, rc=1, msg=b"boom"))
+    monkeypatch.setattr(Hwp2HwpxBackend, "has_java", lambda self: True)
+
+    rc = main(["convert", str(src), str(out), "--jar", str(jar)])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert str(src) in err and str(out) in err
+
+
+def test_make_stage_skips_non_ascii_temp(tmp_path: Path, monkeypatch) -> None:
+    from hwp_agent.convert import hwp2hwpx_backend as hb
+
+    odd = tmp_path / ODD_NAME
+    odd.mkdir()
+    ok = tmp_path / "public"
+    ok.mkdir()
+    monkeypatch.setattr(hb.tempfile, "gettempdir", lambda: str(odd))
+    monkeypatch.setenv("PUBLIC", str(ok))
+    with hb._make_stage() as d:
+        assert Path(d).parent == ok
+
+
+def _skip_or_fail(reason: str) -> None:
+    # CI (windows-convert.yml) sets this so a missing prerequisite cannot pass as a skip.
+    if os.environ.get("HWP_AGENT_REQUIRE_JAVA"):
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
+def test_real_java_converts_non_ascii_path(tmp_path: Path) -> None:
+    """End-to-end through the real jar. On a Windows runner whose ANSI code page cannot
+    represent Hangul or emoji (windows-latest is cp1252) this failed before #89."""
+    java = shutil.which("java")
+    if java is None or not VENDOR_JAR.is_file():
+        _skip_or_fail("needs java on PATH and vendor/hwp2hwpx.jar")
+    blank = tmp_path / "blank.hwp"
+    gen = subprocess.run(
+        [java, "-cp", str(VENDOR_JAR), str(REPO_ROOT / "tests" / "data" / "MakeBlankHwp.java"),
+         str(blank)],
+        capture_output=True,
+    )
+    if gen.returncode != 0 or not blank.is_file():
+        _skip_or_fail(f"cannot generate a blank .hwp (needs a JDK): {gen.stderr[-300:]!r}")
+
+    folder = tmp_path / ODD_NAME
+    folder.mkdir()
+    src = folder / "보고서 🙂.hwp"
+    src.write_bytes(blank.read_bytes())
+    out = folder / "보고서 🙂.hwpx"
+
+    result = Hwp2HwpxBackend(jar_path=VENDOR_JAR).convert(src, out)
+
+    assert result.ok, result.stderr
+    assert zipfile.is_zipfile(out)
+
+    if sys.platform == "win32" and not _ansi_encodable(str(src)):
+        # Control: the same paths handed to Java directly still break on this machine,
+        # so the pass above is the staging fix at work, not a forgiving environment.
+        direct = folder / "direct.hwpx"
+        raw = subprocess.run([java, "-jar", str(VENDOR_JAR), str(src), str(direct)],
+                             capture_output=True)
+        assert raw.returncode != 0 or not direct.is_file(), "Java read a non-ANSI path?"
+
+
+def _ansi_encodable(text: str) -> bool:
+    try:
+        text.encode("mbcs", "strict")  # Windows only: the ANSI code page, no best fit
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def test_convert_raises_on_missing_input(tmp_path: Path) -> None:

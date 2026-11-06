@@ -103,7 +103,10 @@ def _cmd_convert(args: argparse.Namespace) -> int:
     if not result.ok:
         if result.stderr:
             print(result.stderr.rstrip(), file=sys.stderr)
-        print(f"error: conversion failed (exit {result.returncode})", file=sys.stderr)
+        print(
+            f"error: conversion failed (exit {result.returncode}): {args.input} -> {args.output}",
+            file=sys.stderr,
+        )
         return 1
 
     print(f"wrote {result.hwpx_path}")

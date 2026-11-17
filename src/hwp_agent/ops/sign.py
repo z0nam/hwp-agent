@@ -69,6 +69,8 @@ def _ink_pixmap(image: Path | str):
     pix = fitz.Pixmap(str(image))
     if pix.colorspace is None or pix.colorspace.n != 3:  # gray / CMYK / indexed → RGB
         pix = fitz.Pixmap(fitz.csRGB, pix)
+    if pix.alpha and not pix.samples[pix.n - 1::pix.n].strip(b"\xff"):
+        pix = fitz.Pixmap(pix, 0)  # RGBA but fully opaque (white canvas): treat as a scan
     if not pix.alpha:
         gray = fitz.Pixmap(fitz.csGRAY, pix)
         paper = bytes(255 if v < _PAPER else 0 for v in range(256))
@@ -202,11 +204,11 @@ def sign_pdf(
                 Placement(page_no, anchor, tuple(r), tuple(box))  # type: ignore[arg-type]
             )
 
-        if preview:
-            result.previews = _write_previews(doc, result.placements, Path(preview))
-        if out:
+        if out:  # before the preview, so a preview problem never costs the signed PDF
             Path(out).parent.mkdir(parents=True, exist_ok=True)
             doc.save(str(out), garbage=3, deflate=True)
+        if preview:
+            result.previews = _write_previews(doc, result.placements, Path(preview))
     finally:
         doc.close()
     return result
@@ -220,6 +222,9 @@ def _write_previews(doc, placements: list[Placement], dest: Path) -> list[Path]:
     for i, pl in enumerate(placements, 1):
         page = doc[pl.page - 1]
         box = fitz.Rect(pl.image_rect) | fitz.Rect(pl.anchor_rect)
+        # Placements are in unrotated page space; the render clip is in the rotated
+        # (displayed) space, like page.rect.
+        box = box * page.rotation_matrix
         clip = fitz.Rect(box.x0 - 140, box.y0 - 40, box.x1 + 60, box.y1 + 40) & page.rect
         path = dest if len(placements) == 1 else dest.with_name(f"{dest.stem}-{i}{dest.suffix}")
         path.parent.mkdir(parents=True, exist_ok=True)

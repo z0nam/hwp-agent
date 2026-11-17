@@ -136,3 +136,29 @@ def test_mark_with_odd_spacing_is_found(tmp_path: Path) -> None:
     pdf = _form(tmp_path / "f.pdf", [(1, 300, "성명 홍길동 ( 인 )")])
     res = sign_pdf(pdf, tmp_path / "o.pdf", _signature(tmp_path / "s.png"))
     assert res.ok and res.placements[0].anchor == "(인)"
+
+
+def test_opaque_rgba_canvas_gets_transparent_paper(tmp_path: Path) -> None:
+    """An RGBA PNG whose alpha is 255 everywhere is a white canvas, not a cut-out."""
+    rows = (
+        (b"\x14\x14\x78\xff" if 30 <= y < 70 and 50 <= x < 150 else b"\xff\xff\xff\xff")
+        for y in range(100) for x in range(200)
+    )
+    path = tmp_path / "s.png"
+    fitz.Pixmap(fitz.csRGB, 200, 100, b"".join(rows), True).save(str(path))
+    ink = _ink_pixmap(path)
+    assert (ink.width, ink.height, ink.alpha) == (100, 40, 1)
+
+
+def test_preview_on_rotated_page(tmp_path: Path) -> None:
+    pdf = _form(tmp_path / "f.pdf", [(1, 800, "성명 (인)")])
+    doc = fitz.open(str(pdf))
+    doc[0].set_rotation(90)
+    rotated = tmp_path / "r.pdf"
+    doc.save(str(rotated))
+    out, prev = tmp_path / "o.pdf", tmp_path / "p.png"
+    res = sign_pdf(rotated, out, _signature(tmp_path / "s.png"), preview=prev)
+    assert res.ok and out.is_file() and prev.is_file()
+    # the preview shows the mark, not some other part of the page
+    shot = fitz.Pixmap(str(prev))
+    assert shot.width > 50 and shot.height > 50

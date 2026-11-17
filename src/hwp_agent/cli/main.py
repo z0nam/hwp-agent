@@ -557,6 +557,107 @@ def _cmd_docx(args: argparse.Namespace) -> int:
     return _render_cmd(args, fmt="docx", engine=args.engine)
 
 
+def _signature_from_profile(profile: Path | None) -> Path | None:
+    """``signature_image`` (or ``signature``) from the personal-data profile, if set."""
+    import json
+
+    from ..ops.profile import resolve_profile_path
+
+    path = resolve_profile_path(profile)
+    if not path.is_file():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    value = data.get("signature_image") or data.get("signature")
+    return Path(value).expanduser() if value else None
+
+
+def _cmd_sign(args: argparse.Namespace) -> int:
+    """Stamp the signature image on a PDF's "(인)" mark (hwp-agent#88)."""
+    import json
+    import tempfile
+
+    try:
+        import fitz  # noqa: F401  (PyMuPDF — optional dependency)
+    except ModuleNotFoundError:
+        print(
+            "error: 서명에는 PyMuPDF가 필요합니다:\n"
+            '  pip install "hwp-agent[verify]"   (또는: uv pip install pymupdf)',
+            file=sys.stderr,
+        )
+        return 2
+    from ..ops.sign import DEFAULT_ANCHORS, sign_pdf
+
+    src: Path = args.input
+    image = args.image or _signature_from_profile(args.profile)
+    if image is None:
+        print(
+            "error: 서명 이미지가 없습니다. --image 로 주거나 profile.json 에 "
+            '"signature_image": "<투명 배경 PNG 경로>" 를 넣으세요.',
+            file=sys.stderr,
+        )
+        return 2
+    if not image.is_file():
+        print(f"error: 서명 이미지를 찾을 수 없습니다: {image}", file=sys.stderr)
+        return 2
+    out: Path | None = None if args.dry_run else (
+        args.output or src.with_name(f"{src.stem}_서명.pdf")
+    )
+    anchors = tuple(args.anchor) if args.anchor else DEFAULT_ANCHORS
+
+    with tempfile.TemporaryDirectory(prefix="hwp-agent-sign-") as tmp:
+        pdf = src
+        if src.suffix.lower() != ".pdf":  # .hwp/.hwpx: render to PDF first
+            from ..render import render_document, resolve_engine, resolve_hwp2pdf_config
+
+            pdf = Path(tmp) / "unsigned.pdf"
+            try:
+                engine = resolve_engine(args.engine)
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            rendered = render_document(
+                src, pdf, fmt="pdf", engine=engine,
+                config=resolve_hwp2pdf_config(None), rhwp_bin=None, timeout=None,
+            )
+            if not rendered.ok:
+                print(f"error: PDF 변환 실패: {rendered.stderr}", file=sys.stderr)
+                return rendered.returncode or 1
+            if rendered.backend == "rhwp":
+                print(
+                    "note: 한컴 엔진을 쓸 수 없어 rhwp로 PDF를 만들었습니다. 조판이 한글과 "
+                    "다를 수 있으니 제출 전 확인하세요.",
+                    file=sys.stderr,
+                )
+        try:
+            result = sign_pdf(
+                pdf, out, image, anchors=anchors, width=args.width, page=args.page,
+                every=args.all, dx=args.dx, dy=args.dy, preview=args.preview,
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    if args.json:
+        print(json.dumps({
+            "output": str(result.output) if result.output else None,
+            "placements": [p.as_dict() for p in result.placements],
+            "previews": [str(p) for p in result.previews],
+            "warnings": result.warnings,
+        }, ensure_ascii=False, indent=2))
+        return 0 if result.ok else 1
+    for w in result.warnings:
+        print(f"warning: {w}", file=sys.stderr)
+    if not result.ok:
+        return 1
+    for p in result.placements:
+        x0, y0, x1, y1 = p.image_rect
+        print(f"  p.{p.page}  \"{p.anchor}\"  → 서명 ({x0:.0f},{y0:.0f})-({x1:.0f},{y1:.0f}) pt")
+    for p in result.previews:
+        print(f"preview {p}")
+    print(f"wrote {out}" if out else "dry run — 아무 파일도 쓰지 않았습니다")
+    return 0
+
+
 def _cmd_verify_bands(args: argparse.Namespace) -> int:
     """Deterministic section-band view (issue #10) — no vision model / API key."""
     import json
@@ -1652,6 +1753,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="convert timeout in seconds (overrides config)",
     )
     rdocx.set_defaults(func=_cmd_docx)
+
+    sgn = sub.add_parser(
+        "sign",
+        help="stamp a signature image on the \"(인)\" mark of a PDF (an .hwp/.hwpx is "
+        "rendered to PDF first)",
+    )
+    sgn.add_argument("input", type=Path, help="source .pdf / .hwpx / .hwp")
+    sgn.add_argument(
+        "-o", "--output", type=Path, default=None,
+        help="signed .pdf (default: <input>_서명.pdf alongside the input)",
+    )
+    sgn.add_argument(
+        "--image", type=Path, default=None,
+        help="signature image, transparent-background PNG preferred "
+        "(default: profile.json \"signature_image\")",
+    )
+    sgn.add_argument(
+        "--profile", type=Path, default=None,
+        help="profile holding signature_image (default: ~/.config/hwp-agent/profile.json)",
+    )
+    sgn.add_argument(
+        "--anchor", action="append", default=None,
+        help="mark text to sign on; repeatable, first found wins "
+        "(default: \"(인)\", then \"(서명)\", then \"서명\")",
+    )
+    sgn.add_argument("--width", type=float, default=72.0, help="signature width in pt (72)")
+    sgn.add_argument("--page", type=int, default=None, help="only look on this page (1-based)")
+    sgn.add_argument(
+        "--all", action="store_true",
+        help="sign every mark found (default: only the last one in the document)",
+    )
+    sgn.add_argument("--dx", type=float, default=0.0, help="nudge right, in pt")
+    sgn.add_argument("--dy", type=float, default=0.0, help="nudge down, in pt")
+    sgn.add_argument(
+        "--preview", type=Path, default=None,
+        help="also save a PNG crop around each signature (to check the placement)",
+    )
+    sgn.add_argument(
+        "--dry-run", action="store_true",
+        help="report where it would sign (and --preview), without writing the PDF",
+    )
+    sgn.add_argument(
+        "--engine", choices=("auto", "hwp2pdf", "local", "remote", "rhwp"), default=None,
+        help="PDF engine for .hwp/.hwpx input (same as `hwp-agent pdf`)",
+    )
+    sgn.add_argument("--json", action="store_true", help="emit the result as JSON")
+    sgn.set_defaults(func=_cmd_sign)
 
     cls = sub.add_parser("classify", help="classify a doc: structured | weak | flat")
     cls.add_argument("file", type=Path, help=".hwpx file")

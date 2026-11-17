@@ -199,7 +199,24 @@ hwp-agent form autofit 자문의견서.hwpx --table 0 -o out.hwpx      # add --m
 # auto-fill standing personal data (성명/주소/학력/경력/계좌…) from a saved profile
 cp examples/profile.example.json ~/.config/hwp-agent/profile.json   # edit it once
 hwp-agent form fill 등록신청서.hwpx --profile --date today -o out.hwpx
+
+# "서명 후 스캔본" without printing: stamp the signature on the "(인)" mark of the PDF
+# (an .hwp/.hwpx is rendered to PDF first, like `hwp-agent pdf`). The image comes from
+# --image or profile.json "signature_image" (transparent-background PNG preferred).
+hwp-agent sign 진단서.hwpx --preview /tmp/sign.png     # → 진단서_서명.pdf + a crop to check
+hwp-agent sign 진단서.pdf --dry-run --preview /tmp/sign.png   # where would it go?
+hwp-agent sign 동의서.pdf --all --anchor "(서명)" --width 60 -o 동의서_서명.pdf
 ```
+
+`sign` looks for `(인)`, then `(서명)`, then `서명` (or your `--anchor`s), ignoring
+spacing, and signs the **last** mark in the document — the signer's line is normally at
+the end — or every one with `--all`; `--page N` limits the search to one page. The
+signature is cropped to its ink, scaled to `--width` points (72 = one inch), centred on
+the mark and drawn over it; `--dx/--dy` nudge it. An opaque image (a scan on white
+paper) gets its light pixels made transparent so the form's text shows through. The
+signature is personal data: it is read into memory and written only into the output
+(and a `--preview` you ask for), never to a temp file or log. It is a local command on
+purpose — not exposed through `serve` or `mcp`.
 
 ```bash
 # a one-line correction to a document that is already type-set — no re-typeset

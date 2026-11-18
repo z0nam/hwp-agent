@@ -172,3 +172,35 @@ def test_one_cell_table_becomes_a_summary_box(tmp_path: Path) -> None:
     fill = re.search(rf'<hh:borderFill id="{bf}".*?</hh:borderFill>', header, re.S).group(0)
     assert len(re.findall(r'(?:left|right|top|bottom)Border type="SOLID" width="0.12 mm" color="#000000"', fill)) == 4
     assert "가상 본문입니다" in sec  # the body text after the box is still there
+
+
+def test_summary_box_takes_no_table_number() -> None:
+    """Review on #105: a summary box is unnumbered, so the first real table is 표 1."""
+    from hwp_agent.ops.author import TableBlock, _resolve_cross_refs, parse_markdown
+
+    md = (
+        "| 가상 요약 |\n|---|\n\n"
+        "표 제목 {label:t1}\n\n| 가 | 나 |\n|---|---|\n| 1 | 2 |\n\n"
+        "본문 {ref:t1} 참조\n"
+    )
+    blocks = parse_markdown(md)
+    _resolve_cross_refs(blocks, "Ⅰ", [])
+    assert any("표 Ⅰ-1 참조" in getattr(b, "text", "") for b in blocks), [
+        getattr(b, "text", None) for b in blocks
+    ]
+
+
+def test_captioned_or_sourced_one_cell_table_is_not_a_summary_box() -> None:
+    """Review on #105: caption / 출처 of a one-cell table must not be dropped."""
+    from hwp_agent.ops.author import _is_summary_box, parse_markdown
+
+    plain, captioned, sourced = (
+        next(b for b in parse_markdown(m) if hasattr(b, "rows"))
+        for m in (
+            "| 요약 |\n|---|\n",
+            "표 제목\n\n| 요약 |\n|---|\n",
+            "| 요약 |\n|---|\n출처) 가상 자료\n",
+        )
+    )
+    assert _is_summary_box(plain)
+    assert not _is_summary_box(captioned) and not _is_summary_box(sourced)

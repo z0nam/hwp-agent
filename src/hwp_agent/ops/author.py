@@ -514,6 +514,8 @@ def _resolve_cross_refs(
             fig_fmt = (
                 (lambda n, c=chapter: f"그림 {c}-{n}") if chapter else (lambda n: f"그림 {n}")
             )
+        if isinstance(b, TableBlock) and _is_summary_box(b):
+            continue  # unnumbered (numberingType NONE): takes no table number
         if isinstance(b, TableBlock) and per_chapter:
             b.chapter = chapter
             b.number = table_seq + 1
@@ -1626,8 +1628,14 @@ def _fit_table_height(table_el) -> None:
 
 
 def _is_summary_box(block) -> bool:
-    """A 1×1 Markdown table is the 정책이슈브리프 요약 상자 (#91)."""
-    return isinstance(block, TableBlock) and block.n_rows == 1 and block.n_cols == 1
+    """A 1×1 Markdown table with no caption and no 주)/출처) note is the 정책이슈브리프
+    요약 상자 (#91). A captioned or sourced one-cell table is a real table and keeps
+    its caption and note, so it goes through the normal table path."""
+    return (
+        isinstance(block, TableBlock)
+        and block.n_rows == 1 and block.n_cols == 1
+        and not block.caption and not block.note
+    )
 
 
 def _build_summary_box(

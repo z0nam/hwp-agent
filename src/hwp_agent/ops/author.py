@@ -1307,17 +1307,18 @@ def _clone_caption(
                 break
 
     if number is not None:
-        _literalize_autonum(clone, number, bool(chapter))
+        _literalize_autonum(clone, number, chapter)
 
     _fill_caption_runs(clone, title, run_writer=run_writer)
     return clone
 
 
-def _literalize_autonum(cap, number: int, has_chapter: bool) -> None:
+def _literalize_autonum(cap, number: int, chapter: str | None) -> None:
     """Replace the caption's table autoNum field with the literal *number* (#92).
 
     The number is appended to the text node before the field ("<표 Ⅲ-" → "<표 Ⅲ-2");
-    without a chapter the dangling "-" is dropped ("<표 -" → "<표 2").
+    without a chapter the dangling "-" is dropped ("<표 -" → "<표 2"), and a caption
+    format with no chapter prefix gains one ("<표 " → "<표 Ⅲ-2").
     """
     for ctrl in list(cap.iter(f"{{{_HP}}}ctrl")):
         if ctrl.find(f"{{{_HP}}}autoNum") is None:
@@ -1330,8 +1331,11 @@ def _literalize_autonum(cap, number: int, has_chapter: bool) -> None:
             prev.text = ""
             ctrl.addprevious(prev)
         txt = prev.text or ""
-        if not has_chapter:
+        if not chapter:
             txt = re.sub(r"(표\s*)[^\s<〈]*-\s*$", r"\1", txt)
+        elif not re.search(r"-\s*$", txt):
+            # the reference caption is "<표 " + autoNum with no chapter prefix
+            txt = re.sub(r"(표\s*)$", rf"\g<1>{chapter}-", txt)
         prev.text = f"{txt}{number}"
         ctrl.getparent().remove(ctrl)
         break

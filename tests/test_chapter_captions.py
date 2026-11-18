@@ -6,6 +6,8 @@ import re
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from hwp_agent.ops import fill_from_markdown
 from hwp_agent.ops.author import chapter_label_of, parse_markdown, _resolve_cross_refs
 
@@ -50,6 +52,7 @@ def test_figures_and_tables_number_per_chapter() -> None:
     assert (tbl.chapter, tbl.number) == ("Ⅱ", 1)
 
 
+@pytest.mark.skipif(not TABLE_TPL.exists(), reason="local fixture (gitignored) absent")
 def test_table_captions_reset_per_chapter(tmp_path: Path) -> None:
     out = tmp_path / "o.hwpx"
     fill_from_markdown(TABLE_TPL, MD, output=out, literal_numbering=True)
@@ -59,3 +62,18 @@ def test_table_captions_reset_per_chapter(tmp_path: Path) -> None:
     ]
     caps = [m.group(1) for t in texts if (m := re.match(r"&lt;표 ([^&]*)&gt;", t))]
     assert caps[-4:] == ["1", "Ⅰ-1", "Ⅰ-2", "Ⅱ-1"]
+
+
+def test_literalize_inserts_chapter_when_format_has_none() -> None:
+    from lxml import etree
+
+    from hwp_agent.ops.author import _HP, _literalize_autonum
+
+    cap = etree.fromstring(
+        f'<hp:caption xmlns:hp="{_HP}"><hp:p><hp:run><hp:t>&lt;표 </hp:t><hp:ctrl>'
+        '<hp:autoNum num="1" numType="TABLE"/></hp:ctrl><hp:t>&gt;</hp:t></hp:run></hp:p>'
+        "</hp:caption>"
+    )
+    _literalize_autonum(cap, 2, "Ⅲ")
+    assert "".join(cap.itertext()) == "<표 Ⅲ-2>"
+    assert cap.find(f".//{{{_HP}}}autoNum") is None

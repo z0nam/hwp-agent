@@ -760,7 +760,10 @@ def apply_report_meta(
             # a token fill_form could not place (should not happen: we just found it)
             for key in fr.missing:
                 res.warnings.append(f"slot {{{{{key}}}}} could not be filled")
-        res.missing = [s for s in REQUIRED_SLOTS if s in res.blank]
+        # a brief's cover title lives in title_1/title_2: a blank first line is a
+        # missing title (the second line stays optional)
+        blank = set(res.blank) | ({"title"} if "title_1" in res.blank else set())
+        res.missing = [s for s in REQUIRED_SLOTS if s in blank]
         if res.missing:
             res.warnings.append(
                 "표지·판권 값이 없어 비워 둔 필수 항목: "

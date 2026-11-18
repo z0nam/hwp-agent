@@ -93,3 +93,17 @@ def test_committed_template_title_slots_sit_on_the_cover_title_lines() -> None:
     i1, i2 = texts.index("{{title_1}}"), texts.index("{{title_2}}")
     assert i2 == i1 + 1  # consecutive: the two cover-title lines
     assert "제주연구원은 지역사회가 안고 있는 " not in texts[i2]  # not in the greeting
+
+
+def test_missing_title_is_reported_for_a_brief(tmp_path: Path) -> None:
+    """Review on #105: no title → both cover-title slots blank, so `title` must be missing."""
+    (tmp_path / "b.md").write_text(
+        FRONT.replace("제목: 가상 정책 이슈 제목입니다 // 두 번째 줄 부제\n", ""), encoding="utf-8"
+    )
+    manifest = tmp_path / "m.json"
+    manifest.write_text(
+        json.dumps({"template": str(BRIEF), "output": "out.hwpx", "parts": {"body": "b.md"}}),
+        encoding="utf-8",
+    )
+    result = build_report(manifest)
+    assert any("필수 항목" in w and "title" in w for w in result.warnings), result.warnings

@@ -14,10 +14,10 @@
 |------|------|
 | 표지 (section0) | 텍스트 → `{{report_number}}` `{{title}}` `{{subtitle}}` `{{authors}}` |
 | 목차 (section1) | 예시 TOC 제거 + `AI:INSTRUCTION` (한글에서 차례 자동 생성 안내) |
-| 요약 양식 (section2) | **그대로 유지** — 이미 빈 양식(구분/주요내용 표·□체크박스·구조 안내) |
-| 들어가며 (section3) | 예시 프로즈 제거 + `AI:INSTRUCTION` |
+| 요약 양식 (section2) | 빈 양식(구분/주요내용 표·□체크박스·구조 안내) 유지 + 끝에 `{{summary}}` 마커 |
+| 들어가며 (section3) | 예시 프로즈 제거 + `AI:INSTRUCTION` + `{{intro}}` 마커 |
 | 본문 (section4) | `AI:INSTRUCTION` + `{{body}}` 마커 + 중립화한 `{{table_template}}` 참조표(3행) |
-| 참고문헌 (section5) | 예시 항목 제거(분류 헤더 유지) + `AI:INSTRUCTION` |
+| 참고문헌 (section5) | 예시 항목·정적 분류 헤더 제거 + `AI:INSTRUCTION` + `{{references}}` 마커 (분류는 md 에 `**해외 문헌**` 줄로 씀) |
 | 판권지 (section6) | 텍스트 → `{{lead_researcher}}` `{{co_researcher}}` `{{pub_date}}` `{{publisher}}` `{{isbn}}` 등 |
 
 `normalize` 가 선언한 사다리: HEADING `로마자(Ⅰ.)→1.→1)`, BULLET `￭→⦁→-→-`.
@@ -68,3 +68,12 @@ hwp-agent form fill draft.hwpx --map meta.json -o final.hwpx
   고아 이미지 정리). 현재 `scripts/build-golden-template.py` 가 그 프로토타입이다.
   `check` 를 진단에서 "수정 체크리스트/기계친화 점수"로 키우는 작업과 함께 간다
   (`docs/author-backlog.md`). 양식 미배정 기본값은 [default-template.md](default-template.md) 참조.
+
+## build 매니페스트 마커 (#94)
+
+`hwp-agent build` 의 `parts` 키는 템플릿 마커와 1:1 이다: `summary`→`{{summary}}`,
+`intro`→`{{intro}}`, `body`→`{{body}}`, `references`→`{{references}}`. 마커는
+`scripts/add-golden-markers.py` 가 골든 템플릿에 멱등으로 넣는다. 한계: 요약 양식의
+구분/주요내용 표 칸은 md 표로 채워지지 않는다(마커 뒤에 새 표가 생김 — 칸 채우기는
+`form fill`). 참고문헌 항목은 BODY 문단 모양을 쓰며 서식의 참고문헌 문단 모양(paraPr 29)
+적용은 후속 과제.

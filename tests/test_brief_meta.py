@@ -144,3 +144,31 @@ def test_long_cover_title_shrinks_to_fit_its_box(tmp_path: Path) -> None:
     with zipfile.ZipFile(tmp_path / "out2.hwpx") as z:
         sec2 = z.read("Contents/section0.xml").decode()
     assert re.search(r'<hp:run charPrIDRef="17"><hp:t>가상 정책 이슈 제목입니다', sec2)
+
+
+def test_one_cell_table_becomes_a_summary_box(tmp_path: Path) -> None:
+    """#91: a 1×1 Markdown table is the 요약 상자 — framed, character-anchored, un-numbered."""
+    box = "| 가상 요약 문장입니다. 둘째 문장도 가상입니다. |\n|---|\n"
+    (tmp_path / "b.md").write_text(
+        FRONT.replace("가상 본문입니다", box + "\n가상 본문입니다"), encoding="utf-8"
+    )
+    manifest = tmp_path / "m.json"
+    manifest.write_text(
+        json.dumps({"template": str(BRIEF), "output": "out.hwpx", "parts": {"body": "b.md"}}),
+        encoding="utf-8",
+    )
+    build_report(manifest)
+    with zipfile.ZipFile(tmp_path / "out.hwpx") as z:
+        sec = z.read("Contents/section1.xml").decode()
+        header = z.read("Contents/header.xml").decode()
+    tbl = re.search(r"<hp:tbl\b.*?</hp:tbl>", sec, re.S).group(0)
+    assert 'numberingType="NONE"' in tbl  # uncaptioned → out of 표 차례 (#101)
+    assert 'rowCnt="1"' in tbl and 'colCnt="1"' in tbl
+    assert '<hp:pos treatAsChar="1"' in tbl
+    assert 'vertAlign="CENTER"' in tbl
+    assert re.search(r'<hp:inMargin left="510" right="510" top="141" bottom="141"', tbl)
+    assert "가상 요약 문장입니다" in re.sub(r"<[^>]+>", "", tbl)
+    bf = re.search(r'<hp:tc [^>]*borderFillIDRef="(\d+)"', tbl).group(1)
+    fill = re.search(rf'<hh:borderFill id="{bf}".*?</hh:borderFill>', header, re.S).group(0)
+    assert len(re.findall(r'(?:left|right|top|bottom)Border type="SOLID" width="0.12 mm" color="#000000"', fill)) == 4
+    assert "가상 본문입니다" in sec  # the body text after the box is still there

@@ -204,3 +204,36 @@ def test_existing_odd_header_content_is_kept(tmp_path: Path) -> None:
     assert 'applyPageType="ODD"' in restore
     assert "RUNNING-HEAD" in restore and "<hp:rect" not in restore
     assert audit_package(tmp_path / "res.hwpx") == []
+
+
+def test_wing_paragraphs_are_not_outline_headings(tmp_path: Path) -> None:
+    """#113: `write --literal-numbering` (#97) gives the chapter titles an OUTLINE paragraph
+    shape and the wing copies it; kept as is, Hangul's 제목 차례 lists every chapter
+    title twice. The wing is decoration, so its paragraphs must be heading NONE."""
+    from hwp_agent.cli.main import main
+
+    golden = REPO_ROOT / "examples" / "정책과제-template.hwpx"
+    if not golden.is_file():
+        pytest.skip("golden template absent")
+    md = tmp_path / "r.md"
+    md.write_text("# Ⅰ. 서론\n\n가상 본문\n\n# Ⅱ. 본론\n\n가상 본문\n", encoding="utf-8")
+    out = tmp_path / "r.hwpx"
+    assert main(["write", str(md), "--template", str(golden), "--literal-numbering", "-o", str(out)]) == 0
+    with zipfile.ZipFile(out) as z:
+        header = z.read("Contents/header.xml").decode()
+        sections = "".join(
+            z.read(n).decode() for n in z.namelist() if re.fullmatch(r"Contents/section\d+\.xml", n)
+        )
+
+    def heading_type(pr_id: str) -> str:
+        pr = re.search(rf'<hh:paraPr id="{pr_id}" .*?</hh:paraPr>', header, re.S).group(0)
+        return re.search(r'<hh:heading type="(\w+)"', pr).group(1)
+
+    wing_paras = []
+    for h in _headers(sections):  # paragraphs inside the odd-page header and its wing box
+        wing_paras += re.findall(r'<hp:p [^>]*paraPrIDRef="(\d+)"', h)
+    assert wing_paras, "no wings were written"
+    assert {heading_type(p) for p in wing_paras} == {"NONE"}
+    # the chapter titles themselves are the outline headings 차례 should collect
+    body_titles = re.findall(r'<hp:p [^>]*paraPrIDRef="(\d+)" styleIDRef="1"', sections)
+    assert any(heading_type(p) == "OUTLINE" for p in body_titles)

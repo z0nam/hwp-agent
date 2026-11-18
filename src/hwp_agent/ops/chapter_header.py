@@ -180,10 +180,21 @@ def _wing_char_pr(char_props, base_id: str, height: int) -> str:
 
 
 def _wing_para_pr(para_props, base_id: str) -> str:
-    """A LEFT-aligned (top, in vertical writing), margin-free copy of *base_id*."""
+    """A LEFT-aligned (top, in vertical writing), margin-free, **non-outline** copy of
+    *base_id*.
+
+    The wing paragraphs copy the chapter title's paragraph shape, which is an OUTLINE
+    heading; kept as is, Hangul's 제목 차례 collects the wing text too and every chapter
+    title appears twice (#113). The wing is decoration, so its heading becomes NONE.
+    """
 
     def modify(el) -> None:
         el.find(_hh("align")).set("horizontal", "LEFT")
+        heading = el.find(_hh("heading"))
+        if heading is not None:
+            heading.set("type", "NONE")
+            heading.set("idRef", "0")
+            heading.set("level", "0")
         for tag in ("intent", "left", "right", "prev", "next"):
             for m in el.iter(f"{{{_HC}}}{tag}"):
                 m.set("value", "0")

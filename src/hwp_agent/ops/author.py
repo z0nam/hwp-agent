@@ -25,6 +25,7 @@ currently flattened to text (run-level styling is a later refinement).
 from __future__ import annotations
 
 import copy
+import math
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -1447,6 +1448,58 @@ def _fit_table_width_by_content(table_el, block: TableBlock, text_width: int) ->
                 csz.set("width", str(text_width))
 
 
+_CELL_LINE_SPACING_MAX = 140  # % — body spacing above this is too airy for table cells
+_CELL_LINE_SPACING = 130  # % — what a cell paragraph is tightened to (#93)
+
+
+def _tight_cell_para_pr(doc: HwpxDocument, base_para_pr_id, cache: dict[str, str]):
+    """Variant of *base_para_pr_id* with percent line spacing tightened to 130% (#93).
+
+    A generated table whose template has no table-only paragraph shape would inherit
+    the body's 160-180% spacing in every cell and come out far taller than a house
+    table. A paraPr at or below :data:`_CELL_LINE_SPACING_MAX` is returned unchanged.
+    """
+    if base_para_pr_id is None:
+        return None
+    key = str(base_para_pr_id)
+    if key in cache:
+        return cache[key]
+    cache[key] = key
+    try:
+        header = doc._root._headers[0]
+        pps = header._para_properties_element(create=False)
+        base_el = pps.find(f"{{{_HH}}}paraPr[@id='{key}']") if pps is not None else None
+        if base_el is None:
+            return key
+        spacings = [
+            e for e in base_el.iter(f"{{{_HH}}}lineSpacing")
+            if e.get("type") == "PERCENT" and int(e.get("value", "0") or 0) > _CELL_LINE_SPACING_MAX
+        ]
+        if not spacings:
+            return key
+        next_id = str(max(
+            (int(p.get("id")) for p in pps.findall(f"{{{_HH}}}paraPr") if (p.get("id") or "").isdigit()),
+            default=-1,
+        ) + 1)
+        new_el = copy.deepcopy(base_el)
+        new_el.set("id", next_id)
+        for e in new_el.iter(f"{{{_HH}}}lineSpacing"):
+            if e.get("type") == "PERCENT" and int(e.get("value", "0") or 0) > _CELL_LINE_SPACING_MAX:
+                e.set("value", str(_CELL_LINE_SPACING))
+        pps.append(new_el)
+        pps.set("itemCnt", str(len(pps.findall(f"{{{_HH}}}paraPr"))))
+        header.mark_dirty()
+        cache[key] = next_id
+        return next_id
+    except Exception:
+        return key
+
+
+def _text_em(seg: str) -> float:
+    """Rendered width of *seg* in ems: CJK/fullwidth = 1, ASCII/Latin ≈ 0.55 (#93)."""
+    return sum(1.0 if ord(ch) >= 0x1100 else 0.55 for ch in seg)
+
+
 def _grow_rows_for_content(table_el, row_texts: list[list[str]]) -> None:
     """Grow each row's cell height to the lines its content needs.
 
@@ -1478,14 +1531,16 @@ def _grow_rows_for_content(table_el, row_texts: list[list[str]]) -> None:
             if mg is not None:
                 inset = int(mg.get("left", "0")) + int(mg.get("right", "0"))
             usable = max(width - inset, CHAR_W)
-            cpl = max(1, usable // CHAR_W)  # chars per line (coarse, CJK-width)
+            em_per_line = max(1.0, usable / CHAR_W)  # CJK glyphs per line (coarse)
             # rendered text: emphasis delimiters aren't drawn and a [^id] reference
             # becomes a one-glyph superscript mark, so neither counts toward wrapping
             text = (
                 _FOOTNOTE_REF_RE.sub("¹", rendered_text(plain_text(texts[c])))
                 if c < len(texts) else ""
             )
-            lines = sum(max(1, -(-len(seg) // cpl)) for seg in text.split("\n")) or 1
+            lines = sum(
+                max(1, math.ceil(_text_em(seg) / em_per_line)) for seg in text.split("\n")
+            ) or 1
             max_lines = max(max_lines, lines)
         if max_lines > 1:
             for tc in cells:
@@ -2494,6 +2549,7 @@ def fill_from_markdown(
     left_para_cache: dict[str, str] = {}
     none_heading_cache: dict[str, str] = {}
     outline_cache: dict[tuple[str, int], str] = {}
+    cell_para_cache: dict[str, str] = {}
     outline_numbering_id: str | None = None
     outline_tried = False
 
@@ -2738,7 +2794,9 @@ def fill_from_markdown(
                 doc, target_section, block, table_fmt, body_style, body_para,
                 ref_element_copy, chapter_label(), equal_columns=equal_columns,
                 text_writer=write_text,
-                para_resolver=resolve_para,
+                para_resolver=lambda base, txt: _tight_cell_para_pr(
+                    doc, resolve_para(base, txt), cell_para_cache
+                ),
                 run_writer=add_runs,
             )
             place(table.paragraph.element)

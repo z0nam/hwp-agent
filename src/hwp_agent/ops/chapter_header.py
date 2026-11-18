@@ -166,7 +166,10 @@ def _ensure_variant(props, tag: str, base_id: str, modify) -> str:
         c.attrib.pop("id", None)
         if etree.tostring(c) == key:
             return el.get("id")
-    new_id = str(len(existing))
+    # one past the highest id — not the element count, which collides with an existing id
+    # whenever the ids are not 0..n-1 (other steps append variants as max id + 1)
+    ids = [int(el.get("id")) for el in existing if (el.get("id") or "").isdigit()]
+    new_id = str(max(ids, default=-1) + 1)
     attrs = dict(want.attrib)
     want.attrib.clear()
     want.attrib.update({"id": new_id, **attrs})  # id first, as Hangul writes it

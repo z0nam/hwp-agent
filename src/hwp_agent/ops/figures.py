@@ -302,6 +302,62 @@ def _header(doc):
     return doc._root._headers[0] if getattr(doc._root, "_headers", None) else None
 
 
+def box_fill(doc) -> str | None:
+    """Id of a plain box border fill — thin (0.12 mm) solid black on all four sides,
+    no fill — created if the header has none (the 요약 상자 of the 정책이슈브리프, #91).
+
+    Matched by *values*, not id: an issue brief's header and the form it came from
+    number their border fills differently."""
+    header = _header(doc)
+    if header is None:
+        return None
+    fills = header.element.find(f".//{{{_HH}}}borderFills")
+    if fills is None:
+        return None
+
+    def is_box(bf) -> bool:
+        for s in ("left", "right", "top", "bottom"):
+            side = bf.find(f"{{{_HH}}}{s}Border")
+            if (
+                side is None or side.get("type") != "SOLID"
+                or side.get("width") != "0.12 mm"
+                or (side.get("color") or "").upper() != "#000000"
+            ):
+                return False
+        for diag in ("slash", "backSlash"):
+            d = bf.find(f"{{{_HH}}}{diag}")
+            if d is not None and d.get("type") not in (None, "NONE"):
+                return False
+        return bf.find(f".//{{{_HC}}}fillBrush") is None
+
+    all_fills = fills.findall(f"{{{_HH}}}borderFill")
+    for bf in all_fills:
+        if is_box(bf):
+            return bf.get("id")
+    if not all_fills:
+        return None
+    new = copy.deepcopy(all_fills[0])
+    ids = [int(b.get("id")) for b in all_fills if (b.get("id") or "").isdigit()]
+    new_id = str(max(ids, default=0) + 1)
+    new.set("id", new_id)
+    for s in ("left", "right", "top", "bottom"):
+        side = new.find(f"{{{_HH}}}{s}Border")
+        if side is not None:
+            side.set("type", "SOLID")
+            side.set("width", "0.12 mm")
+            side.set("color", "#000000")
+    for diag in ("slash", "backSlash"):
+        d = new.find(f"{{{_HH}}}{diag}")
+        if d is not None:
+            d.set("type", "NONE")
+    for brush in new.findall(f".//{{{_HC}}}fillBrush"):
+        brush.getparent().remove(brush)
+    fills.append(new)
+    fills.set("itemCnt", str(len(fills.findall(f"{{{_HH}}}borderFill"))))
+    header.mark_dirty()
+    return new_id
+
+
 def borderless_fill(doc) -> str | None:
     """Id of a border fill with no lines and no fill, created if the header has none."""
     header = _header(doc)

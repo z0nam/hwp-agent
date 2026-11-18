@@ -40,6 +40,7 @@ from .figures import (
     add_bin_image,
     body_height,
     borderless_fill,
+    box_fill,
     centered_para_pr,
     fit_extent,
     is_figure_table,
@@ -514,6 +515,8 @@ def _resolve_cross_refs(
             fig_fmt = (
                 (lambda n, c=chapter: f"그림 {c}-{n}") if chapter else (lambda n: f"그림 {n}")
             )
+        if isinstance(b, TableBlock) and _is_summary_box(b):
+            continue  # unnumbered (numberingType NONE): takes no table number
         if isinstance(b, TableBlock) and per_chapter:
             b.chapter = chapter
             b.number = table_seq + 1
@@ -1652,6 +1655,89 @@ def _fit_table_height(table_el) -> None:
         total += max(row_h, default=0)
     if total > 0:
         sz.set("height", str(total + _caption_extent(table_el)))
+
+
+def _is_summary_box(block) -> bool:
+    """A 1×1 Markdown table with no caption and no 주)/출처) note is the 정책이슈브리프
+    요약 상자 (#91). A captioned or sourced one-cell table is a real table and keeps
+    its caption and note, so it goes through the normal table path."""
+    return (
+        isinstance(block, TableBlock)
+        and block.n_rows == 1 and block.n_cols == 1
+        and not block.caption and not block.note
+    )
+
+
+def _build_summary_box(
+    doc, section, block: TableBlock, *, body_style, body_para, body_char,
+    text_writer=None,
+):
+    """A one-cell box for the first chunk of an issue brief (#91).
+
+    Format values come from a published brief: a thin (0.12 mm) black frame, the table
+    as wide as the text column and anchored as a character (``treatAsChar``), 283
+    outer margins, cell margins 510 left/right and 141 top/bottom, the text centred
+    vertically in the BODY style. It has no caption, so it is numbered ``NONE`` and
+    stays out of 표 차례 (#101). Its height is estimated from the wrapped line count;
+    Hangul re-flows on open.
+    """
+    tw = _text_width(section) or 33451
+    table = doc.add_table(
+        1, 1, section=section, border_fill_id_ref=box_fill(doc),
+        style_id_ref=body_style, para_pr_id_ref=body_para,
+    )
+    tel = table.element
+    tel.set("numberingType", "NONE")
+    pos = tel.find(f"{{{_HP}}}pos")
+    if pos is not None:
+        pos.set("treatAsChar", "1")
+        pos.set("flowWithText", "1")
+        pos.set("vertRelTo", "PARA")
+        pos.set("horzRelTo", "COLUMN")
+    for tag, vals in (
+        ("outMargin", {"left": "283", "right": "283", "top": "283", "bottom": "283"}),
+        ("inMargin", {"left": "510", "right": "510", "top": "141", "bottom": "141"}),
+    ):
+        el = tel.find(f"{{{_HP}}}{tag}")
+        if el is not None:
+            for k, v in vals.items():
+                el.set(k, v)
+    cell = table.cell(0, 0)
+    tc = cell.element
+    box = box_fill(doc)
+    if box is not None:
+        tc.set("borderFillIDRef", box)
+    mg = tc.find(f"{{{_HP}}}cellMargin")
+    if mg is not None:
+        for k, v in {"left": "510", "right": "510", "top": "141", "bottom": "141"}.items():
+            mg.set(k, v)
+    sub = tc.find(f"{{{_HP}}}subList")
+    if sub is not None:
+        sub.set("vertAlign", "CENTER")
+    text = block.rows[0][0]
+    cp = cell.paragraphs[0]
+    if body_style is not None:
+        cp.style_id_ref = body_style
+    cp.clear_text()
+    if text_writer is not None:
+        text_writer(cp, plain_text(text), body_char, body_char)
+    else:
+        cp.add_run(unmask_escapes(plain_text(text)), char_pr_id_ref=body_char)
+    # width = text column; height = wrapped lines × (font × 150%) + cell margins
+    height_of = _char_height_lookup(doc)
+    font = height_of(body_char) or 1000
+    inner = tw - 2 * 510 - 2 * 283
+    lines = _wrapped_lines(rendered_text(plain_text(text)), max(1.0, inner / font))
+    h = lines * int(font * 1.5) + 2 * 141
+    sz = tel.find(f"{{{_HP}}}sz")
+    if sz is not None:
+        sz.set("width", str(tw))
+        sz.set("height", str(h))
+    csz = tc.find(f"{{{_HP}}}cellSz")
+    if csz is not None:
+        csz.set("width", str(tw))
+        csz.set("height", str(h))
+    return table
 
 
 def _build_table(
@@ -2854,6 +2940,16 @@ def fill_from_markdown(
             place(table.paragraph.element)
             result.placed += 1
             result.figures += 1
+            continue
+
+        if _is_summary_box(block):
+            table = _build_summary_box(
+                doc, target_section, block, body_style=body_style, body_para=body_para,
+                body_char=doc.style(body_style).char_pr_id_ref if body_style else None,
+                text_writer=write_text,
+            )
+            place(table.paragraph.element)
+            result.placed += 1
             continue
 
         if isinstance(block, TableBlock):

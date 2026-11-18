@@ -216,7 +216,7 @@ def _wing_box(
     vert = spec.top - margin_top - _HEADER_ORIGIN_DY
     mats = "".join(_IDENTITY.format(m) for m in ("transMatrix", "scaMatrix", "rotMatrix"))
     return (
-        f'<hp:rect id="{shape_id}" zOrder="100" numberingType="PICTURE" '
+        f'<hp:rect id="{shape_id}" zOrder="100" numberingType="NONE" '
         f'textWrap="IN_FRONT_OF_TEXT" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" '
         f'href="" groupLevel="0" instid="{shape_id + 1}" ratio="0">'
         f'<hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/>'

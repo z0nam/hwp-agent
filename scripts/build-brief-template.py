@@ -127,6 +127,11 @@ def retarget_pic(pic, w_px: int, h_px: int) -> None:
     ow, oh = w_px * PX, h_px * PX
     cur = pic.find(hp("curSz"))
     cw, ch = int(cur.get("width")), int(cur.get("height"))
+    # the source placed a window of a big image with a negative offset / translation;
+    # the new image *is* the window, so there is nothing to shift
+    off = pic.find(hp("offset"))
+    off.set("x", "0")
+    off.set("y", "0")
     pic.find(hp("orgSz")).set("width", str(ow))
     pic.find(hp("orgSz")).set("height", str(oh))
     ri = pic.find(hp("renderingInfo"))
@@ -245,9 +250,17 @@ def build(src: Path, dst: Path) -> None:
                 b.text = " {{publisher}}"
 
     # ----- masterpages: running title + chapter wings ------------------------------
+    def direct_ts(p) -> list:  # this paragraph's own <hp:t> (not those of nested paragraphs)
+        return [t for r in p.findall(hp("run")) for t in r.findall(hp("t"))]
+
     for k, token in ((0, "{{running_title}}"), (1, "{{wing_1}}"), (2, "{{wing_2}}"), (3, "{{wing_3}}")):
-        p = next(p for p in mp[k].iter(hp("p")) if "".join(t.text or "" for t in text_nodes(p)).strip())
-        set_text(p, token)
+        # the wing text lives in the *innermost* paragraph holding it; the outer paragraph
+        # of a table cell merely contains it, so matching on subtree text hit the wrong one
+        p = next(p for p in mp[k].iter(hp("p")) if "".join(t.text or "" for t in direct_ts(p)).strip())
+        ts = direct_ts(p)
+        ts[0].text = token
+        for t in ts[1:]:
+            t.text = ""
     # masterpage4 keeps its fixed "참고문헌" wing
 
     # ----- pictures: scrub names; crop the ornament out of its screenshot ---------
@@ -333,10 +346,38 @@ def build(src: Path, dst: Path) -> None:
             zout.writestr(info, out.get(info.filename, zin.read(info.filename)))
     print(f"wrote {dst}  (dropped {len(drop)} BinData: {sorted(Path(n).name for n in drop)})")
     declare_roles(dst)
+    repoint_bullet_styles(dst)
     from hwp_agent.ops import neutralize_uncaptioned_numbering
 
     n = neutralize_uncaptioned_numbering(dst)  # decoration stays out of 그림·표 차례 (#101)
     print(f"un-numbered {n} decorative object(s)")
+
+
+#: styleName → the paragraph shape the published brief really uses for it: 본문강조 text is
+#: set with the ▪ bullet shape and 참고 with a hanging indent, while the style's own
+#: default shape has neither — without this a ``write``-n bullet comes out bare
+BULLET_SHAPES = {"본문강조": "23", "참고": "24"}
+
+
+def repoint_bullet_styles(path: Path) -> None:
+    import zipfile as _zf
+
+    from hwp_agent.ops.container import _rewrite_zip_preserving
+
+    with _zf.ZipFile(path) as z:
+        header = z.read("Contents/header.xml").decode("utf-8")
+    for name, pr in BULLET_SHAPES.items():
+        header, n = re.subn(
+            r'(<hh:style id="\d+"[^>]*name="%s"[^>]*paraPrIDRef=")\d+(")' % re.escape(name),
+            lambda m, pr=pr: m.group(1) + pr + m.group(2),
+            header,
+        )
+        if n != 1:
+            raise RuntimeError(f"style {name!r} not found exactly once")
+    tmp = path.with_suffix(".style.tmp")
+    _rewrite_zip_preserving(path, tmp, {"Contents/header.xml": header.encode("utf-8")})
+    tmp.replace(path)
+    print(f"bullet styles use the published paragraph shapes: {BULLET_SHAPES}")
 
 
 #: styleName → ROLE, the same mapping the house-form override declares for the brief

@@ -3418,6 +3418,10 @@ def build_report(
         lead_chapters=lead_chapters,
     )
     result.warnings += brief_warnings
+    if brief_slots:
+        from .brief import decorate_later_chapters
+
+        decorate_later_chapters(out or template)
     finish_report_meta(
         result, out or template, meta_dict, fallback_title=fallback_title, author=author
     )

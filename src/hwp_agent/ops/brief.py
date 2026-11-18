@@ -151,3 +151,60 @@ def brief_parts(markdown: str) -> BriefParts:
         if not _APPENDIX_RE.match(ch.title):
             out.slots[f"toc_{k}"] = _plain_title(ch.title)
     return out
+
+
+_HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+
+def decorate_later_chapters(path: Path | str) -> int:
+    """Give the chapters after a section's first one the opening the first has.
+
+    The published brief starts every chapter on a new page with the chapter ornament
+    (the picture paragraph right after the chapter heading) — also the chapters that
+    share section2 (Ⅳ, 부록). The template's ornament paragraph is the one after the
+    section's own ``{{chN_title}}`` heading; every later heading of the same style in
+    that section gets ``pageBreak`` and a copy of it. Returns how many were decorated.
+    """
+    import copy
+
+    from lxml import etree
+
+    from .container import _rewrite_zip_preserving
+
+    def hp(tag: str) -> str:
+        return f"{{{_HP}}}{tag}"
+
+    path = Path(path)
+    changed: dict[str, bytes] = {}
+    total = 0
+    with zipfile.ZipFile(path) as z:
+        names = [n for n in z.namelist() if re.fullmatch(r"Contents/section\d+\.xml", n)]
+        for name in names:
+            root = etree.fromstring(z.read(name))
+            paras = root.findall(hp("p"))
+            if len(paras) < 3:
+                continue
+            head, orn = paras[0], paras[1]
+            if head.find(f".//{hp('secPr')}") is None or orn.find(f".//{hp('pic')}") is None:
+                continue
+            style = head.get("styleIDRef")
+            n = 0
+            for p in paras[2:]:
+                if p.get("styleIDRef") != style or p.find(f".//{hp('secPr')}") is not None:
+                    continue
+                p.set("pageBreak", "1")
+                clone = copy.deepcopy(orn)
+                for pic in clone.iter(hp("pic")):  # fresh object ids
+                    for attr in ("id", "instid"):
+                        if pic.get(attr):
+                            pic.set(attr, str(int(pic.get(attr)) + 100000 + n))
+                p.addnext(clone)
+                n += 1
+            if n:
+                changed[name] = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+                total += n
+    if changed:
+        tmp = path.with_suffix(".dec.tmp")
+        _rewrite_zip_preserving(path, tmp, changed)
+        tmp.replace(path)
+    return total

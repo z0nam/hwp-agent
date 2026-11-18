@@ -224,3 +224,30 @@ def test_chapter_captions_keep_the_chapter_label_and_table_caption(tmp_path: Pat
     assert "<표 Ⅱ-1> " in flat.replace("&lt;", "<").replace("&gt;", ">") and "가상 지표 비교" in flat
     assert "[그림 Ⅱ-1]" in flat and "그림 1]" not in flat
     assert "가상 주석" in flat
+
+
+def test_later_chapters_in_the_last_section_start_a_page_with_the_ornament(tmp_path: Path) -> None:
+    """Ⅳ·부록 share section2 with Ⅲ; as in the published brief each starts a new page
+    (pageBreak) and carries the chapter ornament paragraph."""
+    (tmp_path / "b.md").write_text(BODY, encoding="utf-8")
+    (tmp_path / "r.md").write_text(REFS, encoding="utf-8")
+    manifest = tmp_path / "m.json"
+    manifest.write_text(
+        json.dumps({"template": str(TPL), "output": "out.hwpx",
+                    "parts": {"body": "b.md", "references": "r.md"}}),
+        encoding="utf-8",
+    )
+    build_report(manifest)
+    from lxml import etree
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    with zipfile.ZipFile(tmp_path / "out.hwpx") as z:
+        root = etree.fromstring(z.read("Contents/section2.xml"))
+    paras = root.findall(f"{{{hp}}}p")
+    texts = ["".join(p.itertext()) for p in paras]
+    for title in ("Ⅳ. 가상 시사점", "부록. 가상 부록"):
+        i = next(k for k, t in enumerate(texts) if t.startswith(title))
+        assert paras[i].get("pageBreak") == "1", title
+        assert paras[i + 1].find(f".//{{{hp}}}pic") is not None, title
+    ids = [e.get("id") for e in root.iter(f"{{{hp}}}pic")]
+    assert len(ids) == len(set(ids)) == 3  # Ⅲ's ornament + one per later chapter

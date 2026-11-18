@@ -4,5 +4,39 @@
     "제목": "HEADING_1",
     "본문강조": "BULLET_1",
     "참고": "BULLET_2"
+  },
+  "meta_slots": {
+    "_note": "정책이슈브리프 표지·뒷표지·바탕쪽 예시 문자열 → 메타 슬롯 (#91 1단계). 표지 제목 두 줄('○'×10)은 같은 문자열이 인사말 제목에도 나와 순번(replace_at)으로 고른다: 0·1번이 표지 제목, 2번(인사말)은 건드리지 않음. 제목은 ' // ' 로 두 줄(title_1·title_2, 서식이 줄마다 문단)·저자 구분(' ; ')은 normalize_meta 가 처리. 머리제목은 바탕쪽(masterpage) 예시 문자열. 장 날개(장 제목 바탕쪽)는 2단계.",
+    "cover": {
+      "section": 0,
+      "replace": {
+        "VOL.000": "VOL.{{volume}}",
+        "□□□  제주연구원 △△△△": "{{authors}}"
+      },
+      "replace_at": [
+        {
+          "old": "○○○○○○○○○○",
+          "new": "{{title_1}}",
+          "index": 0
+        },
+        {
+          "old": "○○○○○○○○○○",
+          "new": "{{title_2}}",
+          "index": 1
+        }
+      ]
+    },
+    "colophon": {
+      "section": -1,
+      "replace": {
+        "vol.OOO": "vol.{{volume}}",
+        "유영봉": "{{publisher}}"
+      }
+    },
+    "masterpage": {
+      "replace": {
+        "제주 학교안전경찰관제 운영 성과와 발전방안": "{{running_title}}"
+      }
+    }
   }
 }

@@ -52,6 +52,10 @@ META_SLOTS = (
     "publisher",
     "printer",
     "isbn",
+    "title_1",  # 표지 제목 첫째·둘째 줄 (정책이슈브리프: 줄마다 문단) (#91)
+    "title_2",
+    "volume",  # 호수 — 정책이슈브리프 표지·뒷표지 (#91)
+    "running_title",  # 머리제목 — 바탕쪽(머리말) 쪽 제목 (#91)
 )
 #: Slots a submission copy must not leave blank — missing ones are blanked *and*
 #: reported. The rest (subtitle, co_researcher, printer, report_series with its
@@ -84,6 +88,8 @@ ALIASES = {
     "공동연구": "co_researchers",
     "발행일": "pub_date",
     "발행인": "publisher",
+    "호수": "volume",
+    "머리제목": "running_title",
     "인쇄처": "printer",
     "종료일": "end_date",
     "과제종료일": "end_date",
@@ -218,6 +224,18 @@ def bake_meta_slots(path: Path | str, config: dict) -> list[str]:
                 continue
             _replace_in_para(hits[0], old, new)
             done.append(f"s{si}:{new}")
+        # nth match for strings that repeat (the brief's cover prints "○○○…" for
+        # both title lines and again for the 인사말 heading) — {"old","new","index"}
+        for item in spec.get("replace_at") or []:
+            old, new, idx = item["old"], item["new"], int(item.get("index", 0))
+            if new and new in sec_text:
+                continue
+            hits = [p for p in paras if old in _para_text(p)]
+            if idx >= len(hits):
+                errors.append(f"s{si}: {old!r} #{idx} not found ({len(hits)} paragraph(s))")
+                continue
+            _replace_in_para(hits[idx], old, new)
+            done.append(f"s{si}:{new or '(blank)'}")
         for label, token in (spec.get("append") or {}).items():
             if token in sec_text:
                 continue
@@ -236,6 +254,50 @@ def bake_meta_slots(path: Path | str, config: dict) -> list[str]:
         raise ValueError("meta_slots: " + "; ".join(errors))
     if done:
         doc.save_to_path(str(path))
+    done += _bake_masterpage_slots(path, config.get("masterpage") or {})
+    return done
+
+
+def _bake_masterpage_slots(path: Path | str, spec: dict) -> list[str]:
+    """``"masterpage": {"replace": {example: "{{running_title}}"}}`` — swap an example
+    string in the masterpage parts (the 머리말 쪽 제목) for a slot (#91). Each key must
+    occur in exactly one masterpage part, once; a token already present is skipped."""
+    import zipfile
+
+    from xml.sax.saxutils import escape
+
+    from .container import _rewrite_zip_preserving
+
+    replace = spec.get("replace") or {}
+    if not replace:
+        return []
+    with zipfile.ZipFile(path) as z:
+        parts = {
+            n: z.read(n).decode("utf-8") for n in z.namelist()
+            if n.startswith("Contents/masterpage") and n.endswith(".xml")
+        }
+    changed: dict[str, str] = {}
+    done: list[str] = []
+    errors: list[str] = []
+    for old, new in replace.items():
+        if any(new in x for x in parts.values()):
+            continue
+        needle = f">{escape(old)}<"
+        hits = [n for n, x in parts.items() if x.count(needle) == 1]
+        total = sum(x.count(needle) for x in parts.values())
+        if len(hits) != 1 or total != 1:
+            errors.append(f"masterpage: {old!r} found {total} time(s), want 1")
+            continue
+        changed[hits[0]] = (changed.get(hits[0]) or parts[hits[0]]).replace(
+            needle, f">{escape(new)}<"
+        )
+        done.append(f"mp:{new}")
+    if errors:
+        raise ValueError("meta_slots: " + "; ".join(errors))
+    if changed:
+        tmp = Path(str(path) + ".mp.tmp")
+        _rewrite_zip_preserving(path, tmp, {n: x.encode("utf-8") for n, x in changed.items()})
+        tmp.replace(path)
     return done
 
 
@@ -406,6 +468,13 @@ def normalize_meta(meta: dict) -> dict:
         out["publisher"] = pub
     if "pub_date" in out:
         out["pub_date"] = _format_pub_date(out["pub_date"])
+    # 정책이슈브리프 프런트매터: 제목은 " // " 로 줄바꿈, 저자는 " ; " 로 구분 (#91)
+    if "title" in out:
+        out["title"] = out["title"].replace(" // ", "\n")
+        first, _, rest = out["title"].partition("\n")
+        out["title_1"], out["title_2"] = first, rest.replace("\n", " ")
+    if "authors" in out and " ; " in out["authors"]:
+        out["authors"] = out["authors"].replace(" ; ", "\n")
     sub = out.get("subtitle")
     if sub and not sub.startswith((":", "-", "—", "–")):
         out["subtitle"] = f": {sub}"
@@ -587,6 +656,42 @@ def _newlines_to_breaks(doc: HwpxDocument) -> None:
             sec.mark_dirty()
 
 
+def _fill_masterpage_slots(path: Path | str, values: dict[str, str]) -> list[str]:
+    """Fill ``{{slot}}`` tokens inside ``Contents/masterpage*.xml`` (머리말 쪽 제목) (#91).
+
+    Masterpages are not sections, so :func:`~hwp_agent.ops.form.fill_form` never sees
+    them. The tokens are baked into one ``<hp:t>``, so a plain, XML-escaped text swap
+    on just those parts (container otherwise untouched) is enough. Returns the slots
+    that were filled.
+    """
+    import zipfile
+
+    from xml.sax.saxutils import escape
+
+    from .container import _rewrite_zip_preserving
+
+    changed: dict[str, bytes] = {}
+    done: list[str] = []
+    with zipfile.ZipFile(path) as z:
+        for name in z.namelist():
+            if not (name.startswith("Contents/masterpage") and name.endswith(".xml")):
+                continue
+            xml = z.read(name).decode("utf-8")
+            new = xml
+            for slot, value in values.items():
+                for tok in re.findall(r"\{\{\s*" + re.escape(slot) + r"(?::[^}]*)?\s*\}\}", new):
+                    new = new.replace(tok, escape(value))
+                    if slot not in done:
+                        done.append(slot)
+            if new != xml:
+                changed[name] = new.encode("utf-8")
+    if changed:
+        tmp = Path(str(path) + ".mp.tmp")
+        _rewrite_zip_preserving(path, tmp, changed)
+        tmp.replace(path)
+    return done
+
+
 def apply_report_meta(
     path: Path | str,
     meta: dict | None,
@@ -667,6 +772,12 @@ def apply_report_meta(
 
         _update_preview_parts(doc)
         doc.save_to_path(str(path))
+
+    if meta is not None:
+        flat_title = (norm.get("title") or "").replace("\n", " ").strip()
+        mp_values = {"running_title": norm.get("running_title") or flat_title}
+        for slot in _fill_masterpage_slots(path, mp_values):
+            (res.filled if mp_values[slot] else res.blank).append(slot)
 
     title = (norm.get("title") or "").replace("\n", " ").strip() or (
         fallback_title.strip() if fallback_title else None

@@ -187,6 +187,13 @@ def make_sample_table_para(src) -> "etree._Element":
         if list(tbl.iter(hp(tag))):
             raise RuntimeError(f"sample table contains <{tag}>")
     tbl.set("id", "1700000001")
+    # cells without their own margin (hasMargin=0) store -1 as 4294967295; resolve it
+    # from the table's inMargin so no sentinel is carried into generated tables
+    inm = tbl.find(hp("inMargin"))
+    for mg in tbl.iter(hp("cellMargin")):
+        for k in ("left", "right", "top", "bottom"):
+            if int(mg.get(k, "0")) >= 2**31:
+                mg.set(k, inm.get(k, "0") if inm is not None else "0")
     for ru in host.iter(hp("run")):  # nothing but the table itself may carry text
         for t in ru.findall(hp("t")):
             t.text = ""

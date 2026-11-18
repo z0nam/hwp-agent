@@ -269,6 +269,7 @@ def test_generated_tables_follow_the_published_table_sample(tmp_path: Path) -> N
     assert not "".join(
         t.text or "" for tr in sample.findall(f"{{{hp}}}tr") for t in tr.iter(f"{{{hp}}}t")
     ).strip()  # cells carry no text
+    assert "4294967295" not in etree.tostring(sample).decode()  # no inherited -1 margins
     sample_cap_pr = sample.find(f"{{{hp}}}caption").find(f".//{{{hp}}}p").get("paraPrIDRef")
     sample_bf = [[tc.get("borderFillIDRef") for tc in tr.findall(f"{{{hp}}}tc")]
                  for tr in sample.findall(f"{{{hp}}}tr")]

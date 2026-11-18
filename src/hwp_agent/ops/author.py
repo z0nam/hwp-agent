@@ -1589,7 +1589,12 @@ def _grow_rows_for_content(table_el, row_texts: list[list[str]]) -> None:
             mg = tc.find(f"{{{_HP}}}cellMargin")
             inset = 0
             if mg is not None:
-                inset = int(mg.get("left", "0")) + int(mg.get("right", "0"))
+                # a cell without its own margin (hasMargin=0) stores -1 as 4294967295;
+                # that is "use the table's", not a 4-billion-unit inset
+                inset = sum(
+                    v for k in ("left", "right")
+                    if 0 <= (v := int(mg.get(k, "0"))) < 2**31
+                )
             usable = max(width - inset, CHAR_W)
             em_per_line = max(1.0, usable / CHAR_W)  # CJK glyphs per line (coarse)
             # rendered text: emphasis delimiters aren't drawn and a [^id] reference

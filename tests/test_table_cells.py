@@ -73,3 +73,20 @@ def test_wrapping_does_not_split_glyphs_across_lines() -> None:
 
     assert _wrapped_lines("가" * 19, 9.5) == 3  # 9 per line → 3 lines, not ceil(19/9.5)=2
     assert _wrapped_lines("", 9.5) == 1
+
+
+def test_unset_cell_margin_sentinel_is_not_an_inset() -> None:
+    """A cell with hasMargin=0 stores margins as 4294967295 (-1): row growth must not
+    read that as a 4-billion-unit inset and wrap every glyph onto its own line."""
+    from lxml import etree
+
+    from hwp_agent.ops.author import _grow_rows_for_content
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    tbl = etree.fromstring(
+        f'<hp:tbl xmlns:hp="{hp}"><hp:tr><hp:tc><hp:cellSz width="11000" height="1750"/>'
+        f'<hp:cellMargin left="4294967295" right="4294967295" top="4294967295" '
+        f'bottom="4294967295"/></hp:tc></hp:tr></hp:tbl>'
+    )
+    _grow_rows_for_content(tbl, [["가상 A"]])
+    assert int(tbl.find(f".//{{{hp}}}cellSz").get("height")) <= 2100

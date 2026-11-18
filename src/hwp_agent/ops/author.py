@@ -206,6 +206,7 @@ class TableBlock:
     # "<표 {chapter}-{number}>" (Hangul's autoNum never resets per chapter)
     chapter: str | None = None
     number: int | None = None
+    caption_label: str | None = None  # "표 Ⅱ-1" — literal label when the format has no caption
 
     @property
     def n_rows(self) -> int:
@@ -479,6 +480,7 @@ def _delimiter_aligns(line: str) -> list[str] | None:
 def _resolve_cross_refs(
     blocks: list, chapter: str | None, warnings: list[str], *, figure_start: int = 0,
     per_chapter: bool = False,
+    lead_chapter: str | None = None,
 ) -> None:
     """Resolve `{label:id}` / `{ref:id}` cross-references across the block list.
 
@@ -502,6 +504,8 @@ def _resolve_cross_refs(
     labels: dict[str, str] = {}
     table_seq = 0
     figure_seq = figure_start
+    if per_chapter and lead_chapter:
+        chapter = lead_chapter  # content before the first H1 (brief chapter parts)
     fmt = (lambda n: f"표 {chapter}-{n}") if chapter else (lambda n: f"표 {n}")
     fig_fmt = (lambda n: f"그림 {chapter}-{n}") if chapter else (lambda n: f"그림 {n}")
     for b in blocks:
@@ -530,6 +534,7 @@ def _resolve_cross_refs(
                     labels[b.label] = b.display
         elif isinstance(b, TableBlock) and b.caption:
             table_seq += 1
+            b.caption_label = fmt(table_seq)
             for lid in _LABEL_RE.findall(b.caption):
                 if lid in labels:
                     warnings.append(f"duplicate {{label:{lid}}}; first wins")
@@ -1030,9 +1035,15 @@ def _find_reference_table(doc: HwpxDocument, caption_pattern: re.Pattern | None 
     first = first_section = None
     for section in doc.sections:
         for tbl in section.element.iter(f"{{{_HP}}}tbl"):
-            if first is None:
-                first, first_section = tbl, section
             caption = _caption_text(tbl)
+            # a 1×1 captionless box (정책이슈브리프 summary box) is a callout, not a
+            # data-table format: never the fallback reference for generated tables
+            if first is None and not (
+                not caption
+                and len(tbl.findall(f"{{{_HP}}}tr")) == 1
+                and len(tbl.find(f"{{{_HP}}}tr").findall(f"{{{_HP}}}tc")) == 1
+            ):
+                first, first_section = tbl, section
             if _TABLE_TOKEN_RE.search(caption) or (
                 caption_pattern is not None and caption_pattern.search(caption)
             ):
@@ -1838,7 +1849,23 @@ def _build_table(
             note_sz.set("height", seed)
 
     # caption "<표 N-M> {title}" cloned from the reference (auto-number + 표제목 style)
-    if block.caption and ref_el is not None:
+    if block.caption and (ref_el is None or ref_el.find(f"{{{_HP}}}caption") is None):
+        # the template has no captioned reference table (정책이슈브리프): a literal
+        # "<표 Ⅱ-1> title" body-style caption instead of silently dropping it
+        cap = _figure_caption(
+            None, block.caption_label or "표", block.caption, 8504,
+            body_style=body_style, body_para=body_para, body_char=None,
+            run_writer=run_writer,
+        )
+        for t in cap.iter(f"{{{_HP}}}t"):
+            if t.text and t.text.startswith("[") and t.text.rstrip().endswith("]"):
+                body = t.text.rstrip()
+                t.text = "<" + body[1:-1] + ">" + t.text[len(body):]
+                break
+        first_tr = table.element.find(f"{{{_HP}}}tr")
+        if first_tr is not None:
+            first_tr.addprevious(cap)
+    elif block.caption and ref_el is not None:
         if block.number is not None:
             chapter = block.chapter  # per-chapter mode: this table's own chapter
         clone = _clone_caption(
@@ -2546,6 +2573,7 @@ def fill_from_markdown(
     literal_numbering: bool = False,
     literal_bullets: bool = False,
     base_dir: Path | str | None = None,
+    lead_chapter: str | None = None,
 ) -> AuthorResult:
     """Fill a template from Markdown, styled with its own outline styles.
 
@@ -2870,14 +2898,19 @@ def fill_from_markdown(
     )
     # per-chapter caption numbers (#92): with no explicit --chapter, a document whose
     # H1 titles carry literal chapter numbers ("# Ⅲ. …") numbers captions per chapter
-    per_chapter = explicit_chapter is None and any(
-        isinstance(b, Block) and b.kind == "heading" and b.level == 1
-        and chapter_label_of(b.raw_text or b.text)
-        for b in blocks
+    # ``lead_chapter``: the label of the chapter whose heading is *not* in this text
+    # (a slot, e.g. the brief's {{ch1_title}}); it numbers the captions before the first H1
+    per_chapter = explicit_chapter is None and (
+        bool(lead_chapter)
+        or any(
+            isinstance(b, Block) and b.kind == "heading" and b.level == 1
+            and chapter_label_of(b.raw_text or b.text)
+            for b in blocks
+        )
     )
     _resolve_cross_refs(
         blocks, chapter_label(), result.warnings, figure_start=_count_figures(doc),
-        per_chapter=per_chapter,
+        per_chapter=per_chapter, lead_chapter=lead_chapter,
     )
     if any(isinstance(b, TableBlock) for b in blocks) and not designated:
         result.warnings.append(
@@ -3173,6 +3206,7 @@ def fill_sections(
     literal_numbering: bool = False,
     literal_bullets: bool = False,
     base_dir: Path | str | None = None,
+    lead_chapters: dict[str, str] | None = None,
 ) -> AuthorResult:
     """Fill several named markers, each from its own Markdown part.
 
@@ -3211,6 +3245,7 @@ def fill_sections(
                 literal_numbering=literal_numbering,
                 literal_bullets=literal_bullets,
                 base_dir=base_dir,
+                lead_chapter=(lead_chapters or {}).get(token),
             )
             agg.placed += res.placed
             agg.figures += res.figures
@@ -3328,6 +3363,23 @@ def build_report(
         parts.append(("{{" + name + "}}", "\n\n".join(texts)))
     if not parts:
         raise ValueError("manifest has no 'parts' to assemble")
+    fallback_title = next((t for _, md in parts if (t := first_heading(md))), None)
+
+    # 정책이슈브리프 (#91): a template with {{ch1}}… takes the body chapter by chapter
+    # — one chapter section each, later chapters in the last one — and the chapter
+    # wings / Contents / opening titles are slots derived from the H1s
+    from .brief import brief_parts, is_brief_template
+
+    brief_slots: dict[str, str] = {}
+    brief_warnings: list[str] = []
+    lead_chapters: dict[str, str] = {}
+    if is_brief_template(template):
+        bi = next((i for i, (m, _) in enumerate(parts) if m == "{{body}}"), None)
+        if bi is not None:
+            bp = brief_parts(parts[bi][1])
+            parts[bi : bi + 1] = [("{{" + k + "}}", v) for k, v in bp.parts.items()]
+            brief_slots, brief_warnings = bp.slots, bp.warnings
+            lead_chapters = {"{{" + k + "}}": v for k, v in bp.lead_chapters.items()}
 
     meta_src = meta if meta is not None else data.get("meta")
     if isinstance(meta_src, str):
@@ -3335,6 +3387,8 @@ def build_report(
     meta_dict = None
     if meta_src is not None or front:
         meta_dict = {**front, **load_meta(meta_src)}
+    if brief_slots:
+        meta_dict = {**(meta_dict or {}), **brief_slots}
 
     out = output if output is not None else data.get("output")
     if out is not None and not Path(out).is_absolute():
@@ -3361,8 +3415,13 @@ def build_report(
             else literal_bullets
         ),
         base_dir=base,
+        lead_chapters=lead_chapters,
     )
-    fallback_title = next((t for _, md in parts if (t := first_heading(md))), None)
+    result.warnings += brief_warnings
+    if brief_slots:
+        from .brief import decorate_later_chapters
+
+        decorate_later_chapters(out or template)
     finish_report_meta(
         result, out or template, meta_dict, fallback_title=fallback_title, author=author
     )

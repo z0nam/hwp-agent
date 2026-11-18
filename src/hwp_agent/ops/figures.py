@@ -72,6 +72,9 @@ class FigureBlock:
     display: str = ""  # "그림 Ⅳ-2" — set by cross-ref resolution
     # further images of the same figure (left → right after ``path``), #96
     more_paths: list[str] = field(default_factory=list)
+    # caption title taken from a "[그림 …] 제목" line written directly above the
+    # image line (#110); None → the alt text is the caption, as before
+    caption: str | None = None
 
     @property
     def paths(self) -> list[str]:

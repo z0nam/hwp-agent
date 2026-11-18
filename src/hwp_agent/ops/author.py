@@ -35,6 +35,7 @@ from lxml import etree as ET
 
 from .equation import equation_run_xml, latex_to_hwp, math_pieces, unescape_dollars
 from .figures import (
+    FIGURE_FRAMING_RE,
     FigureBlock,
     add_bin_image,
     body_height,
@@ -554,6 +555,7 @@ def _resolve_cross_refs(
     for b in blocks:
         if isinstance(b, FigureBlock):
             b.alt = resolve(b.alt) or b.alt
+            b.caption = resolve(b.caption) if b.caption is not None else None
             b.note = resolve(b.note)
         elif isinstance(b, TableBlock):
             b.caption = resolve(b.caption)
@@ -703,6 +705,17 @@ def parse_markdown(
         if (fig := parse_figure_line(line)) is not None:
             flush()
             i += 1
+            # a "[그림 …] 제목" line directly above the image (one blank line allowed)
+            # is its caption, not a body paragraph (#110) — like a table's caption line
+            prev = blocks[-1] if blocks else None
+            if (
+                isinstance(prev, Block) and prev.kind == "paragraph"
+                and pending_blanks <= 1 and "\n" not in prev.text
+                and FIGURE_FRAMING_RE.match(prev.text)
+            ):
+                blocks.pop()
+                fig.caption = FIGURE_FRAMING_RE.sub("", prev.text, count=1).strip()
+                pending_blanks = prev.blank_before  # the figure inherits the spacing above
             # consecutive image lines (no blank between) are one figure (#96)
             while i < len(lines) and (nxt := parse_figure_line(lines[i])) is not None:
                 fig.absorb(nxt)
@@ -1961,7 +1974,7 @@ def _build_figure(
         tc.set("borderFillIDRef", nofill)
 
     cap = _figure_caption(
-        cap_src, fig.display, fig.alt, tw, body_style=body_style, body_para=body_para,
+        cap_src, fig.display, fig.caption if fig.caption is not None else fig.alt, tw, body_style=body_style, body_para=body_para,
         body_char=body_char, run_writer=run_writer,
     )
     tel.find(f"{{{_HP}}}tr").addprevious(cap)

@@ -112,4 +112,4 @@ This file holds the common rules. Before a step below, read the file for it (pat
 | editing HWPX XML by hand (flat forms `form fill` can't target) | `references/hand-edit.md` |
 | table format strategy, what is copied from the reference table | `references/tables.md` |
 | marking up a template itself: the full machine-friendly convention (`AI:` styles, `{{…}}` tokens). Not needed to `write` into a template — `references/write.md` has the tokens a writer meets | `references/template-convention.md` |
-| rendering to PDF/DOCX, layout engines (`pdf`, `docx`, `verify`, `fit tails`) | the `pdf` / `fit tails` rows of `references/commands.md` |
+| rendering to PDF/DOCX, layout engines (`pdf`, `docx`, `verify`, `fit tails`, `fit pages`) | the `pdf` / `fit tails` / `fit pages` rows of `references/commands.md` |

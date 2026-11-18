@@ -168,6 +168,52 @@ def scrub_comment(pic, name: str, w_px: int | None = None, h_px: int | None = No
     cm.text = "\n".join(lines)
 
 
+#: the published brief's table title is a plain 바탕 paragraph (paraPr 1 / charPr 1)
+TABLE_CAPTION = ("0", "1", "1")  # styleIDRef, paraPrIDRef, charPrIDRef
+
+
+def make_sample_table_para(src) -> "etree._Element":
+    """A paragraph holding a blanked copy of the published data table, captioned
+    ``<표 {{chapter_number}}-N> {{table_template:sample}}`` (autoNum), for the fill to
+    copy and then drop. Cells keep their borderFill / paraPr / charPr; all text goes."""
+    host, tbl_src = src
+    host = copy.deepcopy(host)
+    tbl = next(host.iter(hp("tbl")))
+    for t in tbl.iter(hp("t")):
+        t.text = ""
+        for c in list(t):
+            t.remove(c)
+    for tag in ("pic", "footNote", "endNote", "memo"):
+        if list(tbl.iter(hp(tag))):
+            raise RuntimeError(f"sample table contains <{tag}>")
+    tbl.set("id", "1700000001")
+    # cells without their own margin (hasMargin=0) store -1 as 4294967295; resolve it
+    # from the table's inMargin so no sentinel is carried into generated tables
+    inm = tbl.find(hp("inMargin"))
+    for mg in tbl.iter(hp("cellMargin")):
+        for k in ("left", "right", "top", "bottom"):
+            if int(mg.get(k, "0")) >= 2**31:
+                mg.set(k, inm.get(k, "0") if inm is not None else "0")
+    for ru in host.iter(hp("run")):  # nothing but the table itself may carry text
+        for t in ru.findall(hp("t")):
+            t.text = ""
+    width = tbl.find(hp("sz")).get("width")
+    style, pr, ch = TABLE_CAPTION
+    cap = etree.fromstring(
+        f'<hp:caption xmlns:hp="{HP}" side="TOP" fullSz="0" width="8504" gap="850" '
+        f'lastWidth="{width}"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" '
+        f'vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" '
+        f'hasTextRef="0" hasNumRef="0"><hp:p id="2147483648" paraPrIDRef="{pr}" '
+        f'styleIDRef="{style}" pageBreak="0" columnBreak="0" merged="0">'
+        f'<hp:run charPrIDRef="{ch}"><hp:t>&lt;표 {{{{chapter_number}}}}-</hp:t><hp:ctrl>'
+        f'<hp:autoNum num="1" numType="TABLE"><hp:autoNumFormat type="DIGIT" userChar="" '
+        f'prefixChar="" suffixChar="" supscript="0"/></hp:autoNum></hp:ctrl>'
+        f'<hp:t>&gt; {{{{table_template:sample}}}}</hp:t></hp:run></hp:p></hp:subList></hp:caption>'
+    )
+    tbl.find(hp("tr")).addprevious(cap)  # the caption sits after inMargin, before the rows
+    return host
+
+
 def build(src: Path, dst: Path) -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     zin = zipfile.ZipFile(src)
@@ -176,6 +222,21 @@ def build(src: Path, dst: Path) -> None:
     sec = {i: load(f"Contents/section{i}.xml") for i in range(5)}
     mp = {i: load(f"Contents/masterpage{i}.xml") for i in range(5)}
     out: dict[str, bytes] = {}
+
+    # the first captionless data table of chapter 2 (the published brief titles its
+    # tables with a separate paragraph above, so none of them carries a caption element)
+    sample_src = next(
+        t for t in sec[1].iter(hp("tbl"))
+        if t.find(hp("caption")) is None and t.get("numberingType") == "TABLE"
+        and not list(t.iter(hp("pic")))
+    )
+    sample_src = copy.deepcopy(sample_src)
+    sample_host = copy.deepcopy(next(
+        p for p in sec[1].findall(hp("p")) if p.find(".//" + hp("tbl")) is not None
+        and p.find(".//" + hp("tbl")).get("numberingType") == "TABLE"
+        and p.find(".//" + hp("tbl")).find(hp("caption")) is None
+    ))
+    sample_src = (sample_host, sample_src)
 
     # ----- section0: cover, 인사말, Contents, chapter 1 --------------------------
     s0 = sec[0]
@@ -236,6 +297,14 @@ def build(src: Path, dst: Path) -> None:
     p3 = s3.findall(hp("p"))
     assert p3[2].find(".//" + hp("pic")) is not None
     keep_first(s3, 3, "{{references}}", simple)
+
+    # ----- sample table: the published data-table format (#115) ------------------------
+    # captured *before* the chapter bodies are thrown away; blanked and given the
+    # ``<표 Ⅱ-N> {{table_template:sample}}`` caption so ``write`` copies its borders /
+    # zone shading / note row and drops it again at fill time
+    sample_para = make_sample_table_para(sample_src)
+    sec1_paras = sec[1].findall(hp("p"))
+    sec1_paras[-1].addprevious(sample_para)  # in front of the {{ch2}} marker paragraph
 
     # ----- section4: back cover ---------------------------------------------------
     for r in sec[4].iter(hp("rect")):

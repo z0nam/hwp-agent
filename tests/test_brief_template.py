@@ -93,7 +93,9 @@ def test_template_carries_no_manuscript_traces() -> None:
                 for c in re.findall(r"<hp:shapeComment>(.*?)</hp:shapeComment>", xml, re.S):
                     assert not re.search(r"스크린샷|\d{6}|\.hwp", c), c  # no original file names
                 if "section" in n:  # no example footnotes or tables; masterpage wings hold their own tbl
-                    assert not re.search(r"<hp:footNote[ >]", xml) and "<hp:tbl" not in xml, n
+                    # (the one sample table is blanked: its only text is the caption slots)
+                    assert not re.search(r"<hp:footNote[ >]", xml), n
+                    assert xml.count("<hp:tbl") == (1 if n.endswith("section1.xml") else 0), n
         hpf = z.read("Contents/content.hpf").decode()
         assert "Fasoo" not in hpf and "코로나" not in hpf
         for name in ("creator", "subject", "description", "lastsaveby", "keyword"):
@@ -251,3 +253,51 @@ def test_later_chapters_in_the_last_section_start_a_page_with_the_ornament(tmp_p
         assert paras[i + 1].find(f".//{{{hp}}}pic") is not None, title
     ids = [e.get("id") for e in root.iter(f"{{{hp}}}pic")]
     assert len(ids) == len(set(ids)) == 3  # Ⅲ's ornament + one per later chapter
+
+
+def test_generated_tables_follow_the_published_table_sample(tmp_path: Path) -> None:
+    """#115: the template carries a blanked sample of the published data table; a built
+    table copies its borderFill zones, caption (paraPr/charPr) and note row, and the
+    sample itself does not survive the fill."""
+    from lxml import etree
+
+    hp = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    with zipfile.ZipFile(TPL) as z:
+        sroot = etree.fromstring(z.read("Contents/section1.xml"))
+    sample = next(sroot.iter(f"{{{hp}}}tbl"))
+    assert "".join(t.text or "" for t in sample.iter(f"{{{hp}}}t")).count("{{table_template:sample}}") == 1
+    assert not "".join(
+        t.text or "" for tr in sample.findall(f"{{{hp}}}tr") for t in tr.iter(f"{{{hp}}}t")
+    ).strip()  # cells carry no text
+    assert "4294967295" not in etree.tostring(sample).decode()  # no inherited -1 margins
+    sample_cap_pr = sample.find(f"{{{hp}}}caption").find(f".//{{{hp}}}p").get("paraPrIDRef")
+    sample_bf = [[tc.get("borderFillIDRef") for tc in tr.findall(f"{{{hp}}}tc")]
+                 for tr in sample.findall(f"{{{hp}}}tr")]
+
+    body = (
+        FRONT + "# Ⅰ. 들어가며\n\n- 첫째 장 불릿\n\n# Ⅱ. 가상 현황\n\n- 둘째 장 불릿\n\n"
+        "<표 Ⅱ-1> 가상 지표 비교\n\n| 구분 | 2024 | 2025 |\n|---|---|---|\n| 가상 A | 1 | 2 |\n"
+        "| 가상 B | 3 | 4 |\n\n주) 가상 주석\n"
+    )
+    (tmp_path / "b.md").write_text(body, encoding="utf-8")
+    (tmp_path / "r.md").write_text(REFS, encoding="utf-8")
+    manifest = tmp_path / "m.json"
+    manifest.write_text(
+        json.dumps({"template": str(TPL), "output": "out.hwpx",
+                    "parts": {"body": "b.md", "references": "r.md"}}),
+        encoding="utf-8",
+    )
+    result = build_report(manifest)
+    assert not [w for w in result.warnings if "table_template" in w or "table…" in w], result.warnings
+    with zipfile.ZipFile(tmp_path / "out.hwpx") as z:
+        root = etree.fromstring(z.read("Contents/section1.xml"))
+    tbls = list(root.iter(f"{{{hp}}}tbl"))
+    assert len(tbls) == 1  # the sample is gone, only the generated table is left
+    tbl = tbls[0]
+    assert "".join(t.text or "" for t in tbl.find(f"{{{hp}}}caption").iter(f"{{{hp}}}t")).replace(" ", "") == "<표Ⅱ-1>가상지표비교"
+    assert tbl.find(f"{{{hp}}}caption").find(f".//{{{hp}}}p").get("paraPrIDRef") == sample_cap_pr
+    got = [[tc.get("borderFillIDRef") for tc in tr.findall(f"{{{hp}}}tc")]
+           for tr in tbl.findall(f"{{{hp}}}tr")]
+    # header row: published first / interior / last-column fills (the sample has 5 columns)
+    assert got[0] == [sample_bf[0][0], sample_bf[0][1], sample_bf[0][-1]]
+    assert got[-1] == sample_bf[-1]  # and the note row its own

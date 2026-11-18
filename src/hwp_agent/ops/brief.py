@@ -35,6 +35,8 @@ class BriefParts:
     parts: dict[str, str] = field(default_factory=dict)  # "ch1" → markdown
     slots: dict[str, str] = field(default_factory=dict)  # title / wing / toc slots
     warnings: list[str] = field(default_factory=list)
+    # "ch1" → chapter label ("Ⅰ") of the heading that became a slot, for caption numbers
+    lead_chapters: dict[str, str] = field(default_factory=dict)
 
 
 def is_brief_template(template: Path | str) -> bool:
@@ -139,6 +141,10 @@ def brief_parts(markdown: str) -> BriefParts:
             text += f"\n# {ch.title}\n{ch.body}"
         out.parts[f"ch{k + 1}"] = _with_defs(text, defs)
         out.slots[f"ch{k + 1}_title"] = first.title
+        from .author import chapter_label_of
+
+        if (lab := chapter_label_of(first.title)):
+            out.lead_chapters[f"ch{k + 1}"] = lab
         wing = [c.title for c in group if not _APPENDIX_RE.match(c.title)]
         out.slots[f"wing_{k + 1}"] = " · ".join(wing) if wing else first.title
     for k, ch in enumerate(chapters[:4], start=1):

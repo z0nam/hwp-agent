@@ -176,3 +176,51 @@ def test_body_without_chapter_headings_is_rejected_clearly(tmp_path: Path) -> No
     )
     with pytest.raises(ValueError, match="장 제목"):
         build_report(manifest)
+
+
+def _png(path: Path) -> Path:
+    import struct
+    import zlib
+
+    w, h = 80, 40
+    raw = b"".join(b"\x00" + b"\x80\x80\xff" * w for _ in range(h))
+
+    def chunk(t: bytes, d: bytes) -> bytes:
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+    return path
+
+
+def test_chapter_captions_keep_the_chapter_label_and_table_caption(tmp_path: Path) -> None:
+    """The chapter heading is a slot, so the part has no `# Ⅱ.`: captions still read
+    Ⅱ-1 (not 그림 1), and the table caption is not dropped for lack of a captioned
+    reference table in the template."""
+    _png(tmp_path / "a.png")
+    body = (
+        FRONT
+        + "# Ⅰ. 들어가며\n\n- 첫째 장 불릿\n\n"
+        + "# Ⅱ. 가상 현황\n\n- 둘째 장 불릿\n\n<표 Ⅱ-1> 가상 지표 비교\n\n"
+        + "| 구분 | 2024 |\n|---|---|\n| 가상 A | 10 |\n\n주) 가상 주석\n\n"
+        + "[그림 Ⅱ-1] 가상 사진\n![가상](a.png)\n"
+    )
+    (tmp_path / "b.md").write_text(body, encoding="utf-8")
+    (tmp_path / "r.md").write_text(REFS, encoding="utf-8")
+    manifest = tmp_path / "m.json"
+    manifest.write_text(
+        json.dumps({"template": str(TPL), "output": "out.hwpx",
+                    "parts": {"body": "b.md", "references": "r.md"}}),
+        encoding="utf-8",
+    )
+    build_report(manifest)
+    with zipfile.ZipFile(tmp_path / "out.hwpx") as z:
+        s1 = _texts(z, "Contents/section1.xml")
+    flat = re.sub(r"\|+", "", s1)
+    assert "<표 Ⅱ-1> " in flat.replace("&lt;", "<").replace("&gt;", ">") and "가상 지표 비교" in flat
+    assert "[그림 Ⅱ-1]" in flat and "그림 1]" not in flat
+    assert "가상 주석" in flat

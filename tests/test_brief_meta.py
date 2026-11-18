@@ -37,8 +37,9 @@ def _text(path: Path, part: str) -> str:
 
 
 def test_override_declares_meta_slots() -> None:
-    cfg = json.loads(OVERRIDE.read_text(encoding="utf-8"))["meta_slots"]
-    assert {"cover", "colophon", "masterpage"} <= set(cfg)
+    data = json.loads(OVERRIDE.read_text(encoding="utf-8"))
+    assert {"cover", "colophon", "masterpage"} <= set(data["meta_slots"])
+    assert data["body"]["section"] == 1
 
 
 def test_front_matter_fills_cover_back_cover_and_running_title(tmp_path: Path) -> None:
@@ -57,7 +58,9 @@ def test_front_matter_fills_cover_back_cover_and_running_title(tmp_path: Path) -
     assert "가상 정책 이슈 제목입니다 두 번째" not in cover  # two paragraphs, not one line
     assert "홍길동 제주연구원 연구위원" in cover and "김철수 제주연구원 부연구위원" in cover
     assert "{{" not in cover
+    assert "가상 본문입니다" in _text(out, "Contents/section1.xml")  # 본문 구역
     back = _text(out, "Contents/section4.xml")
+    assert "가상 본문입니다" not in back and "들어가며" not in back  # 뒷표지 침범 없음 (#105 한글 확인)
     assert "vol." in back and "123" in back and "가 상 인" in back and "{{" not in back
     with zipfile.ZipFile(out) as z:
         masters = "".join(z.read(n).decode() for n in z.namelist() if "masterpage" in n)
@@ -107,3 +110,37 @@ def test_missing_title_is_reported_for_a_brief(tmp_path: Path) -> None:
     )
     result = build_report(manifest)
     assert any("필수 항목" in w and "title" in w for w in result.warnings), result.warnings
+
+
+def test_long_cover_title_shrinks_to_fit_its_box(tmp_path: Path) -> None:
+    """한글 확인(#105): 긴 첫 줄이 상자 폭에서 넘어 '효과' 한 단어가 둘째 줄로 떨어짐."""
+    long_front = FRONT.replace(
+        "제목: 가상 정책 이슈 제목입니다 // 두 번째 줄 부제",
+        "제목: 대형 스포츠 행사의 지역경제 파급 효과 // 가상 사례를 중심으로",
+    )
+    (tmp_path / "b.md").write_text(long_front, encoding="utf-8")
+    manifest = tmp_path / "m.json"
+    manifest.write_text(
+        json.dumps({"template": str(BRIEF), "output": "out.hwpx", "parts": {"body": "b.md"}}),
+        encoding="utf-8",
+    )
+    build_report(manifest)
+    out = tmp_path / "out.hwpx"
+    with zipfile.ZipFile(out) as z:
+        sec = z.read("Contents/section0.xml").decode()
+        header = z.read("Contents/header.xml").decode()
+    m = re.search(r'<hp:run charPrIDRef="(\d+)"><hp:t>대형 스포츠', sec)
+    assert m, "title run not found"
+    height = int(re.search(rf'<hh:charPr id="{m.group(1)}" height="(\d+)"', header).group(1))
+    assert height < 2700  # shrunk from the template's 27 pt
+    assert height >= int(2700 * 0.55)
+    # the short title keeps the template size
+    (tmp_path / "b2.md").write_text(FRONT, encoding="utf-8")
+    manifest.write_text(
+        json.dumps({"template": str(BRIEF), "output": "out2.hwpx", "parts": {"body": "b2.md"}}),
+        encoding="utf-8",
+    )
+    build_report(manifest)
+    with zipfile.ZipFile(tmp_path / "out2.hwpx") as z:
+        sec2 = z.read("Contents/section0.xml").decode()
+    assert re.search(r'<hp:run charPrIDRef="17"><hp:t>가상 정책 이슈 제목입니다', sec2)

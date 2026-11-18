@@ -695,6 +695,70 @@ def _fill_masterpage_slots(path: Path | str, values: dict[str, str]) -> list[str
     return done
 
 
+_MIN_TITLE_SCALE = 0.55  # never shrink a cover title below this share of its size
+
+
+def _fit_cover_title(path: Path | str, line1: str, line2: str) -> bool:
+    """Shrink the cover-title font so each line fits its text box on one line (#91).
+
+    The 정책이슈브리프 cover prints the title in a fixed-width box, one paragraph per
+    line (about 15 glyphs at 27 pt). A longer line wrapped mid-phrase and left an
+    orphan word on its own line. Find the box holding exactly the two title paragraphs,
+    estimate each line's width from its glyphs (CJK = 1 em × 장평 × 자간; ASCII 0.55 em)
+    and clone the title's charPr at the largest size that fits both — never below
+    :data:`_MIN_TITLE_SCALE`, so a very long title still wraps rather than vanishing.
+    Returns True when the font was changed.
+    """
+    doc = HwpxDocument.open(str(path))
+    header = doc._root._headers[0]
+    hh = "{http://www.hancom.co.kr/hwpml/2011/head}"
+    cps = header.element.find(f".//{hh}charProperties")
+    if cps is None:
+        return False
+    changed = False
+    for sec in doc.sections:
+        for dt in sec.element.iter(_hp("drawText")):
+            paras = [p for p in dt.iter(_hp("p"))]
+            texts = [_para_text(p) for p in paras]
+            if texts != [line1, line2] or not (line1 or line2):
+                continue
+            width = int(dt.get("lastWidth") or 0)
+            ref = paras[0].find(_hp("run"))
+            cid = ref.get("charPrIDRef") if ref is not None else None
+            base = cps.find(f"{hh}charPr[@id='{cid}']") if cid is not None else None
+            if not width or base is None:
+                continue
+            height = int(base.get("height", "0"))
+            ratio = int(base.find(f"{hh}ratio").get("hangul", "100")) / 100
+            spacing = 1 + int(base.find(f"{hh}spacing").get("hangul", "0")) / 100
+            need = max(
+                (
+                    sum(1.0 if ord(c) >= 0x1100 else 0.55 for c in t) * height * ratio * spacing
+                    for t in (line1, line2)
+                ),
+                default=0,
+            )
+            if need <= width:
+                continue
+            scale = max(_MIN_TITLE_SCALE, width / need)
+            new = copy.deepcopy(base)
+            ids = [int(c.get("id")) for c in cps.findall(f"{hh}charPr") if c.get("id", "").isdigit()]
+            new_id = str(max(ids) + 1)
+            new.set("id", new_id)
+            new.set("height", str(int(height * scale)))
+            cps.append(new)
+            cps.set("itemCnt", str(len(cps.findall(f"{hh}charPr"))))
+            for p in paras:
+                for r in p.findall(_hp("run")):
+                    r.set("charPrIDRef", new_id)
+            header.mark_dirty()
+            sec.mark_dirty()
+            changed = True
+    if changed:
+        doc.save_to_path(str(path))
+    return changed
+
+
 def apply_report_meta(
     path: Path | str,
     meta: dict | None,
@@ -779,6 +843,8 @@ def apply_report_meta(
         _update_preview_parts(doc)
         doc.save_to_path(str(path))
 
+    if meta is not None and norm.get("title_1"):
+        _fit_cover_title(path, norm["title_1"], norm.get("title_2", ""))
     if meta is not None:
         flat_title = (norm.get("title") or "").replace("\n", " ").strip()
         mp_values = {"running_title": norm.get("running_title") or flat_title}

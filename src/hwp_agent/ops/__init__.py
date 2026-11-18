@@ -26,6 +26,7 @@ from .bands import (
     detect_section_bands,
 )
 from .chapter_header import ChapterHeaderResult, WingSpec, apply_chapter_headers
+from .numbering import neutralize_uncaptioned_numbering
 from .doctor import diagnose_template
 from .extract import extract_markdown
 from .fit_pages import (
@@ -202,6 +203,7 @@ __all__ = [
     "format_tail_fit_report",
     "apply_tail_fits",
     "apply_chapter_headers",
+    "neutralize_uncaptioned_numbering",
     "ChapterHeaderResult",
     "WingSpec",
     "drop_stale_linesegarrays",

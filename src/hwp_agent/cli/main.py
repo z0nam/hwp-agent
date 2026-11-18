@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import zipfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -1306,6 +1307,16 @@ def _cmd_instructions(args: argparse.Namespace) -> int:
     return 0
 
 
+def _neutralize_decor_numbering(path: Path) -> None:
+    """Drop uncaptioned decorations from 그림·표 차례 (#101); never fails the command."""
+    from ..ops import neutralize_uncaptioned_numbering
+
+    try:
+        neutralize_uncaptioned_numbering(path)
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        print(f"  warning: could not neutralize decoration numbering: {exc}", file=sys.stderr)
+
+
 def _cmd_write(args: argparse.Namespace) -> int:
     from ..ops import fill_from_markdown
     from ..ops.template import describe_template_source, resolve_template_path
@@ -1359,12 +1370,20 @@ def _cmd_write(args: argparse.Namespace) -> int:
         result, gr.target, meta,
         fallback_title=first_heading(markdown), author=args.author,
     )
+    wings = None
+    if getattr(args, "chapter_header", True):
+        from ..ops import apply_chapter_headers
+
+        wings = apply_chapter_headers(gr.target)
+    _neutralize_decor_numbering(gr.target)
     if getattr(args, "fit_tails", False):
         _fit_tails_in_place(gr.target)
     if getattr(args, "fit_pages", False):
         _fit_pages_in_place(gr.target)
     _guard_finalize(gr)
     print(f"placed {result.placed} block(s) -> {gr.target}")
+    if wings is not None and wings.count:
+        print(f"  set the side wing (쪽날개) of {wings.count} chapter(s)")
     _print_meta(result.meta)
     if result.links:
         print(f"  linked {result.links} URL(s) as hyperlink fields")
@@ -1453,6 +1472,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         from ..ops import apply_chapter_headers
 
         wings = apply_chapter_headers(gr.target)
+    _neutralize_decor_numbering(gr.target)
     if getattr(args, "fit_tails", False):
         _fit_tails_in_place(gr.target)
     if getattr(args, "fit_pages", False):
@@ -2155,6 +2175,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="pull short chunks back onto the previous page after --fit-tails "
         "(layout: saved linesegarray > hwp2pdf > rhwp; warns and skips if none)",
+    )
+    wr.add_argument(
+        "--no-chapter-header",
+        dest="chapter_header",
+        action="store_false",
+        default=True,
+        help="leave the odd-page side wings (쪽날개) as the template has them "
+        "(default: each chapter gets its own, like `build`)",
     )
     _add_meta_args(wr)
     wr.add_argument("-o", "--output", type=Path, default=None, help="output file")

@@ -422,3 +422,16 @@ def test_multi_image_figure_takes_one_number_and_side_by_side_pictures(tmp_path:
     widths = [int(re.search(r'<hp:curSz width="(\d+)"', p).group(1)) for p in first_two]
     assert widths[0] == 2 * widths[1]  # 40x20 vs 20x20
     assert "그림 2" in re.sub(r"<[^>]+>", "", sec) and "그림 3" not in re.sub(r"<[^>]+>", "", sec)
+
+
+def test_extract_roundtrips_multi_image_figure(tmp_path: Path) -> None:
+    _png(tmp_path / "a.png", 40, 20)
+    _png(tmp_path / "b.png", 20, 20)
+    out = tmp_path / "o.hwpx"
+    fill_from_markdown(
+        _DEFAULT_TPL, "![좌우 사진](a.png) ![](b.png){#fig_pair}\n주) 좌: 가, 우: 나\n",
+        output=out, base_dir=tmp_path,
+    )
+    md = extract_markdown(out)
+    assert "![좌우 사진](a.png) ![](b.png){#fig_pair}" in md
+    assert "주) 좌: 가, 우: 나" in md

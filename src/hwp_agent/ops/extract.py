@@ -45,6 +45,7 @@ from .links import hyperlink_url
 from .styles import role_map
 
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+_HC = "http://www.hancom.co.kr/hwpml/2011/core"
 _HH = "http://www.hancom.co.kr/hwpml/2011/head"
 
 
@@ -342,12 +343,24 @@ def _emit_figure(lines: list[str], tbl, pic, notes: list[str]) -> None:
         _p_text(p, notes, deep=True).strip() for p in cap.iter(f"{{{_HP}}}p")
     ).strip() if cap is not None else ""
     title = FIGURE_FRAMING_RE.sub("", title, count=1).strip()
-    path, label = figure_source(pic)
-    path = path or ""
-    if any(c.isspace() for c in path) or ")" in path:
-        path = f"<{path}>"
+    # every picture in the first cell, left to right (#96): the first carries the
+    # title, the rest are `![](path)`, and the {#id} anchor closes the line
+    first = tbl.find(f"{{{_HP}}}tr/{{{_HP}}}tc")
+    pics = [
+        q for q in (first.iter(f"{{{_HP}}}pic") if first is not None else [pic])
+        if q.find(f"{{{_HC}}}img") is not None
+    ] or [pic]
+    label = None
+    tokens = []
+    for n, q in enumerate(pics):
+        path, lab = figure_source(q)
+        label = label or lab
+        path = path or ""
+        if any(c.isspace() for c in path) or ")" in path:
+            path = f"<{path}>"
+        tokens.append(f"![{title if n == 0 else ''}]({path})")
     anchor = f"{{#{label}}}" if label else ""
-    lines.append(f"![{title}]({path}){anchor}")
+    lines.append(" ".join(tokens) + anchor)
     rows = tbl.findall(f"{{{_HP}}}tr")
     for tr in rows[1:]:
         for p in tr.iter(f"{{{_HP}}}p"):

@@ -148,6 +148,28 @@ _CAPTION_FRAMING_RE = re.compile(
 # substitution at fill time — Hangul's own autonum still renders the caption, so
 # the substitution assumes the "표 {chapter}-{N}" convention. See
 # skills/hwp-agent/references/write.md.
+# chapter label read from a numbered chapter title (`Ⅲ. …` → "Ⅲ", `3장 …`/`3. …`
+# → "3", `부록 A` → "부록A", bare `부록` → "부록") for per-chapter caption numbers (#92).
+_CHAPTER_LABEL_RE = re.compile(
+    r"""^\s*(?:
+        (?P<app>부록)(?:\s*(?P<appid>[0-9A-Za-z가-힣]+))?(?=\s|$|[.)\]:：-])
+      | 제?\s*(?P<ko>\d+)\s*장
+      | (?P<num>[IVXⅠ-Ⅻ]+|\d+)\s*[.)]
+    )""",
+    re.VERBOSE,
+)
+
+
+def chapter_label_of(title: str) -> str | None:
+    """The chapter label a H1 title's literal number spells, else None."""
+    m = _CHAPTER_LABEL_RE.match(title or "")
+    if not m:
+        return None
+    if m.group("app"):
+        return "부록" + (m.group("appid") or "")
+    return m.group("ko") or m.group("num")
+
+
 _LABEL_RE = re.compile(r"\{label:([^{}\s]+)\}")
 _REF_RE = re.compile(r"\{ref:([^{}\s]+)\}")
 
@@ -178,6 +200,10 @@ class TableBlock:
     caption: str | None = None  # title line directly above the table
     note: str | None = None  # 주)/출처) line(s) directly below the table
     blank_before: int = 0  # blank lines that preceded this block in the Markdown
+    # per-chapter numbering (#92): when ``number`` is set the caption gets a literal
+    # "<표 {chapter}-{number}>" (Hangul's autoNum never resets per chapter)
+    chapter: str | None = None
+    number: int | None = None
 
     @property
     def n_rows(self) -> int:
@@ -449,7 +475,8 @@ def _delimiter_aligns(line: str) -> list[str] | None:
 
 
 def _resolve_cross_refs(
-    blocks: list, chapter: str | None, warnings: list[str], *, figure_start: int = 0
+    blocks: list, chapter: str | None, warnings: list[str], *, figure_start: int = 0,
+    per_chapter: bool = False,
 ) -> None:
     """Resolve `{label:id}` / `{ref:id}` cross-references across the block list.
 
@@ -476,6 +503,19 @@ def _resolve_cross_refs(
     fmt = (lambda n: f"표 {chapter}-{n}") if chapter else (lambda n: f"표 {n}")
     fig_fmt = (lambda n: f"그림 {chapter}-{n}") if chapter else (lambda n: f"그림 {n}")
     for b in blocks:
+        if per_chapter and isinstance(b, Block) and b.kind == "heading" and b.level == 1:
+            # a new H1 restarts both sequences; a numberless one (요약·참고문헌) has
+            # no chapter, so its captions read "표 N" / "그림 N" and don't count as 장
+            chapter = chapter_label_of(b.raw_text or b.text)
+            table_seq = 0
+            figure_seq = 0
+            fmt = (lambda n, c=chapter: f"표 {c}-{n}") if chapter else (lambda n: f"표 {n}")
+            fig_fmt = (
+                (lambda n, c=chapter: f"그림 {c}-{n}") if chapter else (lambda n: f"그림 {n}")
+            )
+        if isinstance(b, TableBlock) and per_chapter:
+            b.chapter = chapter
+            b.number = table_seq + 1
         if isinstance(b, FigureBlock):
             figure_seq += 1
             b.display = fig_fmt(figure_seq)
@@ -1226,7 +1266,9 @@ def _fill_caption_runs(
         p_el.append(lsa)
 
 
-def _clone_caption(ref_el, title: str, chapter: str | None, *, run_writer=None):
+def _clone_caption(
+    ref_el, title: str, chapter: str | None, *, run_writer=None, number: int | None = None
+):
     """Clone the reference table's caption (auto-number + 표제목 style) with *title*.
 
     The caption text is like "<표 {{chapter_number}}-" + autoNum + "> {title}". We
@@ -1265,8 +1307,39 @@ def _clone_caption(ref_el, title: str, chapter: str | None, *, run_writer=None):
                 t.text = re.sub(r"(표\s*)\S+(\s*-\s*)$", rf"\g<1>{chapter}\g<2>", t.text)
                 break
 
+    if number is not None:
+        _literalize_autonum(clone, number, chapter)
+
     _fill_caption_runs(clone, title, run_writer=run_writer)
     return clone
+
+
+def _literalize_autonum(cap, number: int, chapter: str | None) -> None:
+    """Replace the caption's table autoNum field with the literal *number* (#92).
+
+    The number is appended to the text node before the field ("<표 Ⅲ-" → "<표 Ⅲ-2");
+    without a chapter the dangling "-" is dropped ("<표 -" → "<표 2"), and a caption
+    format with no chapter prefix gains one ("<표 " → "<표 Ⅲ-2").
+    """
+    for ctrl in list(cap.iter(f"{{{_HP}}}ctrl")):
+        if ctrl.find(f"{{{_HP}}}autoNum") is None:
+            continue
+        prev = ctrl.getprevious()
+        while prev is not None and prev.tag != f"{{{_HP}}}t":
+            prev = prev.getprevious()
+        if prev is None:
+            prev = ET.Element(f"{{{_HP}}}t")
+            prev.text = ""
+            ctrl.addprevious(prev)
+        txt = prev.text or ""
+        if not chapter:
+            txt = re.sub(r"(표\s*)[^\s<〈]*-\s*$", r"\1", txt)
+        elif not re.search(r"-\s*$", txt):
+            # the reference caption is "<표 " + autoNum with no chapter prefix
+            txt = re.sub(r"(표\s*)$", rf"\g<1>{chapter}-", txt)
+        prev.text = f"{txt}{number}"
+        ctrl.getparent().remove(ctrl)
+        break
 
 
 def _style_cell(
@@ -1581,7 +1654,11 @@ def _build_table(
 
     # caption "<표 N-M> {title}" cloned from the reference (auto-number + 표제목 style)
     if block.caption and ref_el is not None:
-        clone = _clone_caption(ref_el, block.caption, chapter, run_writer=run_writer)
+        if block.number is not None:
+            chapter = block.chapter  # per-chapter mode: this table's own chapter
+        clone = _clone_caption(
+            ref_el, block.caption, chapter, run_writer=run_writer, number=block.number
+        )
         if clone is not None:
             first_tr = table.element.find(f"{{{_HP}}}tr")
             if first_tr is not None:
@@ -2582,8 +2659,16 @@ def fill_from_markdown(
     blocks = parse_markdown(
         markdown, math=math, literal_bullets=literal_bullets
     )
+    # per-chapter caption numbers (#92): with no explicit --chapter, a document whose
+    # H1 titles carry literal chapter numbers ("# Ⅲ. …") numbers captions per chapter
+    per_chapter = explicit_chapter is None and any(
+        isinstance(b, Block) and b.kind == "heading" and b.level == 1
+        and chapter_label_of(b.raw_text or b.text)
+        for b in blocks
+    )
     _resolve_cross_refs(
-        blocks, chapter_label(), result.warnings, figure_start=_count_figures(doc)
+        blocks, chapter_label(), result.warnings, figure_start=_count_figures(doc),
+        per_chapter=per_chapter,
     )
     if any(isinstance(b, TableBlock) for b in blocks) and not designated:
         result.warnings.append(

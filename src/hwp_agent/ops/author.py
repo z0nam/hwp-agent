@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from hwpx.document import HwpxDocument
+from lxml import etree as ET
 
 from .equation import equation_run_xml, latex_to_hwp, math_pieces, unescape_dollars
 from .figures import (
@@ -1985,6 +1986,99 @@ def _left_para_pr(
         return key
 
 
+def _ensure_blank_outline_numbering(doc: HwpxDocument, section) -> str | None:
+    """Add (once) an outline numbering definition whose number formats are all
+    empty and point the section's ``outlineShapeIDRef`` at it (#97).
+
+    Literal-numbering templates type "Ⅰ."/"1."/"1)" into the title text, so the
+    outline definition must not print a second number — yet Hangul only collects
+    titles for 차례 만들기 from paragraphs with an OUTLINE heading level.  A blank
+    definition gives both.  Returns the numbering id, or None when the header has
+    no numberings element to extend.
+    """
+    try:
+        header = doc._root._headers[0]
+        root = header.element
+        nums = root.find(f".//{{{_HH}}}numberings")
+        if nums is None:
+            return None
+        ids = [
+            int(n.get("id"))
+            for n in nums.findall(f"{{{_HH}}}numbering")
+            if (n.get("id") or "").isdigit()
+        ]
+        new_id = str(max(ids, default=0) + 1)
+        numbering = ET.SubElement(nums, f"{{{_HH}}}numbering", {"id": new_id, "start": "0"})
+        for lv in range(1, 11):
+            head = ET.SubElement(
+                numbering,
+                f"{{{_HH}}}paraHead",
+                {
+                    "start": "1", "level": str(lv), "align": "LEFT",
+                    "useInstWidth": "1", "autoIndent": "1", "widthAdjust": "0",
+                    "textOffsetType": "PERCENT", "textOffset": "50",
+                    "numFormat": "DIGIT", "charPrIDRef": "4294967295",
+                    "checkable": "0",
+                },
+            )
+            head.text = ""
+        nums.set("itemCnt", str(len(nums.findall(f"{{{_HH}}}numbering"))))
+        header.mark_dirty()
+        for el in section.element.iter(f"{{{_HP}}}secPr"):
+            el.set("outlineShapeIDRef", new_id)
+        return new_id
+    except Exception:
+        return None
+
+
+def _outline_heading_para_pr(
+    doc: HwpxDocument,
+    base_para_pr_id: str | int | None,
+    level: int,
+    numbering_id: str,
+    cache: dict[tuple[str, int], str],
+) -> str | None:
+    """Variant of *base_para_pr_id* with ``heading type="OUTLINE"`` at *level*
+    (0-based) bound to the blank numbering *numbering_id* (#97)."""
+    if base_para_pr_id is None:
+        return None
+    key = (str(base_para_pr_id), level)
+    if key in cache:
+        return cache[key]
+    try:
+        header = doc._root._headers[0]
+        pps = header._para_properties_element(create=False)
+        base_el = (
+            pps.find(f"{{{_HH}}}paraPr[@id='{key[0]}']") if pps is not None else None
+        )
+        if base_el is None:
+            cache[key] = key[0]
+            return key[0]
+        existing_ids = [
+            int(p.get("id"))
+            for p in pps.findall(f"{{{_HH}}}paraPr")
+            if (p.get("id") or "").isdigit()
+        ]
+        next_id = str(max(existing_ids, default=-1) + 1)
+        new_el = copy.deepcopy(base_el)
+        new_el.set("id", next_id)
+        h = new_el.find(f"{{{_HH}}}heading")
+        if h is None:
+            h = ET.Element(f"{{{_HH}}}heading")
+            new_el.insert(0, h)
+        h.set("type", "OUTLINE")
+        h.set("idRef", numbering_id)
+        h.set("level", str(level))
+        pps.append(new_el)
+        pps.set("itemCnt", str(len(pps.findall(f"{{{_HH}}}paraPr"))))
+        header.mark_dirty()
+        cache[key] = next_id
+        return next_id
+    except Exception:
+        cache[key] = key[0]
+        return key[0]
+
+
 def _none_heading_para_pr(
     doc: HwpxDocument,
     base_para_pr_id: str | int | None,
@@ -2316,6 +2410,9 @@ def fill_from_markdown(
 
     left_para_cache: dict[str, str] = {}
     none_heading_cache: dict[str, str] = {}
+    outline_cache: dict[tuple[str, int], str] = {}
+    outline_numbering_id: str | None = None
+    outline_tried = False
 
     def resolve_para(base_para, txt: str):
         if not links or link_align == "keep" or not txt:
@@ -2644,7 +2741,18 @@ def fill_from_markdown(
                 text = block.text
 
             if literal_numbering and block.kind == "heading":
-                para_pr = _none_heading_para_pr(doc, para_pr, none_heading_cache)
+                if outline_numbering_id is None and not outline_tried:
+                    outline_tried = True
+                    outline_numbering_id = _ensure_blank_outline_numbering(
+                        doc, target_section
+                    )
+                if outline_numbering_id is not None and block.level <= 3:
+                    para_pr = _outline_heading_para_pr(
+                        doc, para_pr, block.level - 1, outline_numbering_id,
+                        outline_cache,
+                    )
+                else:
+                    para_pr = _none_heading_para_pr(doc, para_pr, none_heading_cache)
 
         effective_para = resolve_para(para_pr, text)
         # build the paragraph empty, then add one run per inline segment so

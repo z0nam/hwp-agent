@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 _H1_RE = re.compile(r"^#\s+(.*\S)\s*$")
+_FN_DEF_RE = re.compile(r"^\[\^([^\]\s]+)\]:[ \t]?")
+_FN_REF_RE = re.compile(r"\[\^([^\]\s]+)\]")
 _APPENDIX_RE = re.compile(r"^\s*부록")
 _ROMAN_RE = re.compile(r"^\s*(?:[IVXⅠ-Ⅻ]+|\d+)\s*[.)]\s*")
 SECTIONS = 3  # chapter sections in the template
@@ -72,6 +74,37 @@ def split_chapters(markdown: str) -> list[Chapter]:
     return chapters
 
 
+def _pull_footnote_defs(markdown: str) -> tuple[str, dict[str, str]]:
+    """Take the ``[^id]: text`` definition blocks (with their indented continuation
+    lines) out of *markdown*, verbatim, so each chapter part can be given the ones its
+    own references need — ``fill_from_markdown`` resolves footnotes per part."""
+    lines = markdown.split("\n")
+    body: list[str] = []
+    defs: dict[str, str] = {}
+    i = 0
+    while i < len(lines):
+        m = _FN_DEF_RE.match(lines[i])
+        if not m:
+            body.append(lines[i])
+            i += 1
+            continue
+        block = [lines[i]]
+        i += 1
+        while i < len(lines) and lines[i].strip() and lines[i][:1] in (" ", "\t"):
+            block.append(lines[i])
+            i += 1
+        defs[m.group(1)] = "\n".join(block)
+    return "\n".join(body), defs
+
+
+def _with_defs(text: str, defs: dict[str, str]) -> str:
+    """*text* followed by the definitions of the footnotes it references."""
+    used = [fid for fid in dict.fromkeys(_FN_REF_RE.findall(text)) if fid in defs]
+    if not used:
+        return text
+    return text.rstrip("\n") + "\n\n" + "\n".join(defs[f] for f in used) + "\n"
+
+
 def _plain_title(title: str) -> str:
     return _ROMAN_RE.sub("", title, count=1).strip()
 
@@ -79,10 +112,13 @@ def _plain_title(title: str) -> str:
 def brief_parts(markdown: str) -> BriefParts:
     """Chapter markdown per section marker and the slot values derived from the H1s."""
     out = BriefParts()
+    markdown, defs = _pull_footnote_defs(markdown)
     chapters = split_chapters(markdown)
     if not chapters:
-        out.warnings.append("정책이슈브리프: 본문에 '# ' 장 제목이 없어 장 구역을 채우지 못했습니다")
-        return out
+        raise ValueError(
+            "정책이슈브리프 템플릿은 본문을 '# Ⅰ. 장 제목' 으로 시작하는 장 단위로 채웁니다 — "
+            "본문 원고에 '# ' 장 제목이 하나도 없습니다"
+        )
     # chapter k (k = 1, 2) → its own section; chapters 3… share the last one
     for k in range(SECTIONS):
         if k < SECTIONS - 1:
@@ -101,7 +137,7 @@ def brief_parts(markdown: str) -> BriefParts:
         text = first.body
         for ch in rest:  # later chapters keep their own heading inside the section
             text += f"\n# {ch.title}\n{ch.body}"
-        out.parts[f"ch{k + 1}"] = text
+        out.parts[f"ch{k + 1}"] = _with_defs(text, defs)
         out.slots[f"ch{k + 1}_title"] = first.title
         wing = [c.title for c in group if not _APPENDIX_RE.match(c.title)]
         out.slots[f"wing_{k + 1}"] = " · ".join(wing) if wing else first.title

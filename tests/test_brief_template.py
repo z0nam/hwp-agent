@@ -143,3 +143,36 @@ def test_template_decoration_is_not_numbered() -> None:
     from tests.test_numbering import _uncaptioned_numbered
 
     assert _uncaptioned_numbered(TPL) == 0
+
+
+def test_footnote_definitions_follow_their_references_across_the_split(tmp_path: Path) -> None:
+    """Review on #112: definitions at the end of the file must reach every chapter part."""
+    body = (
+        FRONT
+        + "# Ⅰ. 하나\n\n- 첫째 장 본문[^a]\n\n# Ⅱ. 둘\n\n- 둘째 장 본문[^b]\n\n"
+        + "# Ⅲ. 셋\n\n- 셋째 장 본문\n\n[^a]: 첫째 각주 설명입니다\n[^b]: 둘째 각주 설명입니다\n"
+    )
+    (tmp_path / "b.md").write_text(body, encoding="utf-8")
+    manifest = tmp_path / "m.json"
+    manifest.write_text(
+        json.dumps({"template": str(TPL), "output": "out.hwpx", "parts": {"body": "b.md"}}),
+        encoding="utf-8",
+    )
+    result = build_report(manifest)
+    assert not [w for w in result.warnings if "footnote" in w], result.warnings
+    with zipfile.ZipFile(tmp_path / "out.hwpx") as z:
+        s0, s1 = _texts(z, "Contents/section0.xml"), _texts(z, "Contents/section1.xml")
+    assert "첫째 각주 설명입니다" in s0 and "[^a]" not in s0
+    assert "둘째 각주 설명입니다" in s1 and "[^b]" not in s1
+
+
+def test_body_without_chapter_headings_is_rejected_clearly(tmp_path: Path) -> None:
+    """Review on #112: do not silently drop the manuscript."""
+    (tmp_path / "b.md").write_text(FRONT + "장 제목 없는 본문입니다\n", encoding="utf-8")
+    manifest = tmp_path / "m.json"
+    manifest.write_text(
+        json.dumps({"template": str(TPL), "output": "out.hwpx", "parts": {"body": "b.md"}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="장 제목"):
+        build_report(manifest)

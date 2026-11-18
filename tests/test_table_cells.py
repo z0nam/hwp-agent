@@ -66,3 +66,10 @@ def test_generated_table_height_is_sum_of_rows(tmp_path: Path) -> None:
     assert cap_extra >= 0
     assert cap_extra < 4000  # caption + gap only, not leftover default height
     assert row_h[1] > row_h[2]  # the long-text row is taller than the short one
+
+
+def test_wrapping_does_not_split_glyphs_across_lines() -> None:
+    from hwp_agent.ops.author import _wrapped_lines
+
+    assert _wrapped_lines("가" * 19, 9.5) == 3  # 9 per line → 3 lines, not ceil(19/9.5)=2
+    assert _wrapped_lines("", 9.5) == 1

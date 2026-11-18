@@ -25,7 +25,6 @@ currently flattened to text (run-level styling is a later refinement).
 from __future__ import annotations
 
 import copy
-import math
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -1500,6 +1499,19 @@ def _text_em(seg: str) -> float:
     return sum(1.0 if ord(ch) >= 0x1100 else 0.55 for ch in seg)
 
 
+def _wrapped_lines(seg: str, em_per_line: float) -> int:
+    """Lines *seg* needs when glyphs are placed greedily (unused line-end space is
+    lost, so 19 CJK glyphs in a 9.5-em line take 3 lines, not 2) (#93)."""
+    lines, used = 1, 0.0
+    for ch in seg:
+        w = 1.0 if ord(ch) >= 0x1100 else 0.55
+        if used + w > em_per_line + 1e-9 and used > 0:
+            lines += 1
+            used = 0.0
+        used += w
+    return lines
+
+
 def _grow_rows_for_content(table_el, row_texts: list[list[str]]) -> None:
     """Grow each row's cell height to the lines its content needs.
 
@@ -1538,9 +1550,7 @@ def _grow_rows_for_content(table_el, row_texts: list[list[str]]) -> None:
                 _FOOTNOTE_REF_RE.sub("¹", rendered_text(plain_text(texts[c])))
                 if c < len(texts) else ""
             )
-            lines = sum(
-                max(1, math.ceil(_text_em(seg) / em_per_line)) for seg in text.split("\n")
-            ) or 1
+            lines = sum(_wrapped_lines(seg, em_per_line) for seg in text.split("\n")) or 1
             max_lines = max(max_lines, lines)
         if max_lines > 1:
             for tc in cells:

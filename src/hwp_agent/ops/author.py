@@ -1854,7 +1854,8 @@ def _build_table(
         # "<표 Ⅱ-1> title" body-style caption instead of silently dropping it
         cap = _figure_caption(
             None, block.caption_label or "표", block.caption, 8504,
-            body_style=body_style, body_para=body_para, body_char=None,
+            body_style=body_style, body_para=body_para,
+            body_char=doc.style(body_style).char_pr_id_ref if body_style else None,
             run_writer=run_writer,
         )
         for t in cap.iter(f"{{{_HP}}}t"):

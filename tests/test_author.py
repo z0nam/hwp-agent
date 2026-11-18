@@ -2570,17 +2570,17 @@ def test_literal_numbering_and_bullets_default_template(tmp_path: Path) -> None:
         st_name = st.get("name") if st is not None else ""
         items_on.append((txt, st_name, htype, style_id))
 
-    # 제목 1: '1. 장' 텍스트 그대로, 제목 스타일 charPr 유지, heading type=NONE
+    # 제목 1: '1. 장' 텍스트 그대로, 제목 스타일 charPr 유지, heading type=OUTLINE(빈 번호 서식, #97)
     h1 = next((item for item in items_on if item[0] == "1. 장"), None)
     assert h1 is not None
     assert h1[1] == "로마자"
-    assert h1[2] == "NONE"
+    assert h1[2] == "OUTLINE"  # #97: 차례용 개요 수준, 번호 서식은 빈 정의
 
-    # 제목 2: '1) 글로벌 동향' 텍스트 그대로, 제목 스타일 charPr 유지, heading type=NONE
+    # 제목 2: '1) 글로벌 동향' 텍스트 그대로, 제목 스타일 charPr 유지, heading type=OUTLINE(빈 번호 서식, #97)
     h2 = next((item for item in items_on if item[0] == "1) 글로벌 동향"), None)
     assert h2 is not None
     assert h2[1] == "1."
-    assert h2[2] == "NONE"
+    assert h2[2] == "OUTLINE"
 
     # 불릿 항목: '- 하이픈 항목' 텍스트 그대로, 본문 스타일(Normal), heading type=NONE
     b1 = next((item for item in items_on if item[0] == "- 하이픈 항목"), None)
@@ -2636,8 +2636,8 @@ def test_literal_numbering_and_bullets_house_form(tmp_path: Path) -> None:
                     st_name = st.get("name") if st is not None else ""
                     all_paras.append((txt, st_name, htype))
 
-    assert any(txt == "1. 장" and htype == "NONE" for txt, _, htype in all_paras)
-    assert any(txt == "1) 글로벌 동향" and htype == "NONE" for txt, _, htype in all_paras)
+    assert any(txt == "1. 장" and htype == "OUTLINE" for txt, _, htype in all_paras)
+    assert any(txt == "1) 글로벌 동향" and htype == "OUTLINE" for txt, _, htype in all_paras)
     assert any(txt == "- 하이픈 항목" and htype == "NONE" for txt, _, htype in all_paras)
     assert any(txt == "- 이스케이프 항목" and htype == "NONE" for txt, _, htype in all_paras)
 

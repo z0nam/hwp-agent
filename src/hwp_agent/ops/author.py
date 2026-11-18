@@ -703,6 +703,10 @@ def parse_markdown(
         if (fig := parse_figure_line(line)) is not None:
             flush()
             i += 1
+            # consecutive image lines (no blank between) are one figure (#96)
+            while i < len(lines) and (nxt := parse_figure_line(lines[i])) is not None:
+                fig.absorb(nxt)
+                i += 1
             note_lines = []
             while i < len(lines) and _NOTE_RE.match(lines[i]):
                 note_lines.append(lines[i].strip())
@@ -1447,6 +1451,71 @@ def _fit_table_width_by_content(table_el, block: TableBlock, text_width: int) ->
                 csz.set("width", str(text_width))
 
 
+_CELL_LINE_SPACING_MAX = 140  # % — body spacing above this is too airy for table cells
+_CELL_LINE_SPACING = 130  # % — what a cell paragraph is tightened to (#93)
+
+
+def _tight_cell_para_pr(doc: HwpxDocument, base_para_pr_id, cache: dict[str, str]):
+    """Variant of *base_para_pr_id* with percent line spacing tightened to 130% (#93).
+
+    A generated table whose template has no table-only paragraph shape would inherit
+    the body's 160-180% spacing in every cell and come out far taller than a house
+    table. A paraPr at or below :data:`_CELL_LINE_SPACING_MAX` is returned unchanged.
+    """
+    if base_para_pr_id is None:
+        return None
+    key = str(base_para_pr_id)
+    if key in cache:
+        return cache[key]
+    cache[key] = key
+    try:
+        header = doc._root._headers[0]
+        pps = header._para_properties_element(create=False)
+        base_el = pps.find(f"{{{_HH}}}paraPr[@id='{key}']") if pps is not None else None
+        if base_el is None:
+            return key
+        spacings = [
+            e for e in base_el.iter(f"{{{_HH}}}lineSpacing")
+            if e.get("type") == "PERCENT" and int(e.get("value", "0") or 0) > _CELL_LINE_SPACING_MAX
+        ]
+        if not spacings:
+            return key
+        next_id = str(max(
+            (int(p.get("id")) for p in pps.findall(f"{{{_HH}}}paraPr") if (p.get("id") or "").isdigit()),
+            default=-1,
+        ) + 1)
+        new_el = copy.deepcopy(base_el)
+        new_el.set("id", next_id)
+        for e in new_el.iter(f"{{{_HH}}}lineSpacing"):
+            if e.get("type") == "PERCENT" and int(e.get("value", "0") or 0) > _CELL_LINE_SPACING_MAX:
+                e.set("value", str(_CELL_LINE_SPACING))
+        pps.append(new_el)
+        pps.set("itemCnt", str(len(pps.findall(f"{{{_HH}}}paraPr"))))
+        header.mark_dirty()
+        cache[key] = next_id
+        return next_id
+    except Exception:
+        return key
+
+
+def _text_em(seg: str) -> float:
+    """Rendered width of *seg* in ems: CJK/fullwidth = 1, ASCII/Latin ≈ 0.55 (#93)."""
+    return sum(1.0 if ord(ch) >= 0x1100 else 0.55 for ch in seg)
+
+
+def _wrapped_lines(seg: str, em_per_line: float) -> int:
+    """Lines *seg* needs when glyphs are placed greedily (unused line-end space is
+    lost, so 19 CJK glyphs in a 9.5-em line take 3 lines, not 2) (#93)."""
+    lines, used = 1, 0.0
+    for ch in seg:
+        w = 1.0 if ord(ch) >= 0x1100 else 0.55
+        if used + w > em_per_line + 1e-9 and used > 0:
+            lines += 1
+            used = 0.0
+        used += w
+    return lines
+
+
 def _grow_rows_for_content(table_el, row_texts: list[list[str]]) -> None:
     """Grow each row's cell height to the lines its content needs.
 
@@ -1478,14 +1547,14 @@ def _grow_rows_for_content(table_el, row_texts: list[list[str]]) -> None:
             if mg is not None:
                 inset = int(mg.get("left", "0")) + int(mg.get("right", "0"))
             usable = max(width - inset, CHAR_W)
-            cpl = max(1, usable // CHAR_W)  # chars per line (coarse, CJK-width)
+            em_per_line = max(1.0, usable / CHAR_W)  # CJK glyphs per line (coarse)
             # rendered text: emphasis delimiters aren't drawn and a [^id] reference
             # becomes a one-glyph superscript mark, so neither counts toward wrapping
             text = (
                 _FOOTNOTE_REF_RE.sub("¹", rendered_text(plain_text(texts[c])))
                 if c < len(texts) else ""
             )
-            lines = sum(max(1, -(-len(seg) // cpl)) for seg in text.split("\n")) or 1
+            lines = sum(_wrapped_lines(seg, em_per_line) for seg in text.split("\n")) or 1
             max_lines = max(max_lines, lines)
         if max_lines > 1:
             for tc in cells:
@@ -1811,32 +1880,55 @@ def _build_figure(
     cp.clear_text()
     # parse_markdown masked backslash escapes (#52); a path is used, not emitted,
     # so restore them here — `assets/a\_b.png` names the file a_b.png
-    fig_path = unmask_escapes(fig.path)
-    src = Path(fig_path).expanduser()
-    if not src.is_absolute():
-        src = base_dir / src
-    try:
-        img = load_image(src)
-    except ValueError as exc:
-        warnings.append(f"{fig.display}: {exc} — placeholder left in the figure")
-        cp.add_run(f"[그림 없음: {fig_path}]", char_pr_id_ref=body_char)
-        pic_h = None
-    else:
-        item_id = add_bin_image(doc, img.data, img.ext)
-        page_h = body_height(section)
-        w, pic_h = fit_extent(img.px_w, img.px_h, tw, int(page_h * 0.8) if page_h else None)
+    # one picture per path, side by side in the same paragraph (#96): all pictures
+    # share one height so they line up, scaled down together to fit the text width
+    loaded: list[tuple[str, Path, object]] = []
+    pic_h = None
+    for raw in fig.paths:
+        fig_path = unmask_escapes(raw)
+        src = Path(fig_path).expanduser()
+        if not src.is_absolute():
+            src = base_dir / src
         try:
-            name = str(src.resolve().relative_to(base_dir.resolve()))
-        except ValueError:
-            name = fig_path
+            loaded.append((fig_path, src, load_image(src)))
+        except ValueError as exc:
+            warnings.append(f"{fig.display}: {exc} — placeholder left in the figure")
+            cp.add_run(f"[그림 없음: {fig_path}]", char_pr_id_ref=body_char)
+    if loaded:
+        page_h = body_height(section)
+        max_h = int(page_h * 0.8) if page_h else None
+        gap = 400 if len(loaded) > 1 else 0  # HWPUNIT between neighbours
+        avail = tw - gap * (len(loaded) - 1)
+        # common height h: sum(px_w_i * h / px_h_i) <= avail
+        inv = sum(img.px_w / img.px_h for _, _, img in loaded)
+        pic_h = int(avail / inv)
+        if max_h:
+            pic_h = min(pic_h, max_h)
         lsa = cp.element.find(f"{{{_HP}}}linesegarray")
-        run = etree.fromstring(picture_xml(
-            item_id, img, w, pic_h, char_pr=body_char, source_name=name, label=fig.label,
-        ))
-        if lsa is not None:
-            lsa.addprevious(run)
-        else:
-            cp.element.append(run)
+        for n, (fig_path, src, img) in enumerate(loaded):
+            item_id = add_bin_image(doc, img.data, img.ext)
+            w = round(pic_h * img.px_w / img.px_h)
+            try:
+                name = str(src.resolve().relative_to(base_dir.resolve()))
+            except ValueError:
+                name = fig_path
+            run = etree.fromstring(picture_xml(
+                item_id, img, w, pic_h, char_pr=body_char, source_name=name,
+                label=fig.label if n == 0 else None,
+            ))
+            if n:  # a small gap before every picture after the first
+                c_attr = f' charPrIDRef="{body_char}"' if body_char is not None else ""
+                spacer = etree.fromstring(
+                    f'<hp:run xmlns:hp="{_HP}"{c_attr}><hp:t> </hp:t></hp:run>'
+                )
+                if lsa is not None:
+                    lsa.addprevious(spacer)
+                else:
+                    cp.element.append(spacer)
+            if lsa is not None:
+                lsa.addprevious(run)
+            else:
+                cp.element.append(run)
     pic_sz = pic_cell.element.find(f"{{{_HP}}}cellSz")
     if pic_sz is not None and pic_h:
         pic_sz.set("height", str(pic_h))
@@ -2494,6 +2586,7 @@ def fill_from_markdown(
     left_para_cache: dict[str, str] = {}
     none_heading_cache: dict[str, str] = {}
     outline_cache: dict[tuple[str, int], str] = {}
+    cell_para_cache: dict[str, str] = {}
     outline_numbering_id: str | None = None
     outline_tried = False
 
@@ -2738,7 +2831,9 @@ def fill_from_markdown(
                 doc, target_section, block, table_fmt, body_style, body_para,
                 ref_element_copy, chapter_label(), equal_columns=equal_columns,
                 text_writer=write_text,
-                para_resolver=resolve_para,
+                para_resolver=lambda base, txt: _tight_cell_para_pr(
+                    doc, resolve_para(base, txt), cell_para_cache
+                ),
                 run_writer=add_runs,
             )
             place(table.paragraph.element)

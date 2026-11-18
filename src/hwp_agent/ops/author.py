@@ -3298,6 +3298,21 @@ def build_report(
         parts.append(("{{" + name + "}}", "\n\n".join(texts)))
     if not parts:
         raise ValueError("manifest has no 'parts' to assemble")
+    fallback_title = next((t for _, md in parts if (t := first_heading(md))), None)
+
+    # 정책이슈브리프 (#91): a template with {{ch1}}… takes the body chapter by chapter
+    # — one chapter section each, later chapters in the last one — and the chapter
+    # wings / Contents / opening titles are slots derived from the H1s
+    from .brief import brief_parts, is_brief_template
+
+    brief_slots: dict[str, str] = {}
+    brief_warnings: list[str] = []
+    if is_brief_template(template):
+        bi = next((i for i, (m, _) in enumerate(parts) if m == "{{body}}"), None)
+        if bi is not None:
+            bp = brief_parts(parts[bi][1])
+            parts[bi : bi + 1] = [("{{" + k + "}}", v) for k, v in bp.parts.items()]
+            brief_slots, brief_warnings = bp.slots, bp.warnings
 
     meta_src = meta if meta is not None else data.get("meta")
     if isinstance(meta_src, str):
@@ -3305,6 +3320,8 @@ def build_report(
     meta_dict = None
     if meta_src is not None or front:
         meta_dict = {**front, **load_meta(meta_src)}
+    if brief_slots:
+        meta_dict = {**(meta_dict or {}), **brief_slots}
 
     out = output if output is not None else data.get("output")
     if out is not None and not Path(out).is_absolute():
@@ -3332,7 +3349,7 @@ def build_report(
         ),
         base_dir=base,
     )
-    fallback_title = next((t for _, md in parts if (t := first_heading(md))), None)
+    result.warnings += brief_warnings
     finish_report_meta(
         result, out or template, meta_dict, fallback_title=fallback_title, author=author
     )

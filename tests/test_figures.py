@@ -435,3 +435,55 @@ def test_extract_roundtrips_multi_image_figure(tmp_path: Path) -> None:
     md = extract_markdown(out)
     assert "![좌우 사진](a.png) ![](b.png){#fig_pair}" in md
     assert "주) 좌: 가, 우: 나" in md
+
+
+def test_caption_line_above_image_is_the_figure_caption() -> None:
+    """#110: '[그림 …] 제목' directly above an image is its caption, not a body paragraph."""
+    for md in (
+        "[그림 Ⅰ-1] 가상 사진\n![단독](left.png)\n",
+        "[그림 Ⅰ-1] 가상 사진\n\n![단독](left.png)\n",  # one blank line allowed
+    ):
+        blocks = parse_markdown(md)
+        assert [type(b).__name__ for b in blocks] == ["FigureBlock"], blocks
+        assert blocks[0].caption == "가상 사진" and blocks[0].alt == "단독"
+    # two blank lines: the line is an ordinary paragraph again
+    blocks = parse_markdown("[그림 Ⅰ-1] 가상 사진\n\n\n![단독](left.png)\n")
+    assert [type(b).__name__ for b in blocks] == ["Block", "FigureBlock"]
+    assert blocks[1].caption is None
+    # no caption line: the alt stays the caption (unchanged behaviour)
+    assert parse_markdown("![단독](left.png)\n")[0].caption is None
+
+
+def test_caption_line_wins_over_alt_in_the_written_figure(tmp_path: Path) -> None:
+    _png(tmp_path / "a.png", 40, 20)
+    _png(tmp_path / "b.png", 20, 20)
+    out = tmp_path / "o.hwpx"
+    fill_from_markdown(
+        _DEFAULT_TPL,
+        "[그림 Ⅰ-1] 가상 사진 제목\n\n![좌](a.png) ![우](b.png)\n주) 좌: 가, 우: 나\n",
+        output=out, base_dir=tmp_path,
+    )
+    with zipfile.ZipFile(out) as z:
+        sec = "".join(
+            z.read(n).decode() for n in z.namelist()
+            if n.startswith("Contents/section") and n.endswith(".xml")
+        )
+    caps = [re.sub(r"<[^>]+>", "", c) for c in re.findall(r"<hp:caption.*?</hp:caption>", sec, re.S)]
+    assert any("가상 사진 제목" in c and "좌" not in c for c in caps), caps
+    text = re.sub(r"<[^>]+>", "|", sec)
+    assert text.count("가상 사진 제목") == 1  # not also a body paragraph
+
+
+def test_caption_line_is_matched_per_physical_line() -> None:
+    """Review on #111: prose around the caption line is neither swallowed nor missed."""
+    # prose directly above the caption (no blank): caption still found, prose stays
+    blocks = parse_markdown("본문입니다\n[그림 1] 제목\n![alt](a.png)\n")
+    assert [type(b).__name__ for b in blocks] == ["Block", "FigureBlock"]
+    assert blocks[0].text == "본문입니다" and blocks[1].caption == "제목"
+    # a paragraph that merely *starts* with a caption-like line keeps its later prose
+    blocks = parse_markdown("[그림 1] 제목\n이어지는 본문\n\n![alt](a.png)\n")
+    assert [type(b).__name__ for b in blocks] == ["Block", "FigureBlock"]
+    assert "이어지는 본문" in blocks[0].text and blocks[1].caption is None
+    # caption as the last line of a multi-line paragraph, blank line before the image
+    blocks = parse_markdown("앞 문장\n[그림 1] 제목\n\n![alt](a.png)\n")
+    assert blocks[0].text == "앞 문장" and blocks[1].caption == "제목"

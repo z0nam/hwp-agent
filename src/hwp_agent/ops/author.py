@@ -703,6 +703,10 @@ def parse_markdown(
         if (fig := parse_figure_line(line)) is not None:
             flush()
             i += 1
+            # consecutive image lines (no blank between) are one figure (#96)
+            while i < len(lines) and (nxt := parse_figure_line(lines[i])) is not None:
+                fig.absorb(nxt)
+                i += 1
             note_lines = []
             while i < len(lines) and _NOTE_RE.match(lines[i]):
                 note_lines.append(lines[i].strip())
@@ -1811,32 +1815,55 @@ def _build_figure(
     cp.clear_text()
     # parse_markdown masked backslash escapes (#52); a path is used, not emitted,
     # so restore them here — `assets/a\_b.png` names the file a_b.png
-    fig_path = unmask_escapes(fig.path)
-    src = Path(fig_path).expanduser()
-    if not src.is_absolute():
-        src = base_dir / src
-    try:
-        img = load_image(src)
-    except ValueError as exc:
-        warnings.append(f"{fig.display}: {exc} — placeholder left in the figure")
-        cp.add_run(f"[그림 없음: {fig_path}]", char_pr_id_ref=body_char)
-        pic_h = None
-    else:
-        item_id = add_bin_image(doc, img.data, img.ext)
-        page_h = body_height(section)
-        w, pic_h = fit_extent(img.px_w, img.px_h, tw, int(page_h * 0.8) if page_h else None)
+    # one picture per path, side by side in the same paragraph (#96): all pictures
+    # share one height so they line up, scaled down together to fit the text width
+    loaded: list[tuple[str, Path, object]] = []
+    pic_h = None
+    for raw in fig.paths:
+        fig_path = unmask_escapes(raw)
+        src = Path(fig_path).expanduser()
+        if not src.is_absolute():
+            src = base_dir / src
         try:
-            name = str(src.resolve().relative_to(base_dir.resolve()))
-        except ValueError:
-            name = fig_path
+            loaded.append((fig_path, src, load_image(src)))
+        except ValueError as exc:
+            warnings.append(f"{fig.display}: {exc} — placeholder left in the figure")
+            cp.add_run(f"[그림 없음: {fig_path}]", char_pr_id_ref=body_char)
+    if loaded:
+        page_h = body_height(section)
+        max_h = int(page_h * 0.8) if page_h else None
+        gap = 400 if len(loaded) > 1 else 0  # HWPUNIT between neighbours
+        avail = tw - gap * (len(loaded) - 1)
+        # common height h: sum(px_w_i * h / px_h_i) <= avail
+        inv = sum(img.px_w / img.px_h for _, _, img in loaded)
+        pic_h = int(avail / inv)
+        if max_h:
+            pic_h = min(pic_h, max_h)
         lsa = cp.element.find(f"{{{_HP}}}linesegarray")
-        run = etree.fromstring(picture_xml(
-            item_id, img, w, pic_h, char_pr=body_char, source_name=name, label=fig.label,
-        ))
-        if lsa is not None:
-            lsa.addprevious(run)
-        else:
-            cp.element.append(run)
+        for n, (fig_path, src, img) in enumerate(loaded):
+            item_id = add_bin_image(doc, img.data, img.ext)
+            w = round(pic_h * img.px_w / img.px_h)
+            try:
+                name = str(src.resolve().relative_to(base_dir.resolve()))
+            except ValueError:
+                name = fig_path
+            run = etree.fromstring(picture_xml(
+                item_id, img, w, pic_h, char_pr=body_char, source_name=name,
+                label=fig.label if n == 0 else None,
+            ))
+            if n:  # a small gap before every picture after the first
+                c_attr = f' charPrIDRef="{body_char}"' if body_char is not None else ""
+                spacer = etree.fromstring(
+                    f'<hp:run xmlns:hp="{_HP}"{c_attr}><hp:t> </hp:t></hp:run>'
+                )
+                if lsa is not None:
+                    lsa.addprevious(spacer)
+                else:
+                    cp.element.append(spacer)
+            if lsa is not None:
+                lsa.addprevious(run)
+            else:
+                cp.element.append(run)
     pic_sz = pic_cell.element.find(f"{{{_HP}}}cellSz")
     if pic_sz is not None and pic_h:
         pic_sz.set("height", str(pic_h))

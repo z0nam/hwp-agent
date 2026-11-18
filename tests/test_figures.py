@@ -472,3 +472,18 @@ def test_caption_line_wins_over_alt_in_the_written_figure(tmp_path: Path) -> Non
     assert any("가상 사진 제목" in c and "좌" not in c for c in caps), caps
     text = re.sub(r"<[^>]+>", "|", sec)
     assert text.count("가상 사진 제목") == 1  # not also a body paragraph
+
+
+def test_caption_line_is_matched_per_physical_line() -> None:
+    """Review on #111: prose around the caption line is neither swallowed nor missed."""
+    # prose directly above the caption (no blank): caption still found, prose stays
+    blocks = parse_markdown("본문입니다\n[그림 1] 제목\n![alt](a.png)\n")
+    assert [type(b).__name__ for b in blocks] == ["Block", "FigureBlock"]
+    assert blocks[0].text == "본문입니다" and blocks[1].caption == "제목"
+    # a paragraph that merely *starts* with a caption-like line keeps its later prose
+    blocks = parse_markdown("[그림 1] 제목\n이어지는 본문\n\n![alt](a.png)\n")
+    assert [type(b).__name__ for b in blocks] == ["Block", "FigureBlock"]
+    assert "이어지는 본문" in blocks[0].text and blocks[1].caption is None
+    # caption as the last line of a multi-line paragraph, blank line before the image
+    blocks = parse_markdown("앞 문장\n[그림 1] 제목\n\n![alt](a.png)\n")
+    assert blocks[0].text == "앞 문장" and blocks[1].caption == "제목"

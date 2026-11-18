@@ -642,8 +642,12 @@ def parse_markdown(
         pending_blanks = 0
         blocks.append(block)
 
+    last_para_lines: list[str] = []  # physical lines of the most recent paragraph
+
     def flush() -> None:
+        nonlocal last_para_lines
         if para:
+            last_para_lines = list(para)
             emit(Block("paragraph", 0, " ".join(para)))
             para.clear()
 
@@ -703,19 +707,32 @@ def parse_markdown(
                 emit(Block("math", 0, src))
                 continue
         if (fig := parse_figure_line(line)) is not None:
-            flush()
             i += 1
-            # a "[그림 …] 제목" line directly above the image (one blank line allowed)
-            # is its caption, not a body paragraph (#110) — like a table's caption line
-            prev = blocks[-1] if blocks else None
-            if (
-                isinstance(prev, Block) and prev.kind == "paragraph"
-                and pending_blanks <= 1 and "\n" not in prev.text
-                and FIGURE_FRAMING_RE.match(prev.text)
-            ):
-                blocks.pop()
-                fig.caption = FIGURE_FRAMING_RE.sub("", prev.text, count=1).strip()
-                pending_blanks = prev.blank_before  # the figure inherits the spacing above
+            # a "[그림 …] 제목" *physical line* directly above the image (one blank
+            # line allowed) is its caption, not a body paragraph (#110) — like a
+            # table's caption line. Looked at before the paragraph buffer is joined,
+            # so prose around the caption line is never swallowed or missed.
+            cap_line = None
+            if para and FIGURE_FRAMING_RE.match(para[-1]):  # no blank line between
+                cap_line = para.pop()
+                flush()  # whatever prose came before the caption line
+            else:
+                flush()
+                prev = blocks[-1] if blocks else None
+                if (
+                    isinstance(prev, Block) and prev.kind == "paragraph"
+                    and pending_blanks <= 1 and last_para_lines
+                    and prev.text == " ".join(last_para_lines)
+                    and FIGURE_FRAMING_RE.match(last_para_lines[-1])
+                ):
+                    cap_line = last_para_lines[-1]
+                    if len(last_para_lines) == 1:
+                        blocks.pop()
+                        pending_blanks = prev.blank_before  # inherit the spacing above
+                    else:
+                        prev.text = " ".join(last_para_lines[:-1])
+            if cap_line is not None:
+                fig.caption = FIGURE_FRAMING_RE.sub("", cap_line, count=1).strip()
             # consecutive image lines (no blank between) are one figure (#96)
             while i < len(lines) and (nxt := parse_figure_line(lines[i])) is not None:
                 fig.absorb(nxt)

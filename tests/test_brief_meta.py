@@ -75,3 +75,21 @@ def test_running_title_defaults_to_title(tmp_path: Path) -> None:
     with zipfile.ZipFile(tmp_path / "out.hwpx") as z:
         masters = "".join(z.read(n).decode() for n in z.namelist() if "masterpage" in n)
     assert "가상 정책 이슈 제목입니다 두 번째 줄 부제" in masters
+
+
+def test_committed_template_title_slots_sit_on_the_cover_title_lines() -> None:
+    """Review on #105: index 1 must be the 2nd cover-title paragraph, not the 인사말 one."""
+    from lxml import etree
+
+    hp = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+    with zipfile.ZipFile(BRIEF) as z:
+        root = etree.fromstring(z.read("Contents/section0.xml"))
+    texts = [
+        "".join(t.text or "" for r in p.findall(hp + "run") for t in r.findall(hp + "t"))
+        for p in root.iter(hp + "p")
+    ]
+    assert texts.count("{{title_1}}") == 1 and texts.count("{{title_2}}") == 1
+    assert texts.count("○○○○○○○○○○") == 1  # only the 인사말 heading keeps its example
+    i1, i2 = texts.index("{{title_1}}"), texts.index("{{title_2}}")
+    assert i2 == i1 + 1  # consecutive: the two cover-title lines
+    assert "제주연구원은 지역사회가 안고 있는 " not in texts[i2]  # not in the greeting

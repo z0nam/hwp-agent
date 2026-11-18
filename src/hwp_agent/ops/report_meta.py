@@ -226,11 +226,14 @@ def bake_meta_slots(path: Path | str, config: dict) -> list[str]:
             done.append(f"s{si}:{new}")
         # nth match for strings that repeat (the brief's cover prints "○○○…" for
         # both title lines and again for the 인사말 heading) — {"old","new","index"}
+        # matches are fixed against the *unchanged* paragraphs: replacing index 0
+        # would otherwise drop it from a later item's hit list and shift index 1
+        snapshot: dict[str, list] = {}
         for item in spec.get("replace_at") or []:
             old, new, idx = item["old"], item["new"], int(item.get("index", 0))
             if new and new in sec_text:
                 continue
-            hits = [p for p in paras if old in _para_text(p)]
+            hits = snapshot.setdefault(old, [p for p in paras if old in _para_text(p)])
             if idx >= len(hits):
                 errors.append(f"s{si}: {old!r} #{idx} not found ({len(hits)} paragraph(s))")
                 continue

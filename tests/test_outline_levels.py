@@ -39,3 +39,16 @@ def test_literal_numbering_headings_become_outline_levels(tmp_path: Path) -> Non
     assert f'outlineShapeIDRef="{num_id}"' in section
     # literal numbers stay in the text
     assert "Ⅰ. 서론" in section
+
+
+def test_existing_auto_numbered_section_keeps_its_outline(tmp_path: Path) -> None:
+    """Appending literal-numbered content to a section that already has
+    auto-numbered headings must not blank those numbers (Codex review on #99)."""
+    first = tmp_path / "a.hwpx"
+    fill_from_markdown(DEFAULT_TPL, "# 서론\n\n본문\n", output=first)
+    second = tmp_path / "b.hwpx"
+    fill_from_markdown(first, MD, output=second, literal_numbering=True)
+    header, section = _parts(second)
+    ref = re.search(r'outlineShapeIDRef="(\d+)"', section).group(1)
+    m = re.search(rf'<hh:numbering id="{ref}".*?</hh:numbering>', header, re.S)
+    assert re.search(r">\s*\S[^<]*</hh:paraHead>", m.group(0))  # still a real numbering

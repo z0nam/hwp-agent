@@ -1997,6 +1997,12 @@ def _ensure_blank_outline_numbering(doc: HwpxDocument, section) -> str | None:
     no numberings element to extend.
     """
     try:
+        # a section that already holds auto-numbered outline headings keeps its
+        # outline definition — swapping it would blank their numbers too
+        for p in section.paragraphs:
+            pp = doc.paragraph_property(p.para_pr_id_ref)
+            if pp and pp.heading and pp.heading.type == "OUTLINE":
+                return None
         header = doc._root._headers[0]
         root = header.element
         nums = root.find(f".//{{{_HH}}}numberings")

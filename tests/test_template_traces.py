@@ -150,8 +150,4 @@ _SHIPPED = _script().targets()
 
 @pytest.mark.parametrize("path", _SHIPPED, ids=[p.name for p in _SHIPPED])
 def test_shipped_templates_carry_no_source_traces(path: Path) -> None:
-    if path == GOLDEN and _script().traces(path):
-        # regenerated with scripts/neutralize-template-meta.py once PR #77 (which
-        # also rewrites this binary) is merged — kept separate to avoid a conflict
-        pytest.xfail("golden template is neutralized after #77 merges")
     assert _script().traces(path) == []

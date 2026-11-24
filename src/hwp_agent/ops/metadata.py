@@ -11,6 +11,7 @@ all namespaces intact.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+from datetime import UTC
 from pathlib import Path
 
 from hwpx.opc.package import HwpxPackage
@@ -123,3 +124,118 @@ def update_metadata(
     pkg.set_xml(path, root)
     pkg.save(str(output or hwpx_path))
     return tuple(written)
+
+
+#: document-info fields a template must not hand down to a written document: they
+#: describe the template's own source file (its author, subject, DRM trace in
+#: ``description``, save dates), not the new document (#120)
+INHERITED_FIELDS: tuple[str, ...] = (
+    "title",
+    "creator",
+    "subject",
+    "description",
+    "keyword",
+    "date",
+    "lastsaveby",
+)
+
+
+def _iso_now() -> str:
+    from datetime import datetime
+
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def reset_metadata_xml(md, *, title: str = "", stamp: str | None = None) -> None:
+    """Blank :data:`INHERITED_FIELDS` in an ``<opf:metadata>`` element.
+
+    ``title`` becomes *title*; ``CreatedDate``/``ModifiedDate`` become *stamp*
+    (default: now, UTC). Entries that are absent are left absent.
+    """
+    stamp = stamp or _iso_now()
+    for name in INHERITED_FIELDS:
+        kind, key = _FIELD_MAP[name]
+        if kind == "elem":
+            el = md.find(f"{{{_OPF}}}{key}")
+        else:
+            el = md.find(f'{{{_OPF}}}meta[@name="{key}"]')
+        if el is not None:
+            el.text = title if name == "title" and title else None
+    for name in ("created", "modified"):
+        el = md.find(f'{{{_OPF}}}meta[@name="{_FIELD_MAP[name][1]}"]')
+        if el is not None:
+            el.text = stamp
+
+
+def reset_package_metadata(pkg: HwpxPackage, *, title: str = "", stamp: str | None = None) -> None:
+    """:func:`reset_metadata_xml` on an open package (``doc._package``); not saved."""
+    path, root, md = _metadata_element(pkg)
+    reset_metadata_xml(md, title=title, stamp=stamp)
+    pkg.set_xml(path, root)
+
+
+def _blank_png(w: int = 8, h: int = 8) -> bytes:
+    """A white *w*x*h* PNG — the neutral ``Preview/PrvImage.png`` of a shipped template."""
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        crc = struct.pack(">I", zlib.crc32(kind + data))
+        return struct.pack(">I", len(data)) + kind + data + crc
+
+    raw = b"".join(b"\x00" + b"\xff\xff\xff" * w for _ in range(h))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+def neutralize_template(
+    hwpx_path: Path | str,
+    title: str,
+    *,
+    output: Path | str | None = None,
+    stamp: str = "2026-01-01T00:00:00Z",
+) -> None:
+    """Strip a template's source-document traces from its package parts (#120).
+
+    ``content.hpf``: ``title`` ← *title*, the other :data:`INHERITED_FIELDS`
+    blanked, created/modified ← *stamp* (fixed so a rebuild is reproducible).
+    ``Preview/PrvText.txt`` ← *title*, ``Preview/PrvImage.png`` ← a blank 8x8 PNG.
+    Every other part is copied byte-for-byte (container order/compression kept).
+    """
+    import zipfile
+
+    from .container import _rewrite_zip_preserving
+
+    src = Path(hwpx_path)
+    with zipfile.ZipFile(src) as z:
+        names = set(z.namelist())
+        hpf_name = "Contents/content.hpf"
+        if hpf_name not in names:
+            raise ValueError(f"{src}: no {hpf_name}")
+        hpf = z.read(hpf_name).decode("utf-8")
+
+    from lxml import etree
+
+    decl_end = hpf.index("?>") + 2 if hpf.startswith("<?xml") else 0
+    root = etree.fromstring(hpf[decl_end:].encode("utf-8"))
+    md = root.find(f"{{{_OPF}}}metadata")
+    if md is None:
+        raise ValueError(f"{src}: content.hpf has no <opf:metadata>")
+    reset_metadata_xml(md, title=title, stamp=stamp)
+    body = etree.tostring(root, encoding="unicode")
+    tail = hpf[len(hpf.rstrip()):]  # the trailing newline, if the file had one
+    new_hpf = (hpf[:decl_end] + body + tail).encode("utf-8")
+
+    overrides = {hpf_name: new_hpf}
+    if "Preview/PrvText.txt" in names:
+        overrides["Preview/PrvText.txt"] = title.encode("utf-8")
+    if "Preview/PrvImage.png" in names:
+        overrides["Preview/PrvImage.png"] = _blank_png()
+    dst = Path(output) if output else src.with_suffix(".neutral.tmp")
+    _rewrite_zip_preserving(src, dst, overrides)
+    if output is None:
+        dst.replace(src)

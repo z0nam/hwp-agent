@@ -154,3 +154,18 @@ scripts/build-brief-template.py --trace examples/정책이슈브리프-template.
 구조: section0 표지·차례·1장, section1 2장, section2 3장 이후 전부(발간본이 그렇게 구성), section3 참고문헌,
 section4 뒷표지. `hwp-agent build` 는 이 템플릿(`{{ch1}}` 마커)이면 본문을 `# ` 장 제목으로 쪼개
 `ch1`→section0, `ch2`→section1, 나머지→section2 에 넣고 장 제목·바탕쪽 장 날개·차례를 슬롯으로 채운다.
+
+## 문서 정보·미리보기 중립화 (#120)
+
+서식 원본의 `Contents/content.hpf`(제목·작성자·주제·DRM 추적값·저장일)와 `Preview/PrvText.txt`·`PrvImage.png`는
+원본 파일을 설명하므로 공개 저장소에 싣지 않는다. `refresh-house-forms` 와 `build-golden-template.py` 는 굽고 나서
+`neutralize_template()` 로 이 부분만 바꾼다(제목·미리보기 문구 = 서식 이름, 나머지는 비움, 미리보기 그림은 빈 PNG,
+다른 파트는 바이트 그대로). 템플릿을 다시 구운 뒤에는 아래로 확인·적용한다.
+
+```bash
+scripts/neutralize-template-meta.py --check   # 흔적이 남은 템플릿을 항목 이름만 출력, 있으면 exit 1
+scripts/neutralize-template-meta.py           # examples/*.hwpx 와 house-forms 전부 중립화(재실행 가능)
+```
+
+`write`·`build` 결과물도 템플릿의 문서 정보를 물려받지 않는다: 미리보기는 결과 본문으로 다시 만들고,
+content.hpf 의 상속 항목은 비운 뒤 제목·작성자를 meta.json / 첫 제목 / `--author` 로 채운다.

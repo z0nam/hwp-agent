@@ -26,7 +26,6 @@ from .bands import (
     detect_section_bands,
 )
 from .chapter_header import ChapterHeaderResult, WingSpec, apply_chapter_headers
-from .numbering import neutralize_uncaptioned_numbering
 from .doctor import diagnose_template
 from .extract import extract_markdown
 from .fit_pages import (
@@ -81,7 +80,13 @@ from .links import (
     DEFAULT_LINK_ALIGN_THRESHOLD,
     should_left_align,
 )
-from .metadata import Metadata, read_metadata, update_metadata
+from .metadata import (
+    Metadata,
+    neutralize_template,
+    read_metadata,
+    reset_package_metadata,
+    update_metadata,
+)
 from .normalize import (
     NormalizeAction,
     NormalizePlan,
@@ -90,6 +95,7 @@ from .normalize import (
     apply_style_roles,
     plan_normalization,
 )
+from .numbering import neutralize_uncaptioned_numbering
 from .profile import (
     Profile,
     ProfileFillResult,
@@ -132,6 +138,8 @@ from .verify import (
 __all__ = [
     "Metadata",
     "read_metadata",
+    "neutralize_template",
+    "reset_package_metadata",
     "update_metadata",
     "FormSlot",
     "FormSpec",

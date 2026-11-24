@@ -1221,7 +1221,11 @@ def _drop_figure_template_paragraphs(doc: HwpxDocument) -> int:
 
 
 def _update_preview_parts(doc: HwpxDocument) -> None:
-    """Replace Preview/PrvText.txt with output body text and PrvImage.png with a minimal PNG."""
+    """Rebuild the Preview parts from the output and drop the template's document info.
+
+    Preview/PrvText.txt ← output body text, PrvImage.png ← a minimal PNG, and
+    content.hpf's inherited fields are blanked (:func:`~.metadata.reset_package_metadata`).
+    """
     lines = []
     total_len = 0
     max_chars = 2000
@@ -1239,6 +1243,12 @@ def _update_preview_parts(doc: HwpxDocument) -> None:
     prv_text = "\r\n".join(lines)
     doc._package.set_part("Preview/PrvText.txt", prv_text.encode("utf-8"))
     doc._package.set_part("Preview/PrvImage.png", _MINIMAL_WHITE_PNG)
+    # the template's own document info (author, subject, DRM trace, save dates)
+    # describes the template file, not this document; report_meta sets title/creator
+    # afterwards from meta.json / the first heading / --author (#120)
+    from .metadata import reset_package_metadata
+
+    reset_package_metadata(doc._package)
 
 
 def _find_residual_tokens(doc: HwpxDocument) -> list[str]:

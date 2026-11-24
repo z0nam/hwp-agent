@@ -3,11 +3,13 @@
 Two halves of roadmap Phase 1 (``docs/full-report-roadmap.md`` 실행 상세 B):
 
 * **B1 — bake** (:func:`bake_meta_slots`): a house form ships a worked example on
-  its 표지 (cover) and 판권 (colophon) — "제주 경제전망 2026", "강영준 제주연구원
-  연구위원", "978-89-6010-000-0 00000" … Those strings differ per form, so each
-  form's ``overrides/<form>.json`` declares a ``meta_slots`` map (example string →
-  ``{{slot}}``) and ``scripts/refresh-house-forms.py`` swaps them in while baking.
-  Only the matched substring changes; the label run (``연구책임``) keeps its own
+  its 표지 (cover) and 판권 (colophon) — a sample title, subtitle, researchers,
+  "978-89-6010-000-0 00000" … Each form's ``overrides/<form>.json`` declares a
+  ``meta_slots`` map and ``scripts/refresh-house-forms.py`` swaps the slots in
+  while baking. Sample strings that are neutral placeholders are matched literally;
+  the sample title/subtitle and people are located by paragraph position or by
+  their label (#122), so the public repo never spells out a real report or name.
+  Only the matched text changes; the label run (``연구책임``) keeps its own
   character style.
 * **B2 — fill** (:func:`apply_report_meta`): ``meta.json`` / Markdown front matter
   → the existing :func:`~hwp_agent.ops.form.fill_form`, run by ``build`` (and
@@ -197,15 +199,25 @@ def bake_meta_slots(path: Path | str, config: dict) -> list[str]:
 
     *config* is the ``meta_slots`` block of ``overrides/<form>.json``::
 
-        {"cover":    {"section": 0,  "replace": {"제주 경제전망 2026": "{{title}}", …}},
-         "colophon": {"section": -1, "replace": {…}, "append": {"인 쇄 처": "{{printer}}"}}}
+        {"cover":    {"section": 0,
+                      "replace": {"○○○·△△△": "{{authors}}"},
+                      "replace_para": [{"para": 2, "paraPr": "5", "new": "{{title}}"}]},
+         "colophon": {"section": -1,
+                      "after_label": {"연구책임": "{{lead_researcher}}"},
+                      "append": {"인 쇄 처": "{{printer}}"}}}
 
     ``replace`` keys are example substrings; each must occur in exactly one
     paragraph of that section, or :class:`ValueError` is raised — a revised form
     whose example changed should fail the bake loudly, not ship half-slotted.
-    ``append`` adds the token at the end of the paragraph starting with the key
-    (for a label whose example value is empty). An entry whose token is already in
-    the section is skipped, so re-baking a baked copy is a no-op.
+    ``replace_para`` swaps the whole text of the *para*-th paragraph (document
+    order, tables included) — for a sample whose wording must not be written down;
+    ``paraPr`` (optional) guards that the paragraph still has that shape, so a
+    revised form fails instead of slotting the wrong line. ``after_label`` swaps the
+    text after the label in the one paragraph starting with it (the label run
+    keeps its style). ``append`` adds the token at the end of the paragraph
+    starting with the key (for a label whose example value is empty). An entry
+    whose token is already in the section is skipped, so re-baking a baked copy is
+    a no-op.
 
     Returns ``["s0:{{title}}", …]`` for the bake summary.
     """
@@ -229,6 +241,36 @@ def bake_meta_slots(path: Path | str, config: dict) -> list[str]:
                 errors.append(f"s{si}: {old!r} found in {len(hits)} paragraph(s), want 1")
                 continue
             _replace_in_para(hits[0], old, new)
+            done.append(f"s{si}:{new}")
+        for item in spec.get("replace_para") or []:
+            new, idx = item["new"], int(item["para"])
+            if new in sec_text:
+                continue
+            if not 0 <= idx < len(paras):
+                errors.append(f"s{si}: paragraph #{idx} not found ({len(paras)} paragraph(s))")
+                continue
+            p, want = paras[idx], item.get("paraPr")
+            old = _para_text(p)
+            if want is not None and p.get("paraPrIDRef") != str(want):
+                errors.append(
+                    f"s{si}: paragraph #{idx} has paraPr {p.get('paraPrIDRef')}, want {want}"
+                )
+                continue
+            if not old.strip() or not _replace_in_para(p, old, new):
+                errors.append(f"s{si}: paragraph #{idx} has no sample text to replace")
+                continue
+            done.append(f"s{si}:{new}")
+        for label, new in (spec.get("after_label") or {}).items():
+            if new in sec_text:
+                continue
+            hits = [p for p in paras if _para_text(p).strip().startswith(label)]
+            if len(hits) != 1:
+                errors.append(f"s{si}: label {label!r} found {len(hits)} time(s), want 1")
+                continue
+            rest = _para_text(hits[0]).strip()[len(label):].strip()
+            if not rest or not _replace_in_para(hits[0], rest, new):
+                errors.append(f"s{si}: label {label!r} has no sample value to replace")
+                continue
             done.append(f"s{si}:{new}")
         # nth match for strings that repeat (the brief's cover prints "○○○…" for
         # both title lines and again for the 인사말 heading) — {"old","new","index"}

@@ -87,9 +87,9 @@ def _split_run_template(tmp_path: Path) -> Path:
     run = p.element.find(f"{_HP}run")
     run.set("charPrIDRef", "1")
     run2 = etree.SubElement(p.element, f"{_HP}run", charPrIDRef="2")
-    etree.SubElement(run2, f"{_HP}t").text = "강영"
+    etree.SubElement(run2, f"{_HP}t").text = "홍길"
     run3 = etree.SubElement(p.element, f"{_HP}run", charPrIDRef="2")
-    etree.SubElement(run3, f"{_HP}t").text = "준 연구위원"
+    etree.SubElement(run3, f"{_HP}t").text = "동 연구위원"
     doc.sections[0].mark_dirty()
     out = tmp_path / "t.hwpx"
     doc.save_to_path(str(out))
@@ -98,7 +98,7 @@ def _split_run_template(tmp_path: Path) -> Path:
 
 def test_bake_replaces_across_runs_and_keeps_label_style(tmp_path: Path) -> None:
     tpl = _split_run_template(tmp_path)
-    cfg = {"cover": {"section": 0, "replace": {"강영준 연구위원": "{{lead_researcher}}"}}}
+    cfg = {"cover": {"section": 0, "replace": {"홍길동 연구위원": "{{lead_researcher}}"}}}
     assert bake_meta_slots(tpl, cfg) == ["s0:{{lead_researcher}}"]
     doc = HwpxDocument.open(str(tpl))
     p = next(
@@ -150,11 +150,68 @@ def test_refresh_bake_one_applies_meta_slots(tmp_path: Path) -> None:
     spec.loader.exec_module(mod)
     tpl = _split_run_template(tmp_path)
     out = tmp_path / "baked.hwpx"
-    cfg = {"meta_slots": {"cover": {"section": 0, "replace": {"강영준": "{{authors}}"}}}}
+    cfg = {"meta_slots": {"cover": {"section": 0, "replace": {"홍길동": "{{authors}}"}}}}
     summary = mod.bake_one(tpl, out, tmp_path, config=cfg)
     assert summary["meta_slots"] == 1
     assert any("{{authors}}" in t for t in _texts(out, 0))
 
+
+
+def _para_index(path: Path, needle: str) -> tuple[int, str]:
+    doc = HwpxDocument.open(str(path))
+    for i, p in enumerate(doc.sections[0].element.iter(f"{_HP}p")):
+        if needle in "".join(p.itertext()):
+            return i, p.get("paraPrIDRef")
+    raise AssertionError(needle)
+
+
+def test_bake_after_label_replaces_value_and_keeps_label_style(tmp_path: Path) -> None:
+    # #122: people are found by their label, so the sample name is never written down
+    tpl = _split_run_template(tmp_path)
+    cfg = {"cover": {"section": 0, "after_label": {"연구책임": "{{lead_researcher}}"}}}
+    assert bake_meta_slots(tpl, cfg) == ["s0:{{lead_researcher}}"]
+    doc = HwpxDocument.open(str(tpl))
+    p = next(
+        p for p in doc.sections[0].element.iter(f"{_HP}p")
+        if "{{lead_researcher}}" in "".join(p.itertext())
+    )
+    runs = [(r.get("charPrIDRef"), "".join(r.itertext())) for r in p.findall(f"{_HP}run")]
+    assert runs[0] == ("1", "연구책임   ")
+    assert "".join(t for _, t in runs) == "연구책임   {{lead_researcher}}"
+    assert bake_meta_slots(tpl, cfg) == []  # re-bake is a no-op
+
+
+def test_bake_after_label_without_value_fails(tmp_path: Path) -> None:
+    tpl = _split_run_template(tmp_path)
+    with pytest.raises(ValueError, match="no sample value"):
+        label = {"연구책임   홍길동 연구위원": "{{x}}"}  # the whole line: nothing after it
+        bake_meta_slots(tpl, {"cover": {"section": 0, "after_label": label}})
+
+
+def test_bake_replace_para_by_position_with_shape_guard(tmp_path: Path) -> None:
+    # #122: the sample title is found by position (+ paraPr), never by its wording
+    tpl = _split_run_template(tmp_path)
+    idx, pr = _para_index(tpl, "홍길")
+    item = {"para": idx, "paraPr": pr, "new": "{{title}}"}
+    cfg = {"cover": {"section": 0, "replace_para": [item]}}
+    assert bake_meta_slots(tpl, cfg) == ["s0:{{title}}"]
+    assert "{{title}}" in _texts(tpl, 0)
+    assert bake_meta_slots(tpl, cfg) == []  # re-bake is a no-op
+
+
+@pytest.mark.parametrize(
+    "item, msg",
+    [
+        ({"para": 9999, "new": "{{title}}"}, "not found"),
+        ({"para": None, "paraPr": "no-such-shape", "new": "{{title}}"}, "has paraPr"),
+    ],
+)
+def test_bake_replace_para_fails_loudly_when_the_form_moved(tmp_path: Path, item, msg) -> None:
+    tpl = _split_run_template(tmp_path)
+    if item["para"] is None:
+        item = {**item, "para": _para_index(tpl, "홍길")[0]}
+    with pytest.raises(ValueError, match=msg):
+        bake_meta_slots(tpl, {"cover": {"section": 0, "replace_para": [item]}})
 
 # --------------------------------------------------------------------------- #
 # B2 — fill (meta present / absent / partial)

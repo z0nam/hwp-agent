@@ -139,3 +139,18 @@ rm ~/Library/LaunchAgents/re.ji.hwp-agent.refresh-forms.plist
   force-push 로 갱신한다(PR 하나 유지). PR 을 머지 없이 닫으면 그 초벌구이는
   다음 소스 개정까지 재생성되지 않는다(상태파일이 이미 최신 해시라서). 필요하면
   상태파일에서 해당 항목을 지우고 재실행.
+
+## 정책이슈브리프 템플릿 (#91 2단계)
+
+`refresh-house-forms` 가 `.hwp` 에서 굽는 브리프 사본(`examples/house-forms/정책이슈브리프.normalized.hwpx`)은
+바탕쪽 순서가 구역과 어긋나 있어, 발간본 구조의 별도 템플릿 `examples/정책이슈브리프-template.hwpx` 를
+쓴다(골든 템플릿처럼 수동 큐레이션 — refresh 가 덮어쓰지 않는다). 만드는 법과 점검:
+
+```bash
+scripts/build-brief-template.py <발간본.hwpx>            # 원고·그림·메타를 지우고 슬롯으로
+scripts/build-brief-template.py --trace examples/정책이슈브리프-template.hwpx   # 남은 텍스트·주석·메타 덤프
+```
+
+구조: section0 표지·차례·1장, section1 2장, section2 3장 이후 전부(발간본이 그렇게 구성), section3 참고문헌,
+section4 뒷표지. `hwp-agent build` 는 이 템플릿(`{{ch1}}` 마커)이면 본문을 `# ` 장 제목으로 쪼개
+`ch1`→section0, `ch2`→section1, 나머지→section2 에 넣고 장 제목·바탕쪽 장 날개·차례를 슬롯으로 채운다.

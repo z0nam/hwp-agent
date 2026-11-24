@@ -54,6 +54,10 @@ META_SLOTS = (
     "isbn",
     "title_1",  # 표지 제목 첫째·둘째 줄 (정책이슈브리프: 줄마다 문단) (#91)
     "title_2",
+    "headline",  # 표지 요지문 (정책이슈브리프)
+    "ch1_title", "ch2_title", "ch3_title",  # 장 구역의 첫 장 제목 (정책이슈브리프)
+    "toc_1", "toc_2", "toc_3", "toc_4",  # 차례 쪽 장 제목
+    "wing_1", "wing_2", "wing_3",  # 바탕쪽 장 날개
     "volume",  # 호수 — 정책이슈브리프 표지·뒷표지 (#91)
     "running_title",  # 머리제목 — 바탕쪽(머리말) 쪽 제목 (#91)
 )
@@ -90,6 +94,8 @@ ALIASES = {
     "발행인": "publisher",
     "호수": "volume",
     "머리제목": "running_title",
+    "요지": "headline",
+    "헤드라인": "headline",
     "인쇄처": "printer",
     "종료일": "end_date",
     "과제종료일": "end_date",
@@ -848,6 +854,8 @@ def apply_report_meta(
     if meta is not None:
         flat_title = (norm.get("title") or "").replace("\n", " ").strip()
         mp_values = {"running_title": norm.get("running_title") or flat_title}
+        for k in (1, 2, 3):  # 장 날개 (정책이슈브리프 바탕쪽)
+            mp_values[f"wing_{k}"] = norm.get(f"wing_{k}") or ""
         for slot in _fill_masterpage_slots(path, mp_values):
             (res.filled if mp_values[slot] else res.blank).append(slot)
 

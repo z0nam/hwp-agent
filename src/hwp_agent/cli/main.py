@@ -1187,6 +1187,31 @@ def _fit_pages_in_place(path: Path) -> None:
     )
 
 
+def _cmd_toc(args: argparse.Namespace) -> int:
+    import json
+
+    from ..ops import restyle_toc
+
+    if not args.file.is_file():
+        print(f"file not found: {args.file}", file=sys.stderr)
+        return 2
+    res = restyle_toc(args.file, args.output, drop_titles=args.drop_titles)
+    if args.json:
+        print(json.dumps({"fields": res.fields, "runs": res.runs, "titles": res.titles},
+                         ensure_ascii=False))
+        return 0
+    target = args.output or args.file
+    if not res.fields:
+        print(f"차례 필드가 없습니다: {args.file} (바꾼 것 없음)")
+    elif not res.changed:
+        print(f"차례 필드 {res.fields}개 — 되돌릴 링크 글자 모양이 없습니다 (바꾼 것 없음)")
+    else:
+        extra = f", 표제 줄 {res.titles}개 삭제" if res.titles else ""
+        print(f"차례 필드 {res.fields}개: 링크 글자 {res.runs}곳을 차례 스타일 모양으로 "
+              f"되돌림{extra} -> {target}")
+    return 0
+
+
 def _cmd_image(args: argparse.Namespace) -> int:
     import json
 
@@ -1494,10 +1519,11 @@ def _cmd_build(args: argparse.Namespace) -> int:
         print(
             f"  목차: 차례 {t['headings']} · 표 차례 {t['tables']} · 그림 차례 {t['figures']} "
             + (
-                "(쪽 번호는 한글에서 차례 새로 고침)"
+                "(쪽 번호: 차례·표 차례는 한글에서 차례 새로 고침, 그림 차례는 직접 입력)"
                 if t.get("field")
-                else "(쪽 번호는 한글에서 입력 — 제목이 개요 문단이 아니라 차례 필드 없이 씀; "
-                "--literal-numbering이면 차례 새로 고침 가능)"
+                else "(쪽 번호: 표 차례는 한글에서 차례 새로 고침, 차례·그림 차례는 직접 입력 — "
+                "제목이 개요 문단이 아니라 차례는 필드 없이 씀; "
+                "--literal-numbering이면 차례도 새로 고침)"
             )
         )
     if result.unmapped_roles:
@@ -2096,6 +2122,25 @@ def build_parser() -> argparse.ArgumentParser:
     ir.set_defaults(func=_cmd_image)
 
     img.set_defaults(func=lambda _args: (img.print_help(), 0)[1])
+
+    toc = sub.add_parser("toc", help="차례 (table of contents) fields")
+    toc_sub = toc.add_subparsers(dest="action", metavar="<restyle>")
+    tr = toc_sub.add_parser(
+        "restyle",
+        help="after a 차례 새로 고침 in Hangul (and saving): set the 차례 link text, which "
+        "Hangul paints blue + underlined, back to the 차례 styles' look",
+    )
+    tr.add_argument("file", type=Path, help=".hwpx file saved by Hangul")
+    tr.add_argument("-o", "--output", type=Path, default=None, help="output file")
+    tr.add_argument(
+        "--drop-titles",
+        action="store_true",
+        help="also remove the '<제목 차례>' / '<표 차례>' title lines Hangul inserts "
+        "(they come back on the next refresh)",
+    )
+    tr.add_argument("--json", action="store_true", help="emit the result as JSON")
+    tr.set_defaults(func=_cmd_toc)
+    toc.set_defaults(func=lambda _args: (toc.print_help(), 0)[1])
 
     txt = sub.add_parser(
         "text",

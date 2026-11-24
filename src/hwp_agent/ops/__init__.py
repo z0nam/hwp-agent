@@ -120,7 +120,7 @@ from .template import (
     resolve_template_path,
 )
 from .text_edit import Anchor, InsertResult, TextEditError, find_anchors, insert_markdown
-from .toc import TocEntry, TocResult, fill_toc
+from .toc import RestyleResult, TocEntry, TocResult, fill_toc, restyle_toc
 from .verify import (
     PageIssue,
     PageVerdict,
@@ -205,6 +205,8 @@ __all__ = [
     "apply_tail_fits",
     "apply_chapter_headers",
     "fill_toc",
+    "restyle_toc",
+    "RestyleResult",
     "TocEntry",
     "TocResult",
     "neutralize_uncaptioned_numbering",

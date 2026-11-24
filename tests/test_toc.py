@@ -22,7 +22,7 @@ from hwp_agent.cli.main import main
 from hwp_agent.ops import build_report, fill_toc
 from hwp_agent.ops.integrity import audit_package
 from hwp_agent.ops.links import audit_package_links
-from hwp_agent.ops.toc import TOC_COMMAND, TOC_FIELD_ID
+from hwp_agent.ops.toc import TOC_COMMAND, TOC_FIELD_ID, table_toc_command
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 POLICY = REPO_ROOT / "examples" / "house-forms" / "정책과제_서식.normalized.hwpx"
@@ -122,9 +122,13 @@ def _lists(out: Path) -> tuple[list[str], list[str], list[str]]:
     return texts, tables, figures
 
 
-def _toc_fields(root) -> tuple[list, list]:
-    begins = [fb for fb in root.iter(f"{_HP}fieldBegin") if fb.get("type") == "TABLEOFCONTENTS"]
-    ends = [fe for fe in root.iter(f"{_HP}fieldEnd") if fe.get("fieldid") == TOC_FIELD_ID]
+def _toc_fields(root, make: int = 17) -> tuple[list, list]:
+    """Begins / ends of the 차례 fields of one kind (ContentsMake 17 제목, 2 표)."""
+    begins = [fb for fb in root.iter(f"{_HP}fieldBegin") if fb.get("type") == "TABLEOFCONTENTS"
+              and f"ContentsMake:uint:{make} " in _commands(fb, "TABLEOFCONTENTS")[0]]
+    ids = {fb.get("id") for fb in begins}
+    ends = [fe for fe in root.iter(f"{_HP}fieldEnd") if fe.get("fieldid") == TOC_FIELD_ID
+            and fe.get("beginIDRef") in ids]
     return begins, ends
 
 
@@ -162,8 +166,10 @@ def test_outline_headings_get_hangul_toc_field(tmp_path: Path) -> None:
     toc = _sections(out)["Contents/section1.xml"]
     begins, ends = _toc_fields(toc)
     assert len(begins) == 1 and begins[0].get("fieldid") == TOC_FIELD_ID
-    assert _commands(toc, "TABLEOFCONTENTS") == [TOC_COMMAND]
+    assert _commands(toc, "TABLEOFCONTENTS") == [TOC_COMMAND, table_toc_command()]
     assert len(ends) == 1 and ends[0].get("beginIDRef") == begins[0].get("id")
+    # every 차례 field end has its begin (no strays)
+    assert len([fe for fe in toc.iter(f"{_HP}fieldEnd") if fe.get("fieldid") == TOC_FIELD_ID]) == 2
     assert audit_package_links(out)["broken"] == []
     assert audit_package(out) == []
 
@@ -173,6 +179,7 @@ def test_non_outline_headings_get_a_static_toc(tmp_path: Path) -> None:
     _, out = _build(tmp_path)
     toc = _sections(out)["Contents/section1.xml"]
     assert _toc_fields(toc) == ([], [])
+    assert len(_toc_fields(toc, 2)[0]) == 1  # the 표 차례 needs no outline
     assert len(_commands(toc, "HYPERLINK")) == 5 + 3 + 2
     assert audit_package_links(out)["broken"] == []
     assert audit_package(out) == []
@@ -245,8 +252,9 @@ def test_fill_twice_is_stable(tmp_path: Path, literal: bool) -> None:
     toc = _sections(again)["Contents/section1.xml"]
     begins, ends = _toc_fields(toc)
     assert (len(begins), len(ends)) == ((1, 1) if literal else (0, 0))
-    if literal:
-        assert ends[0].get("beginIDRef") == begins[0].get("id")
+    assert tuple(map(len, _toc_fields(toc, 2))) == (1, 1)
+    assert len([fe for fe in toc.iter(f"{_HP}fieldEnd")
+                if fe.get("fieldid") == TOC_FIELD_ID]) == (2 if literal else 1)
     assert _lists(again) == _lists(out)
     assert audit_package_links(again)["broken"] == []
     assert audit_package(again) == []
@@ -312,20 +320,19 @@ def _styles(path: Path) -> list[etree._Element]:
 
 
 def test_field_defines_hangul_toc_styles(tmp_path: Path) -> None:
-    """A 차례 새로 고침 formats entries with Hangul's 차례 styles (by name) and the
-    하이퍼링크 char style — defined with the form's look, the refresh keeps it."""
+    """A 차례 새로 고침 formats entries with Hangul's 차례 styles (by name) — defined
+    with the form's look, the refresh keeps it."""
     _, out = _build(tmp_path, literal_numbering=True)
     styles = _styles(out)
     by_name = {s.get("name"): s for s in styles}
-    for name in ("차례 제목", "차례 1", "차례 2", "차례 3", "하이퍼링크"):
+    for name in ("차례 제목", "차례 1", "차례 2", "차례 3"):
         assert name in by_name, name
-    assert by_name["하이퍼링크"].get("type") == "CHAR"
     with zipfile.ZipFile(POLICY) as z:
         n_before = len(etree.fromstring(z.read("Contents/header.xml"))
                        .find(f".//{_HH}styles").findall(f"{_HH}style"))
     # appended at the end, ids continuing the list
     assert [int(s.get("id")) for s in styles] == list(range(len(styles)))
-    assert len(styles) == n_before + 5
+    assert len(styles) == n_before + 4
     # entries carry them: chapter → 차례 1, section → 차례 2, look = the form's sample
     toc = _sections(out)["Contents/section1.xml"]
     entries = [p for p in toc.findall(f"{_HP}p")
@@ -347,9 +354,20 @@ def test_refill_reuses_toc_styles(tmp_path: Path) -> None:
     assert audit_package(again) == []
 
 
-def test_static_toc_adds_no_styles(tmp_path: Path) -> None:
+def test_table_list_is_a_toc_field(tmp_path: Path) -> None:
+    """표 차례 = a Hangul 차례 field for tables only (ContentsMake 2), so a refresh fills
+    its page numbers; the field ends right after the last entry."""
     _, out = _build(tmp_path)
-    assert not {"차례 1", "하이퍼링크"} & {s.get("name") for s in _styles(out)}
+    toc = _sections(out)["Contents/section1.xml"]
+    begins, ends = _toc_fields(toc, 2)
+    assert _commands(begins[0], "TABLEOFCONTENTS") == [table_toc_command()]
+    paras = toc.findall(f"{_HP}p")
+    texts = ["".join(t.text or "" for t in p.iter(f"{_HP}t")).strip() for p in paras]
+    first, last = texts.index(TABLES[0]), texts.index(TABLES[-1])
+    assert list(paras[first].iter(f"{_HP}fieldBegin"))[0] is begins[0]
+    assert list(paras[last + 1].iter(f"{_HP}fieldEnd"))[0] is ends[0]
+    # its entries take the 차례 1 style on refresh: the styles are there with a static 차례 too
+    assert "차례 1" in {s.get("name") for s in _styles(out)}
 
 
 def test_cli_build_keeps_decorations_out_of_lists(tmp_path: Path) -> None:
@@ -367,3 +385,39 @@ def test_cli_build_keeps_decorations_out_of_lists(tmp_path: Path) -> None:
                         numbered.append((el.get("numberingType"),
                                          el.find(f"{_HP}caption") is not None))
     assert sorted(numbered) == [("PICTURE", True)] * 2 + [("TABLE", True)] * 3
+
+
+GOLDEN = REPO_ROOT / "examples" / "정책과제-template.hwpx"
+
+
+@pytest.mark.parametrize("literal", [False, True])
+def test_golden_template_toc(tmp_path: Path, literal: bool) -> None:
+    """The golden template carries a neutral 목차 sample + Hangul's 차례 styles
+    (scripts/add-golden-toc.py): build fills it like the house form."""
+    res, out = _build(tmp_path, template=str(GOLDEN), literal_numbering=literal)
+    assert res.toc == {"section": "Contents/section1.xml", "headings": 5, "tables": 3,
+                       "figures": 2, "field": literal}
+    texts, tables, figures = _lists(out)
+    assert texts[:6] == ["요약", *HEADINGS]
+    assert tables == TABLES and figures == FIGURES
+    assert not any("장 제목" in t or "표 제목" in t or "그림 제목" in t for t in texts)
+    toc = _sections(out)["Contents/section1.xml"]
+    assert len(_toc_fields(toc)[0]) == (1 if literal else 0)
+    assert len(_toc_fields(toc, 2)[0]) == 1
+    # the template's own 차례 styles are reused, none added
+    with zipfile.ZipFile(GOLDEN) as z:
+        n_tpl = len(etree.fromstring(z.read("Contents/header.xml"))
+                    .find(f".//{_HH}styles").findall(f"{_HH}style"))
+    assert len(_styles(out)) == n_tpl
+    assert audit_package_links(out)["broken"] == []
+    assert audit_package(out) == []
+
+
+def test_golden_template_has_no_sample_report_text() -> None:
+    """Its 목차 sample is neutral — no text of the form's example report."""
+    with zipfile.ZipFile(GOLDEN) as z:
+        root = etree.fromstring(z.read("Contents/section1.xml"))
+    words = {(t.text or "").strip() for t in root.iter(f"{_HP}t")} - {""}
+    assert words == {"요약", "Ⅰ. 장 제목", "1. 절 제목", "1) 항 제목", "Ⅱ. 장 제목",
+                     "참고문헌", "부록", "표 차례", "<표 Ⅰ-1> 표 제목", "<표 Ⅰ-2> 표 제목",
+                     "그림 차례", "[그림 Ⅰ-1] 그림 제목", "[그림 Ⅰ-2] 그림 제목"}

@@ -229,6 +229,7 @@ class AuthorResult:
     figures: int = 0  # figure tables created (![alt](path))
     warnings: list[str] = field(default_factory=list)
     meta: dict | None = None  # cover/colophon fill summary (report_meta.MetaResult)
+    toc: dict | None = None  # 목차 fill summary (build only, toc.TocResult)
 
     def as_dict(self) -> dict:
         return {
@@ -242,6 +243,7 @@ class AuthorResult:
             "figures": self.figures,
             "warnings": self.warnings,
             "meta": self.meta,
+            "toc": self.toc,
         }
 
 
@@ -3305,6 +3307,7 @@ def build_report(
     literal_bullets: bool | None = None,
     meta: Path | str | dict | None = None,
     author: str | None = None,
+    toc: bool | None = None,
 ) -> AuthorResult:
     """Assemble a multi-section report from a JSON manifest into one template.
 
@@ -3340,6 +3343,11 @@ def build_report(
     ``content.hpf``'s title/creator are set — see
     :func:`~hwp_agent.ops.report_meta.apply_report_meta` (*author* is the
     ``--author`` fallback for creator).
+
+    목차 (#33): the template's sample 차례·표 차례·그림 차례 are rewritten from the
+    built headings and captions (:func:`~hwp_agent.ops.toc.fill_toc`), the 차례
+    wrapped in Hangul's 차례 field; page numbers are left for Hangul to fill.
+    Manifest ``"toc": false`` (or *toc* False, ``--no-toc``) keeps the template's.
     """
     import json
 
@@ -3438,6 +3446,19 @@ def build_report(
         from .brief import decorate_later_chapters
 
         decorate_later_chapters(out or template)
+    if (data.get("toc", True) if toc is None else toc):
+        from .toc import fill_toc
+
+        toc_res = fill_toc(out or template)
+        if toc_res.filled:
+            result.toc = {
+                "section": toc_res.section,
+                "headings": len(toc_res.headings),
+                "tables": len(toc_res.tables),
+                "figures": len(toc_res.figures),
+                "field": toc_res.in_field,
+            }
+        result.warnings += [f"[목차] {w}" for w in toc_res.warnings]
     finish_report_meta(
         result, out or template, meta_dict, fallback_title=fallback_title, author=author
     )

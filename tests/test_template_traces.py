@@ -114,6 +114,13 @@ def test_neutralize_template_is_idempotent(tmp_path: Path) -> None:
     assert once.read_bytes() == twice.read_bytes()
 
 
+def test_neutralize_template_output_may_alias_input(tmp_path: Path) -> None:
+    src = _planted(HOUSE, tmp_path)
+    neutralize_template(src, "정책과제 서식", output=src)
+    assert read_metadata(src).title == "정책과제 서식"
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 def test_write_does_not_inherit_template_document_info(tmp_path: Path) -> None:
     tpl = _planted(GOLDEN, tmp_path)
     out = tmp_path / "out.hwpx"

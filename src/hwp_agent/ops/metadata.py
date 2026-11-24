@@ -235,7 +235,9 @@ def neutralize_template(
         overrides["Preview/PrvText.txt"] = title.encode("utf-8")
     if "Preview/PrvImage.png" in names:
         overrides["Preview/PrvImage.png"] = _blank_png()
-    dst = Path(output) if output else src.with_suffix(".neutral.tmp")
-    _rewrite_zip_preserving(src, dst, overrides)
-    if output is None:
-        dst.replace(src)
+    # always stage to a temp file: an *output* that aliases *src* would otherwise be
+    # truncated before its parts are read
+    dst = Path(output) if output else src
+    tmp = dst.with_name(dst.name + ".neutral.tmp")
+    _rewrite_zip_preserving(src, tmp, overrides)
+    tmp.replace(dst)

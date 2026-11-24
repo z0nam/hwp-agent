@@ -25,7 +25,13 @@ from .bands import (
     detect_document_bands,
     detect_section_bands,
 )
-from .chapter_header import ChapterHeaderResult, WingSpec, apply_chapter_headers
+from .chapter_header import (
+    ChapterHeaderResult,
+    FinalizeResult,
+    WingSpec,
+    apply_chapter_headers,
+    finalize_report,
+)
 from .doctor import diagnose_template
 from .extract import extract_markdown
 from .fit_pages import (
@@ -60,6 +66,7 @@ from .form import (
     parse_row_op,
     parse_row_ops,
 )
+from .form_backgrounds import add_running_title_slot, clean_form_backgrounds
 from .guard import (
     GuardResult,
     plan_output,
@@ -212,6 +219,10 @@ __all__ = [
     "format_tail_fit_report",
     "apply_tail_fits",
     "apply_chapter_headers",
+    "finalize_report",
+    "FinalizeResult",
+    "clean_form_backgrounds",
+    "add_running_title_slot",
     "fill_toc",
     "restyle_toc",
     "RestyleResult",

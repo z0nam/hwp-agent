@@ -921,6 +921,11 @@ def bake_one(src: Path, out: Path, workdir: Path, config: dict | None = None) ->
     from hwp_agent.ops.metadata import neutralize_template
 
     neutralize_template(out, template_title(out))
+    # 바탕쪽 배경 그림에 박힌 견본 보고서 제목·장 제목 → 지운 그림 + {{running_title}} 슬롯 (#95)
+    from hwp_agent.ops.form_backgrounds import add_running_title_slot, clean_form_backgrounds
+
+    if clean_form_backgrounds(out):
+        summary["title_slots"] = len(add_running_title_slot(out))
     return summary
 
 

@@ -6,8 +6,11 @@ Their ``Contents/content.hpf`` (title, creator, subject, a DRM trace in
 ``description``, save dates) and ``Preview/PrvText.txt``·``PrvImage.png`` still
 describe that source file. This rewrites only those parts — title and preview text
 become a neutral label, the rest is blanked, the preview image becomes a blank PNG —
-and copies every other part byte-for-byte. Re-runnable: run it again after any
-change that rebuilds a template (e.g. after a branch rewrites the template XML).
+and copies every other part byte-for-byte. The 과제 forms' master-page pictures that
+carry the sample report's title / chapter title as pixels are swapped for cleaned
+copies and the even pages get a ``{{running_title}}`` text slot instead (#95,
+``ops/form_backgrounds.py``). Re-runnable: run it again after any change that
+rebuilds a template (e.g. after a branch rewrites the template XML).
 
     python scripts/neutralize-template-meta.py            # every shipped template
     python scripts/neutralize-template-meta.py FILE.hwpx  # just these
@@ -17,6 +20,7 @@ change that rebuilds a template (e.g. after a branch rewrites the template XML).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import sys
 import zipfile
@@ -25,6 +29,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+from hwp_agent.ops.form_backgrounds import (  # noqa: E402
+    _map,
+    add_running_title_slot,
+    clean_form_backgrounds,
+)
 from hwp_agent.ops.metadata import (  # noqa: E402
     INHERITED_FIELDS,
     neutralize_template,
@@ -71,6 +80,11 @@ def traces(path: Path) -> list[str]:
             out.append("Preview/PrvText.txt")
         if "Preview/PrvImage.png" in names and z.getinfo("Preview/PrvImage.png").file_size > 1024:
             out.append("Preview/PrvImage.png")
+        out += [
+            f"{n} (sample lettering)"
+            for n in sorted(names)
+            if n.startswith("BinData/") and hashlib.sha256(z.read(n)).hexdigest() in _map()
+        ]
     return out
 
 
@@ -93,7 +107,11 @@ def main() -> int:
             continue
         if left:
             neutralize_template(f, title_for(f))
-            print(f"neutralized {f.name} → {title_for(f)!r}")
+            swapped = clean_form_backgrounds(f)
+            slots = add_running_title_slot(f) if swapped else []
+            print(f"neutralized {f.name} → {title_for(f)!r}"
+                  + (f"; cleaned {len(swapped)} background(s), {len(slots)} title slot(s)"
+                     if swapped else ""))
         else:
             print(f"clean       {f.name}")
     return 1 if bad else 0

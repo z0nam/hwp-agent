@@ -952,6 +952,10 @@ def apply_report_meta(
             mp_values[f"wing_{k}"] = norm.get(f"wing_{k}") or ""
         for slot in _fill_masterpage_slots(path, mp_values):
             (res.filled if mp_values[slot] else res.blank).append(slot)
+    else:
+        # form fill never reaches master pages, so a left-over {{running_title}}
+        # would print on every even page for good — blank it (#95)
+        _fill_masterpage_slots(path, {"running_title": ""})
 
     title = (norm.get("title") or "").replace("\n", " ").strip() or (
         fallback_title.strip() if fallback_title else None

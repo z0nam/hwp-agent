@@ -443,3 +443,34 @@ def apply_chapter_headers(
     _rewrite_zip_preserving(src, tmp, overrides)
     tmp.replace(dst)
     return result
+
+
+
+@dataclass
+class FinalizeResult:
+    #: the side-wing result, ``None`` when *chapter_header* was off
+    wings: ChapterHeaderResult | None = None
+    warnings: list[str] = field(default_factory=list)
+
+
+def finalize_report(path: str | Path, *, chapter_header: bool = True) -> FinalizeResult:
+    """The finishing steps ``write``/``build`` run on a filled report, in place (#95).
+
+    Per-chapter odd-page side wings (:func:`apply_chapter_headers`, unless
+    *chapter_header* is false), then uncaptioned decorations kept out of the 그림·표
+    차례 (:func:`~.numbering.neutralize_uncaptioned_numbering`, #101 — a failure there
+    is a warning, never an error). For callers of
+    :func:`~.author.fill_from_markdown` / :func:`~.author.build_report` outside the
+    CLI, which runs exactly this. Run it once per output: wings are added, not
+    replaced.
+    """
+    from .numbering import neutralize_uncaptioned_numbering
+
+    res = FinalizeResult()
+    if chapter_header:
+        res.wings = apply_chapter_headers(path)
+    try:
+        neutralize_uncaptioned_numbering(path)
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        res.warnings.append(f"could not neutralize decoration numbering: {exc}")
+    return res

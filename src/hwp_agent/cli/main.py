@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-import zipfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -1332,14 +1331,14 @@ def _cmd_instructions(args: argparse.Namespace) -> int:
     return 0
 
 
-def _neutralize_decor_numbering(path: Path) -> None:
-    """Drop uncaptioned decorations from 그림·표 차례 (#101); never fails the command."""
-    from ..ops import neutralize_uncaptioned_numbering
+def _finalize(path: Path, chapter_header: bool):
+    """Side wings + decoration numbering (ops.finalize_report); returns the wing result."""
+    from ..ops import finalize_report
 
-    try:
-        neutralize_uncaptioned_numbering(path)
-    except (OSError, ValueError, zipfile.BadZipFile) as exc:
-        print(f"  warning: could not neutralize decoration numbering: {exc}", file=sys.stderr)
+    fin = finalize_report(path, chapter_header=chapter_header)
+    for warning in fin.warnings:
+        print(f"  warning: {warning}", file=sys.stderr)
+    return fin.wings
 
 
 def _cmd_write(args: argparse.Namespace) -> int:
@@ -1395,12 +1394,7 @@ def _cmd_write(args: argparse.Namespace) -> int:
         result, gr.target, meta,
         fallback_title=first_heading(markdown), author=args.author,
     )
-    wings = None
-    if getattr(args, "chapter_header", True):
-        from ..ops import apply_chapter_headers
-
-        wings = apply_chapter_headers(gr.target)
-    _neutralize_decor_numbering(gr.target)
+    wings = _finalize(gr.target, getattr(args, "chapter_header", True))
     if getattr(args, "fit_tails", False):
         _fit_tails_in_place(gr.target)
     if getattr(args, "fit_pages", False):
@@ -1493,12 +1487,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
     except (OSError, ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    wings = None
-    if mdata.get("chapter_header", True):
-        from ..ops import apply_chapter_headers
-
-        wings = apply_chapter_headers(gr.target)
-    _neutralize_decor_numbering(gr.target)
+    wings = _finalize(gr.target, mdata.get("chapter_header", True))
     if getattr(args, "fit_tails", False):
         _fit_tails_in_place(gr.target)
     if getattr(args, "fit_pages", False):

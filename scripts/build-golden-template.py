@@ -2,7 +2,7 @@
 
 Produces ``examples/정책과제-template.hwpx`` from the institute's 정책과제 report form
 (source: NAVERWORKS 공용드라이브 `0.서식(과제 관련)/보고서 서식(유형별)/정책과제_서식.hwpx`,
-which is actually a full worked example, "제주 경제전망 2026"). The example body is
+which is actually a full worked example report). The example body is
 stripped to a reusable skeleton:
 
   - cover (section0) / colophon (section6) → {{slots}} (report_number, title, …)
@@ -18,11 +18,13 @@ AI:BULLET_n are declared). Container-preserving (Hangul 보안경고 회피): on
 header.xml + section0..6 + content.hpf are rewritten; every other part is re-emitted
 byte-for-byte.
 
-NOTE: the cover/colophon text replacements match this example's exact strings
-(e.g. "제주 경제전망 2026"). The other three forms (기반·센터·전략과제) share the
-style system but carry *different* example content, so those strings need adapting
-— or, better, generalize this into a `hwp-agent`-native "make machine-friendly"
-command (see docs/author-backlog.md / next steps).
+NOTE: the sample title/subtitle are located by paragraph position (+ paraPr guard)
+and the people/publisher by their colophon labels, so this script never spells out
+the worked example's report title or names (#122); the remaining literals are
+neutral placeholders ("○○○·△△△", "정책연구 2026-01"). A revised form whose cover
+moved fails the guard loudly. The other three forms (기반·센터·전략과제) share the
+style system; better still, generalize this into a `hwp-agent`-native "make
+machine-friendly" command (see docs/author-backlog.md / next steps).
 
     usage: python scripts/build-golden-template.py <normalized.hwpx> <out.hwpx>
 """
@@ -140,11 +142,16 @@ overrides["Contents/header.xml"] = h.encode("utf-8")
 s0 = load("Contents/section0.xml")
 cover = {
     "정책연구 2026-01": "정책연구 {{report_number}}",
-    "제주 경제전망 2026": "{{title}}",
-    ": 선순환과 악순환의 전환점": "{{subtitle}}",
     "○○○·△△△": "{{authors}}",
 }
-for p in s0.iter(hp("p")):
+#: sample title/subtitle by position in document order: index -> (paraPr guard, slot)
+cover_at = {2: ("5", "{{title}}"), 3: ("23", "{{subtitle}}")}
+for i, p in enumerate(s0.iter(hp("p"))):
+    if i in cover_at:
+        pr, slot = cover_at[i]
+        assert p.get("paraPrIDRef") == pr and para_text(p).strip(), f"cover #{i} moved"
+        set_para_text(p, slot)
+        continue
     txt = para_text(p).strip()
     if txt in cover:
         set_para_text(p, cover[txt])
@@ -261,9 +268,9 @@ overrides["Contents/section5.xml"] = dump("Contents/section5.xml", s5)
 s6 = load("Contents/section6.xml")
 exact6 = {
     "정책연구 2026-00": "정책연구 {{report_number}}",
-    "제주 경제전망 2026": "{{title}}",
-    ": 선순환과 악순환의 전환점": "{{subtitle}}",
 }
+#: sample title/subtitle by position among the top-level paragraphs
+colophon_at = {1: ("47", "{{title}}"), 2: ("48", "{{subtitle}}")}
 prefix6 = [
     ("연구책임", "연구책임   {{lead_researcher}}"),
     ("공동연구", "공동연구   {{co_researcher}}"),
@@ -271,7 +278,12 @@ prefix6 = [
     ("발 행 인", "발 행 인    {{publisher}}"),
     ("ISBN", "ISBN      {{isbn}}"),
 ]
-for p in s6.findall(hp("p")):
+for i, p in enumerate(s6.findall(hp("p"))):
+    if i in colophon_at:
+        pr, slot = colophon_at[i]
+        assert p.get("paraPrIDRef") == pr and para_text(p).strip(), f"colophon #{i} moved"
+        set_para_text(p, slot)
+        continue
     txt = para_text(p).strip()
     if txt in exact6:
         set_para_text(p, exact6[txt])

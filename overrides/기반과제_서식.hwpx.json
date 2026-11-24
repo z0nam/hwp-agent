@@ -20,27 +20,49 @@
     }
   ],
   "meta_slots": {
-    "_note": "표지·판권 예시 문자열 → 메타 슬롯 (#32). 키는 이 서식 예시에 그대로 있는 문자열(섹션 안에서 정확히 한 문단)이라 서식 개정으로 예시가 바뀌면 굽기가 실패한다 — 그때 키를 새 예시로 고친다. 판권의 '정책연구 2026-00'은 네 서식 공통 예시라 이 서식의 총서명을 기본값으로 둔다. 채움은 build/write --meta (ops/report_meta.py).",
+    "_note": "표지·판권 예시 → 메타 슬롯 (#32). replace 키는 이 서식 예시에 그대로 있는 중립 자리표시 문자열(섹션 안에서 정확히 한 문단)이다. 예시 제목·부제는 문단 위치(replace_para: para 번호 + paraPr 모양 가드)로, 연구진·발행인은 라벨(after_label) 뒤 값으로 찾는다 — 실제 보고서명·인명을 저장소에 적지 않기 위해서다 (#122). 서식 개정으로 예시·위치가 바뀌면 굽기가 실패한다 — 그때 이 매핑을 고친다. 판권의 '정책연구 2026-00'은 네 서식 공통 예시라 이 서식의 총서명을 기본값으로 둔다. 채움은 build/write --meta (ops/report_meta.py).",
     "cover": {
       "section": 0,
       "replace": {
         "기반연구 2026-03": "{{report_series:기반연구}} {{report_number}}",
-        "제주 경제전망 2026": "{{title}}",
-        ": 선순환과 악순환의 전환점": "{{subtitle}}",
         "○○○·△△△": "{{authors}}"
-      }
+      },
+      "replace_para": [
+        {
+          "para": 2,
+          "paraPr": "5",
+          "new": "{{title}}"
+        },
+        {
+          "para": 3,
+          "paraPr": "23",
+          "new": "{{subtitle}}"
+        }
+      ]
     },
     "colophon": {
       "section": -1,
       "replace": {
         "정책연구 2026-00": "{{report_series:기반연구}} {{report_number}}",
-        "제주 경제전망 2026": "{{title}}",
-        ": 선순환과 악순환의 전환점": "{{subtitle}}",
-        "강영준 제주연구원 연구위원": "{{lead_researcher}}",
-        "윤형석 제주대학교 전기에너지과 산학협력교수": "{{co_researcher}}",
         "2026년 ○○월": "{{pub_date}}",
-        "유 영 봉": "{{publisher}}",
         "978-89-6010-000-0 00000": "{{isbn}}"
+      },
+      "replace_para": [
+        {
+          "para": 1,
+          "paraPr": "47",
+          "new": "{{title}}"
+        },
+        {
+          "para": 2,
+          "paraPr": "48",
+          "new": "{{subtitle}}"
+        }
+      ],
+      "after_label": {
+        "연구책임": "{{lead_researcher}}",
+        "공동연구": "{{co_researcher}}",
+        "발 행 인": "{{publisher}}"
       },
       "append": {
         "인 쇄 처": "{{printer}}"

@@ -39,6 +39,9 @@ ENGINE_LABELS = {
     "hwp2pdf": "한컴 · 변환 서버",
     "rhwp": "근사 레이아웃",
 }
+#: printed under any rhwp render, so a preview is never taken for Hangul's layout
+RHWP_NOTICE = ("참고: rhwp 근사 렌더(미리보기용) — 쪽수·줄바꿈·표 모양이 한글과 다를 수 있음. "
+               "제출용 PDF는 한글을 닫고 다시 렌더")
 
 
 def resolve_engine(engine: str | None) -> str:
@@ -158,9 +161,9 @@ def render_document(
             msg = ("한컴 엔진 없음 — 이 PC에 hwp2pdf-cli($HWP2PDF_CLI 또는 PATH)도, "
                    "hwp2pdf 서버 설정(~/.config/hwp-agent/hwp2pdf.json)도 없음")
         else:
-            msg = "rhwp not found — install the rhwp CLI on PATH or set $RHWP_BIN"
+            msg = "rhwp not found — run `hwp-agent setup` to download it, or set $RHWP_BIN"
         return RenderResult(out, fmt, capable[-1].name, 2, stderr=msg)
     stderr = failed.stderr if len(notes) == 1 else "; ".join(notes)
     if any(isinstance(b, LocalRhwpBackend) for b in missing):
-        stderr += "; rhwp도 없음 ($RHWP_BIN 또는 PATH)"
+        stderr += "; rhwp도 없음 — hwp-agent setup 으로 받기"
     return dataclasses.replace(failed, stderr=stderr)

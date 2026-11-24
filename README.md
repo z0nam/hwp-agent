@@ -93,10 +93,19 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 runtime; install a JRE 17+ (e.g. [Temurin](https://adoptium.net/)) to run
 `convert`. HWPX-only use (editing, `form fill`) needs no Java at all.
 
-### Layout engines (for `fit tails`, `pdf`, `docx`, `verify`)
+It also downloads **rhwp** — the fallback render engine used when Hangul is open
+on this PC and no hwp2pdf server is set (see "Layout engines"). The version and
+each platform's sha256 are pinned in `src/hwp_agent/render/fetch_rhwp.py`
+(currently v0.8.7 from [edwardkim/rhwp](https://github.com/edwardkim/rhwp), MIT);
+it lands in `%LOCALAPPDATA%\hwp-agent\rhwp` (macOS/Linux
+`~/.local/share/hwp-agent/rhwp`) together with rhwp's own `LICENSE`. A failed
+download only warns. `RHWP_RELEASE_URL` points it at a mirror with the same
+asset names. `jaix setup` pre-fetches the same file from the locked commit.
+
+### Layout engines (for `fit tails`, `fit pages`, `pdf`, `docx`, `verify`)
 
 Everything above works without these. They matter only when hwp-agent has to
-know **how Hangul lays a document out** — `fit tails` on a document never saved
+know **how Hangul lays a document out** — `fit tails`/`fit pages` on a document never saved
 in Hangul (e.g. a fresh `write` output), and `pdf`/`docx`/`verify`. hwp-agent picks, in order:
 
 1. **hwp2pdf-cli** (`pdf`, `docx`, `verify` only) — Hangul itself on *this* Windows
@@ -111,10 +120,15 @@ in Hangul (e.g. a fresh `write` output), and `pdf`/`docx`/`verify`. hwp-agent pi
    its first pages laid out; `fit tails` then judges the remaining paragraphs with
    rhwp and reports the split (e.g. `문단 한글 22 · rhwp 57`). Without rhwp they are
    left unjudged and the result says `일부만 판정` rather than "no targets".
+   `fit pages` judges page by page the same way: pages Hangul laid out are judged
+   on Hangul's layout, the rest with rhwp, and each page shows `[한글]` or `[rhwp]`.
 3. **rhwp** — a stand-alone renderer. Runs anywhere, but its line breaks can
-   differ from Hangul's; results are labelled `rhwp 조판 기준(한글과 다를 수 있음)`.
-4. **none** — `fit tails` prints `판정 엔진 없음` with the reason for each engine
-   and exits 3 (`write`/`build --fit-tails` only warn and still write the file).
+   differ from Hangul's; results are labelled `rhwp 조판 기준(한글과 다를 수 있음)`,
+   and a `pdf` rendered by it adds `참고: rhwp 근사 렌더(미리보기용) …`. Found as
+   `$RHWP_BIN`, else `rhwp` on `PATH`, else the copy `hwp-agent setup` downloaded.
+4. **none** — `fit tails`/`fit pages` print `판정 엔진 없음` with the reason for each
+   engine and exit 3 (`write`/`build --fit-tails`/`--fit-pages` only warn and still
+   write the file).
 
 **hwp2pdf is never used while Hangul is running on that machine** (or the
 server has other jobs queued): hwp-agent does not open a second Hangul next to
@@ -135,7 +149,7 @@ Setup, by situation:
 |---|---|
 | Windows PC with hwp2pdf installed | Nothing for `pdf`/`docx`/`verify`: hwp-agent runs `hwp2pdf-cli` from `PATH` (or `$HWP2PDF_CLI`). For `fit tails` also run `hwp2pdf-cli.exe serve --init` (or its scheduled task); hwp-agent then finds `127.0.0.1:17650` and the token `serve --init` saved. Used only while Hangul is closed. |
 | Any PC, shared conversion server | Create `~/.config/hwp-agent/hwp2pdf.json` from [`examples/hwp2pdf.example.json`](examples/hwp2pdf.example.json): `server_url`, and the token in a file named by `token_file` (mode 600) or in `$HWP2PDF_TOKEN`. Never put the token in the JSON or a repo. |
-| No server | Install rhwp: download the binary for your OS from [rhwp releases](https://github.com/edwardkim/rhwp/releases) and put it on `PATH`, or set `$RHWP_BIN` to its path. |
+| No server, or Hangul open | rhwp: `hwp-agent setup` downloads the pinned build (below). Or put any rhwp on `PATH` / set `$RHWP_BIN`. |
 
 Check what you got with `hwp-agent fit tails FILE.hwpx --dry-run`: the report
 ends with `[판정: …]` naming the engine, or explains why none was available.
@@ -188,7 +202,24 @@ hwp-agent form autofit 자문의견서.hwpx --table 0 -o out.hwpx      # add --m
 # auto-fill standing personal data (성명/주소/학력/경력/계좌…) from a saved profile
 cp examples/profile.example.json ~/.config/hwp-agent/profile.json   # edit it once
 hwp-agent form fill 등록신청서.hwpx --profile --date today -o out.hwpx
+
+# "서명 후 스캔본" without printing: stamp the signature on the "(인)" mark of the PDF
+# (an .hwp/.hwpx is rendered to PDF first, like `hwp-agent pdf`). The image comes from
+# --image or profile.json "signature_image" (transparent-background PNG preferred).
+hwp-agent sign 진단서.hwpx --preview /tmp/sign.png     # → 진단서_서명.pdf + a crop to check
+hwp-agent sign 진단서.pdf --dry-run --preview /tmp/sign.png   # where would it go?
+hwp-agent sign 동의서.pdf --all --anchor "(서명)" --width 60 -o 동의서_서명.pdf
 ```
+
+`sign` looks for `(인)`, then `(서명)`, then `서명` (or your `--anchor`s), ignoring
+spacing, and signs the **last** mark in the document — the signer's line is normally at
+the end — or every one with `--all`; `--page N` limits the search to one page. The
+signature is cropped to its ink, scaled to `--width` points (72 = one inch), centred on
+the mark and drawn over it; `--dx/--dy` nudge it. An opaque image (a scan on white
+paper) gets its light pixels made transparent so the form's text shows through. The
+signature is personal data: it is read into memory and written only into the output
+(and a `--preview` you ask for), never to a temp file or log. It is a local command on
+purpose — not exposed through `serve` or `mcp`.
 
 ```bash
 # a one-line correction to a document that is already type-set — no re-typeset
@@ -278,8 +309,13 @@ For a single project instead, symlink it there:
 `ln -s "$PWD/skills/hwp-agent" .claude/skills/hwp-agent`.
 
 Then Claude Code invokes it automatically for HWP/HWPX tasks, or on demand with
-`/hwp-agent`. The skill's `references/` are snapshots of `docs/`; refresh them
-with `cp docs/{template-convention,tables}.md skills/hwp-agent/references/`.
+`/hwp-agent`. `SKILL.md` keeps the common rules and a "Which file to read" table;
+per-workflow detail (`write` Markdown, footnotes·links, equations, figures, cover
+metadata, the command table, `extract`, hand-editing) lives in `references/*.md`
+and is read only for that step, so one invocation stays within the 10k-token
+budget. `references/template-convention.md` and `references/tables.md` are
+snapshots of `docs/`; refresh them with
+`cp docs/{template-convention,tables}.md skills/hwp-agent/references/`.
 
 ## Development
 

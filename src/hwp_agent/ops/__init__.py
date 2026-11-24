@@ -28,6 +28,13 @@ from .bands import (
 from .chapter_header import ChapterHeaderResult, WingSpec, apply_chapter_headers
 from .doctor import diagnose_template
 from .extract import extract_markdown
+from .fit_pages import (
+    PageFit,
+    PageFitDetection,
+    fit_pages,
+    format_page_fit_report,
+)
+from .fit_pages import format_no_engine_report as format_page_fit_no_engine_report
 from .fit_tails import (
     TailFitCandidate,
     TailFitDetection,
@@ -82,6 +89,7 @@ from .normalize import (
     apply_style_roles,
     plan_normalization,
 )
+from .numbering import neutralize_uncaptioned_numbering
 from .profile import (
     Profile,
     ProfileFillResult,
@@ -183,6 +191,11 @@ __all__ = [
     "apply_style_roles",
     "extract_markdown",
     "TailFitCandidate",
+    "PageFit",
+    "PageFitDetection",
+    "fit_pages",
+    "format_page_fit_report",
+    "format_page_fit_no_engine_report",
     "compute_tail_fit",
     "detect_tail_fits",
     "detect_tail_fits_with_engine",
@@ -194,6 +207,7 @@ __all__ = [
     "fill_toc",
     "TocEntry",
     "TocResult",
+    "neutralize_uncaptioned_numbering",
     "ChapterHeaderResult",
     "WingSpec",
     "drop_stale_linesegarrays",

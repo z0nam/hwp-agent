@@ -117,19 +117,59 @@ jobs:
       # The [Code] section only runs when the installer runs: ISCC accepts an unknown
       # constant like {userprofile} and the wizard then dies before its first page. Install
       # and uninstall once, silently, on the runner to catch that class of error.
+      # The runner is set up as a jaix PC (#85): jaix's Codex entry, jar and rhwp in the
+      # shared %LOCALAPPDATA%\hwp-agent must survive, and an exe the MCP client is still
+      # running must not block the uninstall — while a same-named exe elsewhere keeps running.
       - name: Smoke-test installer (silent install + uninstall)
         shell: pwsh
         run: |
+          $app = Join-Path $env:LOCALAPPDATA 'hwp-agent'
+          $exe = Join-Path $app 'hwp-agent.exe'
+          # a jaix PC: its folder, Claude Code + Codex present, jaix's uvx entry, jar and rhwp
+          New-Item -ItemType Directory -Force (Join-Path $env:LOCALAPPDATA 'jaix'), "$HOME\.claude", "$HOME\.codex", "$app\rhwp" | Out-Null
+          $codex = "$HOME\.codex\config.toml"
+          Set-Content $codex "[mcp_servers.hwp-agent]`ncommand = `"uvx`"`nargs = [`"hwp-agent`", `"mcp`"]`n" -Encoding utf8
+          Set-Content "$app\hwp2hwpx.jar" 'jaix jar'
+          Set-Content "$app\rhwp\rhwp.exe" 'jaix rhwp'
+
           $p = Start-Process installer\Output\hwp-agent-setup.exe -Wait -PassThru `
             -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LOG=setup.log'
           Get-Content setup.log -Tail 20
           if ($p.ExitCode -ne 0) { throw "installer exit $($p.ExitCode)" }
-          $exe = Join-Path $env:LOCALAPPDATA 'hwp-agent\hwp-agent.exe'
           if (-not (Test-Path $exe)) { throw "not installed: $exe" }
           & $exe --version
-          $u = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'hwp-agent') -Filter 'unins*.exe' | Select -First 1
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (($userPath -split ';') -notcontains $app) { throw "PATH not added: $userPath" }
+          if ((Get-Content $codex -Raw) -notmatch 'command = "uvx"') { throw "jaix Codex entry overwritten on install:`n$(Get-Content $codex -Raw)" }
+
+          # the MCP client is running this exe; an unrelated hwp-agent.exe elsewhere too
+          function Start-Mcp($path) {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo $path, 'mcp'
+            $psi.UseShellExecute = $false; $psi.RedirectStandardInput = $true  # stdin stays open
+            [System.Diagnostics.Process]::Start($psi)
+          }
+          $other = Join-Path $env:RUNNER_TEMP 'other\hwp-agent.exe'
+          New-Item -ItemType Directory -Force (Split-Path $other) | Out-Null
+          Copy-Item $exe $other
+          $running = Start-Mcp $exe; $keep = Start-Mcp $other
+          Start-Sleep 8
+          if ($running.HasExited -or $keep.HasExited) { throw "mcp exited before uninstall" }
+
+          $u = Get-ChildItem $app -Filter 'unins*.exe' | Select -First 1
           $q = Start-Process $u.FullName -Wait -PassThru -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'
           if ($q.ExitCode -ne 0) { throw "uninstaller exit $($q.ExitCode)" }
+          Start-Sleep 3  # the uninstaller hands off to a temp copy that finishes the job
+
+          if (Test-Path $exe) { throw "exe left behind (running process not stopped): $exe" }
+          if ($keep.HasExited) { throw "an hwp-agent.exe outside {app} was stopped" }
+          $keep.Kill()
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (($userPath -split ';') -contains $app) { throw "PATH entry left behind: $userPath" }
+          foreach ($f in "$app\hwp2hwpx.jar", "$app\rhwp\rhwp.exe") {
+            if (-not (Test-Path $f)) { throw "jaix file removed by uninstall: $f" }
+          }
+          if ((Get-Content $codex -Raw) -notmatch 'command = "uvx"') { throw "jaix Codex entry removed on uninstall" }
+          Write-Host "ok: jaix files and Codex entry kept, running exe stopped, PATH cleaned"
 
       - uses: actions/upload-artifact@v4
         with:

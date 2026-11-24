@@ -19,7 +19,7 @@ from __future__ import annotations
 import copy
 import random
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .images import _PX_TO_HWPUNIT, parse_alt_text, read_image_size, sniff_format
@@ -36,6 +36,15 @@ FIGURE_LINE_RE = re.compile(
     r"""^\s*!\[(?P<alt>(?:[^\[\]]|\[[^\[\]]*\])*)\]
         \(\s*(?P<path><[^>]+>|(?:[^()\s]|\([^()\s]*\))+)(?:\s+"[^"]*")?\s*\)
         \s*(?:\{\s*\#(?P<label>[^{}\s]+)\s*\})?\s*$""",
+    re.VERBOSE,
+)
+#: one image token (no anchors) — several of them on a line form one multi-image figure
+_IMG = r"""!\[(?:[^\[\]]|\[[^\[\]]*\])*\]
+        \(\s*(?:<[^>]+>|(?:[^()\s]|\([^()\s]*\))+)(?:\s+"[^"]*")?\s*\)"""
+IMG_TOKEN_RE = re.compile(_IMG, re.VERBOSE)
+#: 2+ image tokens on one line, optional trailing ``{#fig_X}`` (#96)
+MULTI_FIGURE_LINE_RE = re.compile(
+    rf"^\s*(?P<imgs>(?:{_IMG}\s*){{2,}})(?:\{{\s*\#(?P<label>[^{{}}\s]+)\s*\}})?\s*$",
     re.VERBOSE,
 )
 #: a leading ``[그림 …]`` caption framing (stripped on extract, rebuilt on write)
@@ -61,10 +70,48 @@ class FigureBlock:
     note: str | None = None  # 출처/주 line(s) directly below the image line
     blank_before: int = 0
     display: str = ""  # "그림 Ⅳ-2" — set by cross-ref resolution
+    # further images of the same figure (left → right after ``path``), #96
+    more_paths: list[str] = field(default_factory=list)
+    # caption title taken from a "[그림 …] 제목" line written directly above the
+    # image line (#110); None → the alt text is the caption, as before
+    caption: str | None = None
+
+    @property
+    def paths(self) -> list[str]:
+        return [self.path, *self.more_paths]
+
+    def absorb(self, other: "FigureBlock") -> None:
+        """Merge *other*'s images into this figure (one number, several pictures)."""
+        self.more_paths.extend(other.paths)
+        if not self.alt:
+            self.alt = other.alt
+        if self.label is None:
+            self.label = other.label
+
+
+def _clean_path(path: str) -> str:
+    return path[1:-1] if path.startswith("<") and path.endswith(">") else path
 
 
 def parse_figure_line(line: str) -> FigureBlock | None:
-    """A :class:`FigureBlock` if *line* is a standalone image line, else None."""
+    """A :class:`FigureBlock` if *line* is a standalone image line, else None.
+
+    A line of several images (``![좌](a.png) ![우](b.png)``) is one figure: the first
+    non-empty alt is the caption title, the images sit side by side (#96).
+    """
+    multi = MULTI_FIGURE_LINE_RE.match(line)
+    if multi:
+        singles = [FIGURE_LINE_RE.match(t.group(0)) for t in IMG_TOKEN_RE.finditer(multi.group("imgs"))]
+        figs = [
+            FigureBlock(alt=m.group("alt").strip(), path=_clean_path(m.group("path")))
+            for m in singles if m
+        ]
+        if len(figs) >= 2:
+            head = figs[0]
+            for other in figs[1:]:
+                head.absorb(other)
+            head.label = multi.group("label")
+            return head
     m = FIGURE_LINE_RE.match(line)
     if not m:
         return None
@@ -88,6 +135,13 @@ def rebase_figure_paths(markdown: str, base: Path) -> str:
     """
     out = []
     for line in markdown.split("\n"):
+        if MULTI_FIGURE_LINE_RE.match(line):
+            def _fix(tok: re.Match) -> str:
+                return rebase_figure_paths(tok.group(0), base)
+
+            line = IMG_TOKEN_RE.sub(_fix, line)
+            out.append(line)
+            continue
         m = FIGURE_LINE_RE.match(line)
         if m:
             raw = m.group("path")
@@ -246,6 +300,62 @@ def _esc(s: str) -> str:
 # --------------------------------------------------------------------------- #
 def _header(doc):
     return doc._root._headers[0] if getattr(doc._root, "_headers", None) else None
+
+
+def box_fill(doc) -> str | None:
+    """Id of a plain box border fill — thin (0.12 mm) solid black on all four sides,
+    no fill — created if the header has none (the 요약 상자 of the 정책이슈브리프, #91).
+
+    Matched by *values*, not id: an issue brief's header and the form it came from
+    number their border fills differently."""
+    header = _header(doc)
+    if header is None:
+        return None
+    fills = header.element.find(f".//{{{_HH}}}borderFills")
+    if fills is None:
+        return None
+
+    def is_box(bf) -> bool:
+        for s in ("left", "right", "top", "bottom"):
+            side = bf.find(f"{{{_HH}}}{s}Border")
+            if (
+                side is None or side.get("type") != "SOLID"
+                or side.get("width") != "0.12 mm"
+                or (side.get("color") or "").upper() != "#000000"
+            ):
+                return False
+        for diag in ("slash", "backSlash"):
+            d = bf.find(f"{{{_HH}}}{diag}")
+            if d is not None and d.get("type") not in (None, "NONE"):
+                return False
+        return bf.find(f".//{{{_HC}}}fillBrush") is None
+
+    all_fills = fills.findall(f"{{{_HH}}}borderFill")
+    for bf in all_fills:
+        if is_box(bf):
+            return bf.get("id")
+    if not all_fills:
+        return None
+    new = copy.deepcopy(all_fills[0])
+    ids = [int(b.get("id")) for b in all_fills if (b.get("id") or "").isdigit()]
+    new_id = str(max(ids, default=0) + 1)
+    new.set("id", new_id)
+    for s in ("left", "right", "top", "bottom"):
+        side = new.find(f"{{{_HH}}}{s}Border")
+        if side is not None:
+            side.set("type", "SOLID")
+            side.set("width", "0.12 mm")
+            side.set("color", "#000000")
+    for diag in ("slash", "backSlash"):
+        d = new.find(f"{{{_HH}}}{diag}")
+        if d is not None:
+            d.set("type", "NONE")
+    for brush in new.findall(f".//{{{_HC}}}fillBrush"):
+        brush.getparent().remove(brush)
+    fills.append(new)
+    fills.set("itemCnt", str(len(fills.findall(f"{{{_HH}}}borderFill"))))
+    header.mark_dirty()
+    return new_id
 
 
 def borderless_fill(doc) -> str | None:

@@ -23,6 +23,7 @@ from .rhwp import RenderFn, resolve_rhwp, rhwp_render_fn
 from .select import (
     ENGINE_LABELS,
     ENGINES,
+    RHWP_NOTICE,
     render_document,
     resolve_engine,
     select_render_backend,
@@ -46,6 +47,7 @@ __all__ = [
     "resolve_hwp2pdf_config",
     "ENGINES",
     "ENGINE_LABELS",
+    "RHWP_NOTICE",
     "resolve_engine",
     "select_render_backend",
     "render_document",

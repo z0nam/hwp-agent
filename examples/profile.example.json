@@ -26,6 +26,7 @@
   ],
   "publications": ["저서/논문을 자유 형식으로 적으세요."],
   "account": {"bank": "○○은행", "number": "000-000000-00000"},
+  "signature_image": "~/.config/hwp-agent/signature.png",
   "extra": {"기타항목라벨": "기타항목값"},
   "aliases": {}
 }

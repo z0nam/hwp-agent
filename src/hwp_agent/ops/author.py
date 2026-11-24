@@ -31,13 +31,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from hwpx.document import HwpxDocument
+from lxml import etree as ET
 
 from .equation import equation_run_xml, latex_to_hwp, math_pieces, unescape_dollars
 from .figures import (
+    FIGURE_FRAMING_RE,
     FigureBlock,
     add_bin_image,
     body_height,
     borderless_fill,
+    box_fill,
     centered_para_pr,
     fit_extent,
     is_figure_table,
@@ -145,7 +148,30 @@ _CAPTION_FRAMING_RE = re.compile(
 # anywhere resolves to that table's autonum text (e.g. "표 부록-3"). Single-brace
 # so they never clash with the template's double-brace tokens. v1 is static
 # substitution at fill time — Hangul's own autonum still renders the caption, so
-# the substitution assumes the "표 {chapter}-{N}" convention. See SKILL.md.
+# the substitution assumes the "표 {chapter}-{N}" convention. See
+# skills/hwp-agent/references/write.md.
+# chapter label read from a numbered chapter title (`Ⅲ. …` → "Ⅲ", `3장 …`/`3. …`
+# → "3", `부록 A` → "부록A", bare `부록` → "부록") for per-chapter caption numbers (#92).
+_CHAPTER_LABEL_RE = re.compile(
+    r"""^\s*(?:
+        (?P<app>부록)(?:\s*(?P<appid>[0-9A-Za-z가-힣]+))?(?=\s|$|[.)\]:：-])
+      | 제?\s*(?P<ko>\d+)\s*장
+      | (?P<num>[IVXⅠ-Ⅻ]+|\d+)\s*[.)]
+    )""",
+    re.VERBOSE,
+)
+
+
+def chapter_label_of(title: str) -> str | None:
+    """The chapter label a H1 title's literal number spells, else None."""
+    m = _CHAPTER_LABEL_RE.match(title or "")
+    if not m:
+        return None
+    if m.group("app"):
+        return "부록" + (m.group("appid") or "")
+    return m.group("ko") or m.group("num")
+
+
 _LABEL_RE = re.compile(r"\{label:([^{}\s]+)\}")
 _REF_RE = re.compile(r"\{ref:([^{}\s]+)\}")
 
@@ -176,6 +202,11 @@ class TableBlock:
     caption: str | None = None  # title line directly above the table
     note: str | None = None  # 주)/출처) line(s) directly below the table
     blank_before: int = 0  # blank lines that preceded this block in the Markdown
+    # per-chapter numbering (#92): when ``number`` is set the caption gets a literal
+    # "<표 {chapter}-{number}>" (Hangul's autoNum never resets per chapter)
+    chapter: str | None = None
+    number: int | None = None
+    caption_label: str | None = None  # "표 Ⅱ-1" — literal label when the format has no caption
 
     @property
     def n_rows(self) -> int:
@@ -449,7 +480,9 @@ def _delimiter_aligns(line: str) -> list[str] | None:
 
 
 def _resolve_cross_refs(
-    blocks: list, chapter: str | None, warnings: list[str], *, figure_start: int = 0
+    blocks: list, chapter: str | None, warnings: list[str], *, figure_start: int = 0,
+    per_chapter: bool = False,
+    lead_chapter: str | None = None,
 ) -> None:
     """Resolve `{label:id}` / `{ref:id}` cross-references across the block list.
 
@@ -473,9 +506,26 @@ def _resolve_cross_refs(
     labels: dict[str, str] = {}
     table_seq = 0
     figure_seq = figure_start
+    if per_chapter and lead_chapter:
+        chapter = lead_chapter  # content before the first H1 (brief chapter parts)
     fmt = (lambda n: f"표 {chapter}-{n}") if chapter else (lambda n: f"표 {n}")
     fig_fmt = (lambda n: f"그림 {chapter}-{n}") if chapter else (lambda n: f"그림 {n}")
     for b in blocks:
+        if per_chapter and isinstance(b, Block) and b.kind == "heading" and b.level == 1:
+            # a new H1 restarts both sequences; a numberless one (요약·참고문헌) has
+            # no chapter, so its captions read "표 N" / "그림 N" and don't count as 장
+            chapter = chapter_label_of(b.raw_text or b.text)
+            table_seq = 0
+            figure_seq = 0
+            fmt = (lambda n, c=chapter: f"표 {c}-{n}") if chapter else (lambda n: f"표 {n}")
+            fig_fmt = (
+                (lambda n, c=chapter: f"그림 {c}-{n}") if chapter else (lambda n: f"그림 {n}")
+            )
+        if isinstance(b, TableBlock) and _is_summary_box(b):
+            continue  # unnumbered (numberingType NONE): takes no table number
+        if isinstance(b, TableBlock) and per_chapter:
+            b.chapter = chapter
+            b.number = table_seq + 1
         if isinstance(b, FigureBlock):
             figure_seq += 1
             b.display = fig_fmt(figure_seq)
@@ -486,6 +536,7 @@ def _resolve_cross_refs(
                     labels[b.label] = b.display
         elif isinstance(b, TableBlock) and b.caption:
             table_seq += 1
+            b.caption_label = fmt(table_seq)
             for lid in _LABEL_RE.findall(b.caption):
                 if lid in labels:
                     warnings.append(f"duplicate {{label:{lid}}}; first wins")
@@ -514,6 +565,7 @@ def _resolve_cross_refs(
     for b in blocks:
         if isinstance(b, FigureBlock):
             b.alt = resolve(b.alt) or b.alt
+            b.caption = resolve(b.caption) if b.caption is not None else None
             b.note = resolve(b.note)
         elif isinstance(b, TableBlock):
             b.caption = resolve(b.caption)
@@ -600,8 +652,12 @@ def parse_markdown(
         pending_blanks = 0
         blocks.append(block)
 
+    last_para_lines: list[str] = []  # physical lines of the most recent paragraph
+
     def flush() -> None:
+        nonlocal last_para_lines
         if para:
+            last_para_lines = list(para)
             emit(Block("paragraph", 0, " ".join(para)))
             para.clear()
 
@@ -661,8 +717,36 @@ def parse_markdown(
                 emit(Block("math", 0, src))
                 continue
         if (fig := parse_figure_line(line)) is not None:
-            flush()
             i += 1
+            # a "[그림 …] 제목" *physical line* directly above the image (one blank
+            # line allowed) is its caption, not a body paragraph (#110) — like a
+            # table's caption line. Looked at before the paragraph buffer is joined,
+            # so prose around the caption line is never swallowed or missed.
+            cap_line = None
+            if para and FIGURE_FRAMING_RE.match(para[-1]):  # no blank line between
+                cap_line = para.pop()
+                flush()  # whatever prose came before the caption line
+            else:
+                flush()
+                prev = blocks[-1] if blocks else None
+                if (
+                    isinstance(prev, Block) and prev.kind == "paragraph"
+                    and pending_blanks <= 1 and last_para_lines
+                    and prev.text == " ".join(last_para_lines)
+                    and FIGURE_FRAMING_RE.match(last_para_lines[-1])
+                ):
+                    cap_line = last_para_lines[-1]
+                    if len(last_para_lines) == 1:
+                        blocks.pop()
+                        pending_blanks = prev.blank_before  # inherit the spacing above
+                    else:
+                        prev.text = " ".join(last_para_lines[:-1])
+            if cap_line is not None:
+                fig.caption = FIGURE_FRAMING_RE.sub("", cap_line, count=1).strip()
+            # consecutive image lines (no blank between) are one figure (#96)
+            while i < len(lines) and (nxt := parse_figure_line(lines[i])) is not None:
+                fig.absorb(nxt)
+                i += 1
             note_lines = []
             while i < len(lines) and _NOTE_RE.match(lines[i]):
                 note_lines.append(lines[i].strip())
@@ -953,9 +1037,15 @@ def _find_reference_table(doc: HwpxDocument, caption_pattern: re.Pattern | None 
     first = first_section = None
     for section in doc.sections:
         for tbl in section.element.iter(f"{{{_HP}}}tbl"):
-            if first is None:
-                first, first_section = tbl, section
             caption = _caption_text(tbl)
+            # a 1×1 captionless box (정책이슈브리프 summary box) is a callout, not a
+            # data-table format: never the fallback reference for generated tables
+            if first is None and not (
+                not caption
+                and len(tbl.findall(f"{{{_HP}}}tr")) == 1
+                and len(tbl.find(f"{{{_HP}}}tr").findall(f"{{{_HP}}}tc")) == 1
+            ):
+                first, first_section = tbl, section
             if _TABLE_TOKEN_RE.search(caption) or (
                 caption_pattern is not None and caption_pattern.search(caption)
             ):
@@ -1226,7 +1316,9 @@ def _fill_caption_runs(
         p_el.append(lsa)
 
 
-def _clone_caption(ref_el, title: str, chapter: str | None, *, run_writer=None):
+def _clone_caption(
+    ref_el, title: str, chapter: str | None, *, run_writer=None, number: int | None = None
+):
     """Clone the reference table's caption (auto-number + 표제목 style) with *title*.
 
     The caption text is like "<표 {{chapter_number}}-" + autoNum + "> {title}". We
@@ -1265,8 +1357,39 @@ def _clone_caption(ref_el, title: str, chapter: str | None, *, run_writer=None):
                 t.text = re.sub(r"(표\s*)\S+(\s*-\s*)$", rf"\g<1>{chapter}\g<2>", t.text)
                 break
 
+    if number is not None:
+        _literalize_autonum(clone, number, chapter)
+
     _fill_caption_runs(clone, title, run_writer=run_writer)
     return clone
+
+
+def _literalize_autonum(cap, number: int, chapter: str | None) -> None:
+    """Replace the caption's table autoNum field with the literal *number* (#92).
+
+    The number is appended to the text node before the field ("<표 Ⅲ-" → "<표 Ⅲ-2");
+    without a chapter the dangling "-" is dropped ("<표 -" → "<표 2"), and a caption
+    format with no chapter prefix gains one ("<표 " → "<표 Ⅲ-2").
+    """
+    for ctrl in list(cap.iter(f"{{{_HP}}}ctrl")):
+        if ctrl.find(f"{{{_HP}}}autoNum") is None:
+            continue
+        prev = ctrl.getprevious()
+        while prev is not None and prev.tag != f"{{{_HP}}}t":
+            prev = prev.getprevious()
+        if prev is None:
+            prev = ET.Element(f"{{{_HP}}}t")
+            prev.text = ""
+            ctrl.addprevious(prev)
+        txt = prev.text or ""
+        if not chapter:
+            txt = re.sub(r"(표\s*)[^\s<〈]*-\s*$", r"\1", txt)
+        elif not re.search(r"-\s*$", txt):
+            # the reference caption is "<표 " + autoNum with no chapter prefix
+            txt = re.sub(r"(표\s*)$", rf"\g<1>{chapter}-", txt)
+        prev.text = f"{txt}{number}"
+        ctrl.getparent().remove(ctrl)
+        break
 
 
 def _style_cell(
@@ -1374,6 +1497,71 @@ def _fit_table_width_by_content(table_el, block: TableBlock, text_width: int) ->
                 csz.set("width", str(text_width))
 
 
+_CELL_LINE_SPACING_MAX = 140  # % — body spacing above this is too airy for table cells
+_CELL_LINE_SPACING = 130  # % — what a cell paragraph is tightened to (#93)
+
+
+def _tight_cell_para_pr(doc: HwpxDocument, base_para_pr_id, cache: dict[str, str]):
+    """Variant of *base_para_pr_id* with percent line spacing tightened to 130% (#93).
+
+    A generated table whose template has no table-only paragraph shape would inherit
+    the body's 160-180% spacing in every cell and come out far taller than a house
+    table. A paraPr at or below :data:`_CELL_LINE_SPACING_MAX` is returned unchanged.
+    """
+    if base_para_pr_id is None:
+        return None
+    key = str(base_para_pr_id)
+    if key in cache:
+        return cache[key]
+    cache[key] = key
+    try:
+        header = doc._root._headers[0]
+        pps = header._para_properties_element(create=False)
+        base_el = pps.find(f"{{{_HH}}}paraPr[@id='{key}']") if pps is not None else None
+        if base_el is None:
+            return key
+        spacings = [
+            e for e in base_el.iter(f"{{{_HH}}}lineSpacing")
+            if e.get("type") == "PERCENT" and int(e.get("value", "0") or 0) > _CELL_LINE_SPACING_MAX
+        ]
+        if not spacings:
+            return key
+        next_id = str(max(
+            (int(p.get("id")) for p in pps.findall(f"{{{_HH}}}paraPr") if (p.get("id") or "").isdigit()),
+            default=-1,
+        ) + 1)
+        new_el = copy.deepcopy(base_el)
+        new_el.set("id", next_id)
+        for e in new_el.iter(f"{{{_HH}}}lineSpacing"):
+            if e.get("type") == "PERCENT" and int(e.get("value", "0") or 0) > _CELL_LINE_SPACING_MAX:
+                e.set("value", str(_CELL_LINE_SPACING))
+        pps.append(new_el)
+        pps.set("itemCnt", str(len(pps.findall(f"{{{_HH}}}paraPr"))))
+        header.mark_dirty()
+        cache[key] = next_id
+        return next_id
+    except Exception:
+        return key
+
+
+def _text_em(seg: str) -> float:
+    """Rendered width of *seg* in ems: CJK/fullwidth = 1, ASCII/Latin ≈ 0.55 (#93)."""
+    return sum(1.0 if ord(ch) >= 0x1100 else 0.55 for ch in seg)
+
+
+def _wrapped_lines(seg: str, em_per_line: float) -> int:
+    """Lines *seg* needs when glyphs are placed greedily (unused line-end space is
+    lost, so 19 CJK glyphs in a 9.5-em line take 3 lines, not 2) (#93)."""
+    lines, used = 1, 0.0
+    for ch in seg:
+        w = 1.0 if ord(ch) >= 0x1100 else 0.55
+        if used + w > em_per_line + 1e-9 and used > 0:
+            lines += 1
+            used = 0.0
+        used += w
+    return lines
+
+
 def _grow_rows_for_content(table_el, row_texts: list[list[str]]) -> None:
     """Grow each row's cell height to the lines its content needs.
 
@@ -1403,16 +1591,21 @@ def _grow_rows_for_content(table_el, row_texts: list[list[str]]) -> None:
             mg = tc.find(f"{{{_HP}}}cellMargin")
             inset = 0
             if mg is not None:
-                inset = int(mg.get("left", "0")) + int(mg.get("right", "0"))
+                # a cell without its own margin (hasMargin=0) stores -1 as 4294967295;
+                # that is "use the table's", not a 4-billion-unit inset
+                inset = sum(
+                    v for k in ("left", "right")
+                    if 0 <= (v := int(mg.get(k, "0"))) < 2**31
+                )
             usable = max(width - inset, CHAR_W)
-            cpl = max(1, usable // CHAR_W)  # chars per line (coarse, CJK-width)
+            em_per_line = max(1.0, usable / CHAR_W)  # CJK glyphs per line (coarse)
             # rendered text: emphasis delimiters aren't drawn and a [^id] reference
             # becomes a one-glyph superscript mark, so neither counts toward wrapping
             text = (
                 _FOOTNOTE_REF_RE.sub("¹", rendered_text(plain_text(texts[c])))
                 if c < len(texts) else ""
             )
-            lines = sum(max(1, -(-len(seg) // cpl)) for seg in text.split("\n")) or 1
+            lines = sum(_wrapped_lines(seg, em_per_line) for seg in text.split("\n")) or 1
             max_lines = max(max_lines, lines)
         if max_lines > 1:
             for tc in cells:
@@ -1480,6 +1673,89 @@ def _fit_table_height(table_el) -> None:
         total += max(row_h, default=0)
     if total > 0:
         sz.set("height", str(total + _caption_extent(table_el)))
+
+
+def _is_summary_box(block) -> bool:
+    """A 1×1 Markdown table with no caption and no 주)/출처) note is the 정책이슈브리프
+    요약 상자 (#91). A captioned or sourced one-cell table is a real table and keeps
+    its caption and note, so it goes through the normal table path."""
+    return (
+        isinstance(block, TableBlock)
+        and block.n_rows == 1 and block.n_cols == 1
+        and not block.caption and not block.note
+    )
+
+
+def _build_summary_box(
+    doc, section, block: TableBlock, *, body_style, body_para, body_char,
+    text_writer=None,
+):
+    """A one-cell box for the first chunk of an issue brief (#91).
+
+    Format values come from a published brief: a thin (0.12 mm) black frame, the table
+    as wide as the text column and anchored as a character (``treatAsChar``), 283
+    outer margins, cell margins 510 left/right and 141 top/bottom, the text centred
+    vertically in the BODY style. It has no caption, so it is numbered ``NONE`` and
+    stays out of 표 차례 (#101). Its height is estimated from the wrapped line count;
+    Hangul re-flows on open.
+    """
+    tw = _text_width(section) or 33451
+    table = doc.add_table(
+        1, 1, section=section, border_fill_id_ref=box_fill(doc),
+        style_id_ref=body_style, para_pr_id_ref=body_para,
+    )
+    tel = table.element
+    tel.set("numberingType", "NONE")
+    pos = tel.find(f"{{{_HP}}}pos")
+    if pos is not None:
+        pos.set("treatAsChar", "1")
+        pos.set("flowWithText", "1")
+        pos.set("vertRelTo", "PARA")
+        pos.set("horzRelTo", "COLUMN")
+    for tag, vals in (
+        ("outMargin", {"left": "283", "right": "283", "top": "283", "bottom": "283"}),
+        ("inMargin", {"left": "510", "right": "510", "top": "141", "bottom": "141"}),
+    ):
+        el = tel.find(f"{{{_HP}}}{tag}")
+        if el is not None:
+            for k, v in vals.items():
+                el.set(k, v)
+    cell = table.cell(0, 0)
+    tc = cell.element
+    box = box_fill(doc)
+    if box is not None:
+        tc.set("borderFillIDRef", box)
+    mg = tc.find(f"{{{_HP}}}cellMargin")
+    if mg is not None:
+        for k, v in {"left": "510", "right": "510", "top": "141", "bottom": "141"}.items():
+            mg.set(k, v)
+    sub = tc.find(f"{{{_HP}}}subList")
+    if sub is not None:
+        sub.set("vertAlign", "CENTER")
+    text = block.rows[0][0]
+    cp = cell.paragraphs[0]
+    if body_style is not None:
+        cp.style_id_ref = body_style
+    cp.clear_text()
+    if text_writer is not None:
+        text_writer(cp, plain_text(text), body_char, body_char)
+    else:
+        cp.add_run(unmask_escapes(plain_text(text)), char_pr_id_ref=body_char)
+    # width = text column; height = wrapped lines × (font × 150%) + cell margins
+    height_of = _char_height_lookup(doc)
+    font = height_of(body_char) or 1000
+    inner = tw - 2 * 510 - 2 * 283
+    lines = _wrapped_lines(rendered_text(plain_text(text)), max(1.0, inner / font))
+    h = lines * int(font * 1.5) + 2 * 141
+    sz = tel.find(f"{{{_HP}}}sz")
+    if sz is not None:
+        sz.set("width", str(tw))
+        sz.set("height", str(h))
+    csz = tc.find(f"{{{_HP}}}cellSz")
+    if csz is not None:
+        csz.set("width", str(tw))
+        csz.set("height", str(h))
+    return table
 
 
 def _build_table(
@@ -1580,8 +1856,29 @@ def _build_table(
             note_sz.set("height", seed)
 
     # caption "<표 N-M> {title}" cloned from the reference (auto-number + 표제목 style)
-    if block.caption and ref_el is not None:
-        clone = _clone_caption(ref_el, block.caption, chapter, run_writer=run_writer)
+    if block.caption and (ref_el is None or ref_el.find(f"{{{_HP}}}caption") is None):
+        # the template has no captioned reference table (정책이슈브리프): a literal
+        # "<표 Ⅱ-1> title" body-style caption instead of silently dropping it
+        cap = _figure_caption(
+            None, block.caption_label or "표", block.caption, 8504,
+            body_style=body_style, body_para=body_para,
+            body_char=doc.style(body_style).char_pr_id_ref if body_style else None,
+            run_writer=run_writer,
+        )
+        for t in cap.iter(f"{{{_HP}}}t"):
+            if t.text and t.text.startswith("[") and t.text.rstrip().endswith("]"):
+                body = t.text.rstrip()
+                t.text = "<" + body[1:-1] + ">" + t.text[len(body):]
+                break
+        first_tr = table.element.find(f"{{{_HP}}}tr")
+        if first_tr is not None:
+            first_tr.addprevious(cap)
+    elif block.caption and ref_el is not None:
+        if block.number is not None:
+            chapter = block.chapter  # per-chapter mode: this table's own chapter
+        clone = _clone_caption(
+            ref_el, block.caption, chapter, run_writer=run_writer, number=block.number
+        )
         if clone is not None:
             first_tr = table.element.find(f"{{{_HP}}}tr")
             if first_tr is not None:
@@ -1734,32 +2031,55 @@ def _build_figure(
     cp.clear_text()
     # parse_markdown masked backslash escapes (#52); a path is used, not emitted,
     # so restore them here — `assets/a\_b.png` names the file a_b.png
-    fig_path = unmask_escapes(fig.path)
-    src = Path(fig_path).expanduser()
-    if not src.is_absolute():
-        src = base_dir / src
-    try:
-        img = load_image(src)
-    except ValueError as exc:
-        warnings.append(f"{fig.display}: {exc} — placeholder left in the figure")
-        cp.add_run(f"[그림 없음: {fig_path}]", char_pr_id_ref=body_char)
-        pic_h = None
-    else:
-        item_id = add_bin_image(doc, img.data, img.ext)
-        page_h = body_height(section)
-        w, pic_h = fit_extent(img.px_w, img.px_h, tw, int(page_h * 0.8) if page_h else None)
+    # one picture per path, side by side in the same paragraph (#96): all pictures
+    # share one height so they line up, scaled down together to fit the text width
+    loaded: list[tuple[str, Path, object]] = []
+    pic_h = None
+    for raw in fig.paths:
+        fig_path = unmask_escapes(raw)
+        src = Path(fig_path).expanduser()
+        if not src.is_absolute():
+            src = base_dir / src
         try:
-            name = str(src.resolve().relative_to(base_dir.resolve()))
-        except ValueError:
-            name = fig_path
+            loaded.append((fig_path, src, load_image(src)))
+        except ValueError as exc:
+            warnings.append(f"{fig.display}: {exc} — placeholder left in the figure")
+            cp.add_run(f"[그림 없음: {fig_path}]", char_pr_id_ref=body_char)
+    if loaded:
+        page_h = body_height(section)
+        max_h = int(page_h * 0.8) if page_h else None
+        gap = 400 if len(loaded) > 1 else 0  # HWPUNIT between neighbours
+        avail = tw - gap * (len(loaded) - 1)
+        # common height h: sum(px_w_i * h / px_h_i) <= avail
+        inv = sum(img.px_w / img.px_h for _, _, img in loaded)
+        pic_h = int(avail / inv)
+        if max_h:
+            pic_h = min(pic_h, max_h)
         lsa = cp.element.find(f"{{{_HP}}}linesegarray")
-        run = etree.fromstring(picture_xml(
-            item_id, img, w, pic_h, char_pr=body_char, source_name=name, label=fig.label,
-        ))
-        if lsa is not None:
-            lsa.addprevious(run)
-        else:
-            cp.element.append(run)
+        for n, (fig_path, src, img) in enumerate(loaded):
+            item_id = add_bin_image(doc, img.data, img.ext)
+            w = round(pic_h * img.px_w / img.px_h)
+            try:
+                name = str(src.resolve().relative_to(base_dir.resolve()))
+            except ValueError:
+                name = fig_path
+            run = etree.fromstring(picture_xml(
+                item_id, img, w, pic_h, char_pr=body_char, source_name=name,
+                label=fig.label if n == 0 else None,
+            ))
+            if n:  # a small gap before every picture after the first
+                c_attr = f' charPrIDRef="{body_char}"' if body_char is not None else ""
+                spacer = etree.fromstring(
+                    f'<hp:run xmlns:hp="{_HP}"{c_attr}><hp:t> </hp:t></hp:run>'
+                )
+                if lsa is not None:
+                    lsa.addprevious(spacer)
+                else:
+                    cp.element.append(spacer)
+            if lsa is not None:
+                lsa.addprevious(run)
+            else:
+                cp.element.append(run)
     pic_sz = pic_cell.element.find(f"{{{_HP}}}cellSz")
     if pic_sz is not None and pic_h:
         pic_sz.set("height", str(pic_h))
@@ -1792,7 +2112,7 @@ def _build_figure(
         tc.set("borderFillIDRef", nofill)
 
     cap = _figure_caption(
-        cap_src, fig.display, fig.alt, tw, body_style=body_style, body_para=body_para,
+        cap_src, fig.display, fig.caption if fig.caption is not None else fig.alt, tw, body_style=body_style, body_para=body_para,
         body_char=body_char, run_writer=run_writer,
     )
     tel.find(f"{{{_HP}}}tr").addprevious(cap)
@@ -1986,6 +2306,105 @@ def _left_para_pr(
         return key
 
 
+def _ensure_blank_outline_numbering(doc: HwpxDocument, section) -> str | None:
+    """Add (once) an outline numbering definition whose number formats are all
+    empty and point the section's ``outlineShapeIDRef`` at it (#97).
+
+    Literal-numbering templates type "Ⅰ."/"1."/"1)" into the title text, so the
+    outline definition must not print a second number — yet Hangul only collects
+    titles for 차례 만들기 from paragraphs with an OUTLINE heading level.  A blank
+    definition gives both.  Returns the numbering id, or None when the header has
+    no numberings element to extend.
+    """
+    try:
+        # a section that already holds auto-numbered outline headings keeps its
+        # outline definition — swapping it would blank their numbers too
+        for p in section.paragraphs:
+            pp = doc.paragraph_property(p.para_pr_id_ref)
+            if pp and pp.heading and pp.heading.type == "OUTLINE":
+                return None
+        header = doc._root._headers[0]
+        root = header.element
+        nums = root.find(f".//{{{_HH}}}numberings")
+        if nums is None:
+            return None
+        ids = [
+            int(n.get("id"))
+            for n in nums.findall(f"{{{_HH}}}numbering")
+            if (n.get("id") or "").isdigit()
+        ]
+        new_id = str(max(ids, default=0) + 1)
+        numbering = ET.SubElement(nums, f"{{{_HH}}}numbering", {"id": new_id, "start": "0"})
+        for lv in range(1, 11):
+            head = ET.SubElement(
+                numbering,
+                f"{{{_HH}}}paraHead",
+                {
+                    "start": "1", "level": str(lv), "align": "LEFT",
+                    "useInstWidth": "1", "autoIndent": "1", "widthAdjust": "0",
+                    "textOffsetType": "PERCENT", "textOffset": "50",
+                    "numFormat": "DIGIT", "charPrIDRef": "4294967295",
+                    "checkable": "0",
+                },
+            )
+            head.text = ""
+        nums.set("itemCnt", str(len(nums.findall(f"{{{_HH}}}numbering"))))
+        header.mark_dirty()
+        for el in section.element.iter(f"{{{_HP}}}secPr"):
+            el.set("outlineShapeIDRef", new_id)
+        return new_id
+    except Exception:
+        return None
+
+
+def _outline_heading_para_pr(
+    doc: HwpxDocument,
+    base_para_pr_id: str | int | None,
+    level: int,
+    numbering_id: str,
+    cache: dict[tuple[str, int], str],
+) -> str | None:
+    """Variant of *base_para_pr_id* with ``heading type="OUTLINE"`` at *level*
+    (0-based) bound to the blank numbering *numbering_id* (#97)."""
+    if base_para_pr_id is None:
+        return None
+    key = (str(base_para_pr_id), level)
+    if key in cache:
+        return cache[key]
+    try:
+        header = doc._root._headers[0]
+        pps = header._para_properties_element(create=False)
+        base_el = (
+            pps.find(f"{{{_HH}}}paraPr[@id='{key[0]}']") if pps is not None else None
+        )
+        if base_el is None:
+            cache[key] = key[0]
+            return key[0]
+        existing_ids = [
+            int(p.get("id"))
+            for p in pps.findall(f"{{{_HH}}}paraPr")
+            if (p.get("id") or "").isdigit()
+        ]
+        next_id = str(max(existing_ids, default=-1) + 1)
+        new_el = copy.deepcopy(base_el)
+        new_el.set("id", next_id)
+        h = new_el.find(f"{{{_HH}}}heading")
+        if h is None:
+            h = ET.Element(f"{{{_HH}}}heading")
+            new_el.insert(0, h)
+        h.set("type", "OUTLINE")
+        h.set("idRef", numbering_id)
+        h.set("level", str(level))
+        pps.append(new_el)
+        pps.set("itemCnt", str(len(pps.findall(f"{{{_HH}}}paraPr"))))
+        header.mark_dirty()
+        cache[key] = next_id
+        return next_id
+    except Exception:
+        cache[key] = key[0]
+        return key[0]
+
+
 def _none_heading_para_pr(
     doc: HwpxDocument,
     base_para_pr_id: str | int | None,
@@ -2162,6 +2581,7 @@ def fill_from_markdown(
     literal_numbering: bool = False,
     literal_bullets: bool = False,
     base_dir: Path | str | None = None,
+    lead_chapter: str | None = None,
 ) -> AuthorResult:
     """Fill a template from Markdown, styled with its own outline styles.
 
@@ -2317,6 +2737,10 @@ def fill_from_markdown(
 
     left_para_cache: dict[str, str] = {}
     none_heading_cache: dict[str, str] = {}
+    outline_cache: dict[tuple[str, int], str] = {}
+    cell_para_cache: dict[str, str] = {}
+    outline_numbering_id: str | None = None
+    outline_tried = False
 
     def resolve_para(base_para, txt: str):
         if not links or link_align == "keep" or not txt:
@@ -2480,8 +2904,21 @@ def fill_from_markdown(
     blocks = parse_markdown(
         markdown, math=math, literal_bullets=literal_bullets
     )
+    # per-chapter caption numbers (#92): with no explicit --chapter, a document whose
+    # H1 titles carry literal chapter numbers ("# Ⅲ. …") numbers captions per chapter
+    # ``lead_chapter``: the label of the chapter whose heading is *not* in this text
+    # (a slot, e.g. the brief's {{ch1_title}}); it numbers the captions before the first H1
+    per_chapter = explicit_chapter is None and (
+        bool(lead_chapter)
+        or any(
+            isinstance(b, Block) and b.kind == "heading" and b.level == 1
+            and chapter_label_of(b.raw_text or b.text)
+            for b in blocks
+        )
+    )
     _resolve_cross_refs(
-        blocks, chapter_label(), result.warnings, figure_start=_count_figures(doc)
+        blocks, chapter_label(), result.warnings, figure_start=_count_figures(doc),
+        per_chapter=per_chapter, lead_chapter=lead_chapter,
     )
     if any(isinstance(b, TableBlock) for b in blocks) and not designated:
         result.warnings.append(
@@ -2546,12 +2983,24 @@ def fill_from_markdown(
             result.figures += 1
             continue
 
+        if _is_summary_box(block):
+            table = _build_summary_box(
+                doc, target_section, block, body_style=body_style, body_para=body_para,
+                body_char=doc.style(body_style).char_pr_id_ref if body_style else None,
+                text_writer=write_text,
+            )
+            place(table.paragraph.element)
+            result.placed += 1
+            continue
+
         if isinstance(block, TableBlock):
             table = _build_table(
                 doc, target_section, block, table_fmt, body_style, body_para,
                 ref_element_copy, chapter_label(), equal_columns=equal_columns,
                 text_writer=write_text,
-                para_resolver=resolve_para,
+                para_resolver=lambda base, txt: _tight_cell_para_pr(
+                    doc, resolve_para(base, txt), cell_para_cache
+                ),
                 run_writer=add_runs,
             )
             place(table.paragraph.element)
@@ -2645,7 +3094,18 @@ def fill_from_markdown(
                 text = block.text
 
             if literal_numbering and block.kind == "heading":
-                para_pr = _none_heading_para_pr(doc, para_pr, none_heading_cache)
+                if outline_numbering_id is None and not outline_tried:
+                    outline_tried = True
+                    outline_numbering_id = _ensure_blank_outline_numbering(
+                        doc, target_section
+                    )
+                if outline_numbering_id is not None and block.level <= 3:
+                    para_pr = _outline_heading_para_pr(
+                        doc, para_pr, block.level - 1, outline_numbering_id,
+                        outline_cache,
+                    )
+                else:
+                    para_pr = _none_heading_para_pr(doc, para_pr, none_heading_cache)
 
         effective_para = resolve_para(para_pr, text)
         # build the paragraph empty, then add one run per inline segment so
@@ -2754,6 +3214,7 @@ def fill_sections(
     literal_numbering: bool = False,
     literal_bullets: bool = False,
     base_dir: Path | str | None = None,
+    lead_chapters: dict[str, str] | None = None,
 ) -> AuthorResult:
     """Fill several named markers, each from its own Markdown part.
 
@@ -2792,6 +3253,7 @@ def fill_sections(
                 literal_numbering=literal_numbering,
                 literal_bullets=literal_bullets,
                 base_dir=base_dir,
+                lead_chapter=(lead_chapters or {}).get(token),
             )
             agg.placed += res.placed
             agg.figures += res.figures
@@ -2915,6 +3377,23 @@ def build_report(
         parts.append(("{{" + name + "}}", "\n\n".join(texts)))
     if not parts:
         raise ValueError("manifest has no 'parts' to assemble")
+    fallback_title = next((t for _, md in parts if (t := first_heading(md))), None)
+
+    # 정책이슈브리프 (#91): a template with {{ch1}}… takes the body chapter by chapter
+    # — one chapter section each, later chapters in the last one — and the chapter
+    # wings / Contents / opening titles are slots derived from the H1s
+    from .brief import brief_parts, is_brief_template
+
+    brief_slots: dict[str, str] = {}
+    brief_warnings: list[str] = []
+    lead_chapters: dict[str, str] = {}
+    if is_brief_template(template):
+        bi = next((i for i, (m, _) in enumerate(parts) if m == "{{body}}"), None)
+        if bi is not None:
+            bp = brief_parts(parts[bi][1])
+            parts[bi : bi + 1] = [("{{" + k + "}}", v) for k, v in bp.parts.items()]
+            brief_slots, brief_warnings = bp.slots, bp.warnings
+            lead_chapters = {"{{" + k + "}}": v for k, v in bp.lead_chapters.items()}
 
     meta_src = meta if meta is not None else data.get("meta")
     if isinstance(meta_src, str):
@@ -2922,6 +3401,8 @@ def build_report(
     meta_dict = None
     if meta_src is not None or front:
         meta_dict = {**front, **load_meta(meta_src)}
+    if brief_slots:
+        meta_dict = {**(meta_dict or {}), **brief_slots}
 
     out = output if output is not None else data.get("output")
     if out is not None and not Path(out).is_absolute():
@@ -2948,7 +3429,13 @@ def build_report(
             else literal_bullets
         ),
         base_dir=base,
+        lead_chapters=lead_chapters,
     )
+    result.warnings += brief_warnings
+    if brief_slots:
+        from .brief import decorate_later_chapters
+
+        decorate_later_chapters(out or template)
     if (data.get("toc", True) if toc is None else toc):
         from .toc import fill_toc
 
@@ -2961,7 +3448,6 @@ def build_report(
                 "figures": len(toc_res.figures),
             }
         result.warnings += [f"[목차] {w}" for w in toc_res.warnings]
-    fallback_title = next((t for _, md in parts if (t := first_heading(md))), None)
     finish_report_meta(
         result, out or template, meta_dict, fallback_title=fallback_title, author=author
     )

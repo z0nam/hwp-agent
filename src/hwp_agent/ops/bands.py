@@ -242,7 +242,7 @@ def detect_document_bands(
         rb = resolve_rhwp(rhwp_bin)
         if rb is None:
             raise FileNotFoundError(
-                "rhwp not found — install the rhwp CLI on PATH or set RHWP_BIN "
+                "rhwp not found — run `hwp-agent setup` to download it, or set RHWP_BIN "
                 "(https://github.com/edwardkim/rhwp/releases)."
             )
         render = rhwp_render_fn(rb)

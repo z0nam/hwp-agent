@@ -166,7 +166,10 @@ def _ensure_variant(props, tag: str, base_id: str, modify) -> str:
         c.attrib.pop("id", None)
         if etree.tostring(c) == key:
             return el.get("id")
-    new_id = str(len(existing))
+    # one past the highest id — not the element count, which collides with an existing id
+    # whenever the ids are not 0..n-1 (other steps append variants as max id + 1)
+    ids = [int(el.get("id")) for el in existing if (el.get("id") or "").isdigit()]
+    new_id = str(max(ids, default=-1) + 1)
     attrs = dict(want.attrib)
     want.attrib.clear()
     want.attrib.update({"id": new_id, **attrs})  # id first, as Hangul writes it
@@ -180,10 +183,21 @@ def _wing_char_pr(char_props, base_id: str, height: int) -> str:
 
 
 def _wing_para_pr(para_props, base_id: str) -> str:
-    """A LEFT-aligned (top, in vertical writing), margin-free copy of *base_id*."""
+    """A LEFT-aligned (top, in vertical writing), margin-free, **non-outline** copy of
+    *base_id*.
+
+    The wing paragraphs copy the chapter title's paragraph shape, which is an OUTLINE
+    heading; kept as is, Hangul's 제목 차례 collects the wing text too and every chapter
+    title appears twice (#113). The wing is decoration, so its heading becomes NONE.
+    """
 
     def modify(el) -> None:
         el.find(_hh("align")).set("horizontal", "LEFT")
+        heading = el.find(_hh("heading"))
+        if heading is not None:
+            heading.set("type", "NONE")
+            heading.set("idRef", "0")
+            heading.set("level", "0")
         for tag in ("intent", "left", "right", "prev", "next"):
             for m in el.iter(f"{{{_HC}}}{tag}"):
                 m.set("value", "0")
@@ -216,7 +230,7 @@ def _wing_box(
     vert = spec.top - margin_top - _HEADER_ORIGIN_DY
     mats = "".join(_IDENTITY.format(m) for m in ("transMatrix", "scaMatrix", "rotMatrix"))
     return (
-        f'<hp:rect id="{shape_id}" zOrder="100" numberingType="PICTURE" '
+        f'<hp:rect id="{shape_id}" zOrder="100" numberingType="NONE" '
         f'textWrap="IN_FRONT_OF_TEXT" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" '
         f'href="" groupLevel="0" instid="{shape_id + 1}" ratio="0">'
         f'<hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/>'

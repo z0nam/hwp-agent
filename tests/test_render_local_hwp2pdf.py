@@ -45,6 +45,11 @@ if mode == "running":
 if mode == "fail":
     print("변환 실패: 문서를 열 수 없습니다")
     sys.exit(2)
+if mode == "startfail":  # measured: consent window up → COM gives up (Hancom 2022)
+    print("HWPFrame.HwpObject 시작 중...")
+    print("ERROR: 한컴오피스 한글을 시작하지 못했습니다")
+    print("상세: (-2146959355, '서버 실행에 실패했습니다.', None, None)")
+    sys.exit(1)
 if mode == "cp949":  # the frozen Windows exe prints the ANSI code page
     sys.stdout.buffer.write("ERROR: 한글 서버 실행에 실패했습니다\\n".encode("cp949"))
     sys.exit(1)
@@ -151,6 +156,22 @@ def test_local_failure_reports_exit_and_tail(tmp_path: Path, fake_cli, monkeypat
     r = LocalHwp2PdfBackend().render(_src(tmp_path), tmp_path / "o.pdf", fmt="pdf")
     assert not r.ok and not r.busy and r.returncode == 2
     assert "exit 2" in r.stderr and "문서를 열 수 없습니다" in r.stderr
+
+
+def test_local_start_failure_hints_at_the_consent_window(tmp_path: Path, fake_cli,
+                                                         monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_H2P_MODE", "startfail")
+    r = LocalHwp2PdfBackend().render(_src(tmp_path), tmp_path / "o.pdf", fmt="pdf")
+    assert not r.ok and not r.busy and "한글을 한 번 열어 답하세요" in r.stderr
+    # and it travels to the note when the chain falls back to rhwp
+    r = render_document(_src(tmp_path), tmp_path / "o.pdf", fmt="pdf", render_fn=_fake_pdf)
+    assert r.ok and r.backend == "rhwp" and "동의창" in r.note
+
+
+def test_local_document_failure_has_no_consent_hint(tmp_path: Path, fake_cli, monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_H2P_MODE", "fail")  # the document, not Hangul
+    r = LocalHwp2PdfBackend().render(_src(tmp_path), tmp_path / "o.pdf", fmt="pdf")
+    assert "동의창" not in r.stderr
 
 
 def test_local_cp949_output_is_readable(tmp_path: Path, fake_cli, monkeypatch) -> None:

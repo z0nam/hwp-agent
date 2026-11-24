@@ -52,6 +52,14 @@ META_SLOTS = (
     "publisher",
     "printer",
     "isbn",
+    "title_1",  # 표지 제목 첫째·둘째 줄 (정책이슈브리프: 줄마다 문단) (#91)
+    "title_2",
+    "headline",  # 표지 요지문 (정책이슈브리프)
+    "ch1_title", "ch2_title", "ch3_title",  # 장 구역의 첫 장 제목 (정책이슈브리프)
+    "toc_1", "toc_2", "toc_3", "toc_4",  # 차례 쪽 장 제목
+    "wing_1", "wing_2", "wing_3",  # 바탕쪽 장 날개
+    "volume",  # 호수 — 정책이슈브리프 표지·뒷표지 (#91)
+    "running_title",  # 머리제목 — 바탕쪽(머리말) 쪽 제목 (#91)
 )
 #: Slots a submission copy must not leave blank — missing ones are blanked *and*
 #: reported. The rest (subtitle, co_researcher, printer, report_series with its
@@ -84,6 +92,10 @@ ALIASES = {
     "공동연구": "co_researchers",
     "발행일": "pub_date",
     "발행인": "publisher",
+    "호수": "volume",
+    "머리제목": "running_title",
+    "요지": "headline",
+    "헤드라인": "headline",
     "인쇄처": "printer",
     "종료일": "end_date",
     "과제종료일": "end_date",
@@ -218,6 +230,21 @@ def bake_meta_slots(path: Path | str, config: dict) -> list[str]:
                 continue
             _replace_in_para(hits[0], old, new)
             done.append(f"s{si}:{new}")
+        # nth match for strings that repeat (the brief's cover prints "○○○…" for
+        # both title lines and again for the 인사말 heading) — {"old","new","index"}
+        # matches are fixed against the *unchanged* paragraphs: replacing index 0
+        # would otherwise drop it from a later item's hit list and shift index 1
+        snapshot: dict[str, list] = {}
+        for item in spec.get("replace_at") or []:
+            old, new, idx = item["old"], item["new"], int(item.get("index", 0))
+            if new and new in sec_text:
+                continue
+            hits = snapshot.setdefault(old, [p for p in paras if old in _para_text(p)])
+            if idx >= len(hits):
+                errors.append(f"s{si}: {old!r} #{idx} not found ({len(hits)} paragraph(s))")
+                continue
+            _replace_in_para(hits[idx], old, new)
+            done.append(f"s{si}:{new or '(blank)'}")
         for label, token in (spec.get("append") or {}).items():
             if token in sec_text:
                 continue
@@ -236,6 +263,50 @@ def bake_meta_slots(path: Path | str, config: dict) -> list[str]:
         raise ValueError("meta_slots: " + "; ".join(errors))
     if done:
         doc.save_to_path(str(path))
+    done += _bake_masterpage_slots(path, config.get("masterpage") or {})
+    return done
+
+
+def _bake_masterpage_slots(path: Path | str, spec: dict) -> list[str]:
+    """``"masterpage": {"replace": {example: "{{running_title}}"}}`` — swap an example
+    string in the masterpage parts (the 머리말 쪽 제목) for a slot (#91). Each key must
+    occur in exactly one masterpage part, once; a token already present is skipped."""
+    import zipfile
+
+    from xml.sax.saxutils import escape
+
+    from .container import _rewrite_zip_preserving
+
+    replace = spec.get("replace") or {}
+    if not replace:
+        return []
+    with zipfile.ZipFile(path) as z:
+        parts = {
+            n: z.read(n).decode("utf-8") for n in z.namelist()
+            if n.startswith("Contents/masterpage") and n.endswith(".xml")
+        }
+    changed: dict[str, str] = {}
+    done: list[str] = []
+    errors: list[str] = []
+    for old, new in replace.items():
+        if any(new in x for x in parts.values()):
+            continue
+        needle = f">{escape(old)}<"
+        hits = [n for n, x in parts.items() if x.count(needle) == 1]
+        total = sum(x.count(needle) for x in parts.values())
+        if len(hits) != 1 or total != 1:
+            errors.append(f"masterpage: {old!r} found {total} time(s), want 1")
+            continue
+        changed[hits[0]] = (changed.get(hits[0]) or parts[hits[0]]).replace(
+            needle, f">{escape(new)}<"
+        )
+        done.append(f"mp:{new}")
+    if errors:
+        raise ValueError("meta_slots: " + "; ".join(errors))
+    if changed:
+        tmp = Path(str(path) + ".mp.tmp")
+        _rewrite_zip_preserving(path, tmp, {n: x.encode("utf-8") for n, x in changed.items()})
+        tmp.replace(path)
     return done
 
 
@@ -406,6 +477,13 @@ def normalize_meta(meta: dict) -> dict:
         out["publisher"] = pub
     if "pub_date" in out:
         out["pub_date"] = _format_pub_date(out["pub_date"])
+    # 정책이슈브리프 프런트매터: 제목은 " // " 로 줄바꿈, 저자는 " ; " 로 구분 (#91)
+    if "title" in out:
+        out["title"] = out["title"].replace(" // ", "\n")
+        first, _, rest = out["title"].partition("\n")
+        out["title_1"], out["title_2"] = first, rest.replace("\n", " ")
+    if "authors" in out and " ; " in out["authors"]:
+        out["authors"] = out["authors"].replace(" ; ", "\n")
     sub = out.get("subtitle")
     if sub and not sub.startswith((":", "-", "—", "–")):
         out["subtitle"] = f": {sub}"
@@ -556,6 +634,56 @@ def _drop_slot_paragraphs(doc: HwpxDocument, slot: str) -> int:
     return n
 
 
+def _split_authors(doc: HwpxDocument, value: str) -> bool:
+    """Fill ``{{authors}}`` as name + affiliation runs when the template asks for it (#117).
+
+    The 정책이슈브리프 cover sets each author's name larger than "제주연구원 직위". A
+    template marks that by following the ``{{authors}}`` run with an empty run in the
+    affiliation's character shape. Each author line (``\\n``-separated) is then split at
+    its first space: the name goes in the token run's shape followed by two spaces (as
+    the form has it), the rest in the empty run's shape. A line with no space is a name
+    alone. Returns False — and leaves the token for the plain fill — when no such pair
+    of runs is found.
+    """
+    token = "{{authors}}"
+    lines = [ln.strip() for ln in value.split("\n") if ln.strip()]
+    if not lines:
+        return False
+
+    def run_text(r) -> str | None:
+        ts = r.findall(_hp("t"))
+        if len(r) != len(ts) or any(len(t) for t in ts):
+            return None  # holds a control / tab / break: not a plain text run
+        return "".join(t.text or "" for t in ts)
+
+    for sec in doc.sections:
+        for p in sec.element.iter(_hp("p")):
+            runs = p.findall(_hp("run"))
+            for name_run, affil_run in zip(runs, runs[1:], strict=False):
+                if run_text(name_run) != token or run_text(affil_run) != "":
+                    continue
+                new_runs = []
+                for j, line in enumerate(lines):
+                    name, rest = (re.split(r"\s+", line, maxsplit=1) + [""])[:2]
+                    tail = "\n" if j < len(lines) - 1 else ""
+                    for src, text in ((name_run, name + ("  " if rest else "")), (affil_run, rest)):
+                        if not text and src is affil_run:
+                            continue
+                        r = src.makeelement(_hp("run"), {"charPrIDRef": src.get("charPrIDRef")})
+                        t = r.makeelement(_hp("t"), {})
+                        t.text = text
+                        r.append(t)
+                        new_runs.append(r)
+                    new_runs[-1][0].text += tail
+                for r in new_runs:
+                    affil_run.addprevious(r)
+                p.remove(name_run)
+                p.remove(affil_run)
+                sec.mark_dirty()
+                return True
+    return False
+
+
 def _newlines_to_breaks(doc: HwpxDocument) -> None:
     """``\\n`` inside filled text → ``<hp:lineBreak/>`` (two-line cover titles)."""
     for sec in doc.sections:
@@ -585,6 +713,106 @@ def _newlines_to_breaks(doc: HwpxDocument) -> None:
             t.getparent().replace(t, new_t)
         if touched:
             sec.mark_dirty()
+
+
+def _fill_masterpage_slots(path: Path | str, values: dict[str, str]) -> list[str]:
+    """Fill ``{{slot}}`` tokens inside ``Contents/masterpage*.xml`` (머리말 쪽 제목) (#91).
+
+    Masterpages are not sections, so :func:`~hwp_agent.ops.form.fill_form` never sees
+    them. The tokens are baked into one ``<hp:t>``, so a plain, XML-escaped text swap
+    on just those parts (container otherwise untouched) is enough. Returns the slots
+    that were filled.
+    """
+    import zipfile
+
+    from xml.sax.saxutils import escape
+
+    from .container import _rewrite_zip_preserving
+
+    changed: dict[str, bytes] = {}
+    done: list[str] = []
+    with zipfile.ZipFile(path) as z:
+        for name in z.namelist():
+            if not (name.startswith("Contents/masterpage") and name.endswith(".xml")):
+                continue
+            xml = z.read(name).decode("utf-8")
+            new = xml
+            for slot, value in values.items():
+                for tok in re.findall(r"\{\{\s*" + re.escape(slot) + r"(?::[^}]*)?\s*\}\}", new):
+                    new = new.replace(tok, escape(value))
+                    if slot not in done:
+                        done.append(slot)
+            if new != xml:
+                changed[name] = new.encode("utf-8")
+    if changed:
+        tmp = Path(str(path) + ".mp.tmp")
+        _rewrite_zip_preserving(path, tmp, changed)
+        tmp.replace(path)
+    return done
+
+
+_MIN_TITLE_SCALE = 0.55  # never shrink a cover title below this share of its size
+
+
+def _fit_cover_title(path: Path | str, line1: str, line2: str) -> bool:
+    """Shrink the cover-title font so each line fits its text box on one line (#91).
+
+    The 정책이슈브리프 cover prints the title in a fixed-width box, one paragraph per
+    line (about 15 glyphs at 27 pt). A longer line wrapped mid-phrase and left an
+    orphan word on its own line. Find the box holding exactly the two title paragraphs,
+    estimate each line's width from its glyphs (CJK = 1 em × 장평 × 자간; ASCII 0.55 em)
+    and clone the title's charPr at the largest size that fits both — never below
+    :data:`_MIN_TITLE_SCALE`, so a very long title still wraps rather than vanishing.
+    Returns True when the font was changed.
+    """
+    doc = HwpxDocument.open(str(path))
+    header = doc._root._headers[0]
+    hh = "{http://www.hancom.co.kr/hwpml/2011/head}"
+    cps = header.element.find(f".//{hh}charProperties")
+    if cps is None:
+        return False
+    changed = False
+    for sec in doc.sections:
+        for dt in sec.element.iter(_hp("drawText")):
+            paras = [p for p in dt.iter(_hp("p"))]
+            texts = [_para_text(p) for p in paras]
+            if texts != [line1, line2] or not (line1 or line2):
+                continue
+            width = int(dt.get("lastWidth") or 0)
+            ref = paras[0].find(_hp("run"))
+            cid = ref.get("charPrIDRef") if ref is not None else None
+            base = cps.find(f"{hh}charPr[@id='{cid}']") if cid is not None else None
+            if not width or base is None:
+                continue
+            height = int(base.get("height", "0"))
+            ratio = int(base.find(f"{hh}ratio").get("hangul", "100")) / 100
+            spacing = 1 + int(base.find(f"{hh}spacing").get("hangul", "0")) / 100
+            need = max(
+                (
+                    sum(1.0 if ord(c) >= 0x1100 else 0.55 for c in t) * height * ratio * spacing
+                    for t in (line1, line2)
+                ),
+                default=0,
+            )
+            if need <= width:
+                continue
+            scale = max(_MIN_TITLE_SCALE, width / need)
+            new = copy.deepcopy(base)
+            ids = [int(c.get("id")) for c in cps.findall(f"{hh}charPr") if c.get("id", "").isdigit()]
+            new_id = str(max(ids) + 1)
+            new.set("id", new_id)
+            new.set("height", str(int(height * scale)))
+            cps.append(new)
+            cps.set("itemCnt", str(len(cps.findall(f"{hh}charPr"))))
+            for p in paras:
+                for r in p.findall(_hp("run")):
+                    r.set("charPrIDRef", new_id)
+            header.mark_dirty()
+            sec.mark_dirty()
+            changed = True
+    if changed:
+        doc.save_to_path(str(path))
+    return changed
 
 
 def apply_report_meta(
@@ -633,6 +861,8 @@ def apply_report_meta(
             (res.filled if co else res.blank).append("co_researcher")
         if not norm.get("subtitle") and _drop_slot_paragraphs(doc, "subtitle"):
             res.blank.append("subtitle")
+        if norm.get("authors") and _split_authors(doc, norm["authors"]):
+            res.filled.append("authors")
         doc.save_to_path(str(path))
         tokens = _meta_tokens(doc)  # re-read: lines were added / dropped
 
@@ -652,7 +882,10 @@ def apply_report_meta(
             # a token fill_form could not place (should not happen: we just found it)
             for key in fr.missing:
                 res.warnings.append(f"slot {{{{{key}}}}} could not be filled")
-        res.missing = [s for s in REQUIRED_SLOTS if s in res.blank]
+        # a brief's cover title lives in title_1/title_2: a blank first line is a
+        # missing title (the second line stays optional)
+        blank = set(res.blank) | ({"title"} if "title_1" in res.blank else set())
+        res.missing = [s for s in REQUIRED_SLOTS if s in blank]
         if res.missing:
             res.warnings.append(
                 "표지·판권 값이 없어 비워 둔 필수 항목: "
@@ -667,6 +900,16 @@ def apply_report_meta(
 
         _update_preview_parts(doc)
         doc.save_to_path(str(path))
+
+    if meta is not None and norm.get("title_1"):
+        _fit_cover_title(path, norm["title_1"], norm.get("title_2", ""))
+    if meta is not None:
+        flat_title = (norm.get("title") or "").replace("\n", " ").strip()
+        mp_values = {"running_title": norm.get("running_title") or flat_title}
+        for k in (1, 2, 3):  # 장 날개 (정책이슈브리프 바탕쪽)
+            mp_values[f"wing_{k}"] = norm.get(f"wing_{k}") or ""
+        for slot in _fill_masterpage_slots(path, mp_values):
+            (res.filled if mp_values[slot] else res.blank).append(slot)
 
     title = (norm.get("title") or "").replace("\n", " ").strip() or (
         fallback_title.strip() if fallback_title else None

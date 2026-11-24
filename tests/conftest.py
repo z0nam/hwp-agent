@@ -40,6 +40,16 @@ def _isolate_hwp2pdf(monkeypatch, tmp_path_factory) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_rhwp_download(monkeypatch, tmp_path_factory) -> None:
+    """`hwp-agent setup` also fetches rhwp: never reach the network or install it
+    into the developer's real data dir (tests that want a download pass a file:// url)."""
+    base = tmp_path_factory.getbasetemp()
+    monkeypatch.setenv("XDG_DATA_HOME", str(base / "no-xdg-data"))
+    monkeypatch.setattr("hwp_agent.render.fetch_rhwp.RELEASE_URL",
+                        (base / "no-rhwp-release").as_uri())
+
+
+@pytest.fixture(autouse=True)
 def _isolate_profile(monkeypatch, tmp_path_factory) -> None:
     """write/build fall back to the profile's name for the document creator (#32);
     never let the suite read the developer's real ~/.config/hwp-agent/profile.json."""

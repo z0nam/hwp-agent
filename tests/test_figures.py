@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import struct
 import zipfile
 import zlib
@@ -381,3 +382,108 @@ def test_build_rebases_escaped_paths(tmp_path: Path) -> None:
     res = build_report(manifest)
     assert res.figures == 1
     assert not any("image" in w for w in res.warnings)
+
+
+def test_multi_image_line_is_one_figure() -> None:
+    fig = parse_figure_line("![좌우 비교](a.png) ![](b.png){#fig_pair}")
+    assert fig is not None
+    assert fig.paths == ["a.png", "b.png"]
+    assert (fig.alt, fig.label) == ("좌우 비교", "fig_pair")
+    assert parse_figure_line("![단일](a.png)").paths == ["a.png"]
+
+
+def test_consecutive_image_lines_merge_but_blank_line_splits() -> None:
+    blocks = [
+        b for b in parse_markdown("![캡션](a.png)\n![](b.png)\n\n![다른](c.png)\n")
+        if isinstance(b, FigureBlock)
+    ]
+    assert [b.paths for b in blocks] == [["a.png", "b.png"], ["c.png"]]
+    assert blocks[0].alt == "캡션"
+
+
+def test_multi_image_figure_takes_one_number_and_side_by_side_pictures(tmp_path: Path) -> None:
+    a, b = _png(tmp_path / "a.png", 40, 20), _png(tmp_path / "b.png", 20, 20)
+    out = tmp_path / "o.hwpx"
+    res = fill_from_markdown(
+        _DEFAULT_TPL, "![좌우 사진](a.png) ![](b.png)\n주) 좌: 가, 우: 나\n\n![다음](a.png)\n",
+        output=out, base_dir=tmp_path,
+    )
+    assert res.figures == 2
+    with zipfile.ZipFile(out) as z:
+        sec = "".join(
+            z.read(n).decode() for n in z.namelist()
+            if n.startswith("Contents/section") and n.endswith(".xml")
+        )
+    pics = re.findall(r"<hp:pic\b.*?</hp:pic>", sec, re.S)
+    assert len(pics) == 3  # 2 + 1
+    first_two = pics[:2]
+    heights = {re.search(r'<hp:curSz width="\d+" height="(\d+)"', p).group(1) for p in first_two}
+    assert len(heights) == 1  # same height, so they line up
+    widths = [int(re.search(r'<hp:curSz width="(\d+)"', p).group(1)) for p in first_two]
+    assert widths[0] == 2 * widths[1]  # 40x20 vs 20x20
+    assert "그림 2" in re.sub(r"<[^>]+>", "", sec) and "그림 3" not in re.sub(r"<[^>]+>", "", sec)
+
+
+def test_extract_roundtrips_multi_image_figure(tmp_path: Path) -> None:
+    _png(tmp_path / "a.png", 40, 20)
+    _png(tmp_path / "b.png", 20, 20)
+    out = tmp_path / "o.hwpx"
+    fill_from_markdown(
+        _DEFAULT_TPL, "![좌우 사진](a.png) ![](b.png){#fig_pair}\n주) 좌: 가, 우: 나\n",
+        output=out, base_dir=tmp_path,
+    )
+    md = extract_markdown(out)
+    assert "![좌우 사진](a.png) ![](b.png){#fig_pair}" in md
+    assert "주) 좌: 가, 우: 나" in md
+
+
+def test_caption_line_above_image_is_the_figure_caption() -> None:
+    """#110: '[그림 …] 제목' directly above an image is its caption, not a body paragraph."""
+    for md in (
+        "[그림 Ⅰ-1] 가상 사진\n![단독](left.png)\n",
+        "[그림 Ⅰ-1] 가상 사진\n\n![단독](left.png)\n",  # one blank line allowed
+    ):
+        blocks = parse_markdown(md)
+        assert [type(b).__name__ for b in blocks] == ["FigureBlock"], blocks
+        assert blocks[0].caption == "가상 사진" and blocks[0].alt == "단독"
+    # two blank lines: the line is an ordinary paragraph again
+    blocks = parse_markdown("[그림 Ⅰ-1] 가상 사진\n\n\n![단독](left.png)\n")
+    assert [type(b).__name__ for b in blocks] == ["Block", "FigureBlock"]
+    assert blocks[1].caption is None
+    # no caption line: the alt stays the caption (unchanged behaviour)
+    assert parse_markdown("![단독](left.png)\n")[0].caption is None
+
+
+def test_caption_line_wins_over_alt_in_the_written_figure(tmp_path: Path) -> None:
+    _png(tmp_path / "a.png", 40, 20)
+    _png(tmp_path / "b.png", 20, 20)
+    out = tmp_path / "o.hwpx"
+    fill_from_markdown(
+        _DEFAULT_TPL,
+        "[그림 Ⅰ-1] 가상 사진 제목\n\n![좌](a.png) ![우](b.png)\n주) 좌: 가, 우: 나\n",
+        output=out, base_dir=tmp_path,
+    )
+    with zipfile.ZipFile(out) as z:
+        sec = "".join(
+            z.read(n).decode() for n in z.namelist()
+            if n.startswith("Contents/section") and n.endswith(".xml")
+        )
+    caps = [re.sub(r"<[^>]+>", "", c) for c in re.findall(r"<hp:caption.*?</hp:caption>", sec, re.S)]
+    assert any("가상 사진 제목" in c and "좌" not in c for c in caps), caps
+    text = re.sub(r"<[^>]+>", "|", sec)
+    assert text.count("가상 사진 제목") == 1  # not also a body paragraph
+
+
+def test_caption_line_is_matched_per_physical_line() -> None:
+    """Review on #111: prose around the caption line is neither swallowed nor missed."""
+    # prose directly above the caption (no blank): caption still found, prose stays
+    blocks = parse_markdown("본문입니다\n[그림 1] 제목\n![alt](a.png)\n")
+    assert [type(b).__name__ for b in blocks] == ["Block", "FigureBlock"]
+    assert blocks[0].text == "본문입니다" and blocks[1].caption == "제목"
+    # a paragraph that merely *starts* with a caption-like line keeps its later prose
+    blocks = parse_markdown("[그림 1] 제목\n이어지는 본문\n\n![alt](a.png)\n")
+    assert [type(b).__name__ for b in blocks] == ["Block", "FigureBlock"]
+    assert "이어지는 본문" in blocks[0].text and blocks[1].caption is None
+    # caption as the last line of a multi-line paragraph, blank line before the image
+    blocks = parse_markdown("앞 문장\n[그림 1] 제목\n\n![alt](a.png)\n")
+    assert blocks[0].text == "앞 문장" and blocks[1].caption == "제목"

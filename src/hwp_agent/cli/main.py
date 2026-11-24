@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import zipfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -103,13 +104,36 @@ def _cmd_convert(args: argparse.Namespace) -> int:
     if not result.ok:
         if result.stderr:
             print(result.stderr.rstrip(), file=sys.stderr)
-        print(f"error: conversion failed (exit {result.returncode})", file=sys.stderr)
+        print(
+            f"error: conversion failed (exit {result.returncode}): {args.input} -> {args.output}",
+            file=sys.stderr,
+        )
         return 1
 
     print(f"wrote {result.hwpx_path}")
     if result.normalized:
         print(f"  normalized: {', '.join(result.normalized)}")
     return 0
+
+
+def _setup_rhwp(*, force: bool, diag_out) -> None:
+    """Fetch the pinned rhwp (fallback render engine). A failure only warns —
+    conversion works without it; renders then need Hancom (hwp2pdf)."""
+    from ..render.fetch_rhwp import RHWP_VERSION, download_rhwp, installed_version, rhwp_dest
+
+    if installed_version() == RHWP_VERSION and not force:
+        print(f"rhwp {RHWP_VERSION} already present: {rhwp_dest()}", file=diag_out)
+        return
+    print(f"downloading rhwp {RHWP_VERSION} (fallback render engine)\n  to   {rhwp_dest()}",
+          file=diag_out)
+    try:
+        dest = download_rhwp(force=force)
+    except Exception as exc:  # noqa: BLE001 — optional engine; never fail setup over it
+        print(f"warn: could not download rhwp: {exc}", file=sys.stderr)
+        print("  renders will need Hancom (hwp2pdf); retry later or set RHWP_RELEASE_URL.",
+              file=sys.stderr)
+        return
+    print(f"ok: rhwp ready at {dest}", file=diag_out)
 
 
 def _cmd_setup(args: argparse.Namespace) -> int:
@@ -168,6 +192,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 "(e.g. Temurin: https://adoptium.net/).",
                 file=sys.stderr,
             )
+        _setup_rhwp(force=args.force, diag_out=diag_out)
         if not has_mcp_action:
             print("\nyou can now run:  hwp-agent convert input.hwp output.hwpx")
             return 0
@@ -486,7 +511,13 @@ def _cmd_form(args: argparse.Namespace) -> int:
 def _render_cmd(args: argparse.Namespace, *, fmt: str, engine: str) -> int:
     import dataclasses
 
-    from ..render import ENGINE_LABELS, render_document, resolve_engine, resolve_hwp2pdf_config
+    from ..render import (
+        ENGINE_LABELS,
+        RHWP_NOTICE,
+        render_document,
+        resolve_engine,
+        resolve_hwp2pdf_config,
+    )
 
     src: Path = args.input
     if not src.is_file():
@@ -512,6 +543,8 @@ def _render_cmd(args: argparse.Namespace, *, fmt: str, engine: str) -> int:
     if result.ok:
         label = ENGINE_LABELS.get(result.backend, "")
         print(f"wrote {out}  (via {result.backend}{f' · {label}' if label else ''})")
+        if result.backend == "rhwp":
+            print(RHWP_NOTICE)
         return 0
     print(f"error: {result.stderr}", file=sys.stderr)
     return result.returncode or 1
@@ -523,6 +556,107 @@ def _cmd_pdf(args: argparse.Namespace) -> int:
 
 def _cmd_docx(args: argparse.Namespace) -> int:
     return _render_cmd(args, fmt="docx", engine=args.engine)
+
+
+def _signature_from_profile(profile: Path | None) -> Path | None:
+    """``signature_image`` (or ``signature``) from the personal-data profile, if set."""
+    import json
+
+    from ..ops.profile import resolve_profile_path
+
+    path = resolve_profile_path(profile)
+    if not path.is_file():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    value = data.get("signature_image") or data.get("signature")
+    return Path(value).expanduser() if value else None
+
+
+def _cmd_sign(args: argparse.Namespace) -> int:
+    """Stamp the signature image on a PDF's "(인)" mark (hwp-agent#88)."""
+    import json
+    import tempfile
+
+    try:
+        import fitz  # noqa: F401  (PyMuPDF — optional dependency)
+    except ModuleNotFoundError:
+        print(
+            "error: 서명에는 PyMuPDF가 필요합니다:\n"
+            '  pip install "hwp-agent[verify]"   (또는: uv pip install pymupdf)',
+            file=sys.stderr,
+        )
+        return 2
+    from ..ops.sign import DEFAULT_ANCHORS, sign_pdf
+
+    src: Path = args.input
+    image = args.image or _signature_from_profile(args.profile)
+    if image is None:
+        print(
+            "error: 서명 이미지가 없습니다. --image 로 주거나 profile.json 에 "
+            '"signature_image": "<투명 배경 PNG 경로>" 를 넣으세요.',
+            file=sys.stderr,
+        )
+        return 2
+    if not image.is_file():
+        print(f"error: 서명 이미지를 찾을 수 없습니다: {image}", file=sys.stderr)
+        return 2
+    out: Path | None = None if args.dry_run else (
+        args.output or src.with_name(f"{src.stem}_서명.pdf")
+    )
+    anchors = tuple(args.anchor) if args.anchor else DEFAULT_ANCHORS
+
+    with tempfile.TemporaryDirectory(prefix="hwp-agent-sign-") as tmp:
+        pdf = src
+        if src.suffix.lower() != ".pdf":  # .hwp/.hwpx: render to PDF first
+            from ..render import render_document, resolve_engine, resolve_hwp2pdf_config
+
+            pdf = Path(tmp) / "unsigned.pdf"
+            try:
+                engine = resolve_engine(args.engine)
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            rendered = render_document(
+                src, pdf, fmt="pdf", engine=engine,
+                config=resolve_hwp2pdf_config(None), rhwp_bin=None, timeout=None,
+            )
+            if not rendered.ok:
+                print(f"error: PDF 변환 실패: {rendered.stderr}", file=sys.stderr)
+                return rendered.returncode or 1
+            if rendered.backend == "rhwp":
+                print(
+                    "note: 한컴 엔진을 쓸 수 없어 rhwp로 PDF를 만들었습니다. 조판이 한글과 "
+                    "다를 수 있으니 제출 전 확인하세요.",
+                    file=sys.stderr,
+                )
+        try:
+            result = sign_pdf(
+                pdf, out, image, anchors=anchors, width=args.width, page=args.page,
+                every=args.all, dx=args.dx, dy=args.dy, preview=args.preview,
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    if args.json:
+        print(json.dumps({
+            "output": str(result.output) if result.output else None,
+            "placements": [p.as_dict() for p in result.placements],
+            "previews": [str(p) for p in result.previews],
+            "warnings": result.warnings,
+        }, ensure_ascii=False, indent=2))
+        return 0 if result.ok else 1
+    for w in result.warnings:
+        print(f"warning: {w}", file=sys.stderr)
+    if not result.ok:
+        return 1
+    for p in result.placements:
+        x0, y0, x1, y1 = p.image_rect
+        print(f"  p.{p.page}  \"{p.anchor}\"  → 서명 ({x0:.0f},{y0:.0f})-({x1:.0f},{y1:.0f}) pt")
+    for p in result.previews:
+        print(f"preview {p}")
+    print(f"wrote {out}" if out else "dry run — 아무 파일도 쓰지 않았습니다")
+    return 0
 
 
 def _cmd_verify_bands(args: argparse.Namespace) -> int:
@@ -966,6 +1100,93 @@ def _fit_tails_in_place(path: Path) -> None:
     )
 
 
+def _tails_first(src: Path, td: str, quiet: bool) -> Path:
+    """``--fit-tails`` with ``fit pages``: widow tails first (#40), into a temp copy."""
+    from ..ops import apply_tail_fits, detect_tail_fits_with_engine
+
+    detection = detect_tail_fits_with_engine(src)
+    if not detection.judged:
+        print("note: 꼬리 줄 압축 미적용 — 판정 엔진 없음", file=sys.stderr)
+        return src
+    work = Path(td) / src.name
+    fitted = apply_tail_fits(src, work, candidates=detection.candidates)
+    if not quiet:
+        print(f"꼬리 줄 압축 먼저: {fitted}개 문단 [판정: {detection.engine_label}]")
+    return work
+
+
+def _cmd_fit_pages(args: argparse.Namespace) -> int:
+    import json
+    import tempfile
+
+    from ..ops import fit_pages, format_page_fit_no_engine_report, format_page_fit_report
+
+    src = Path(args.file)
+    dry_run = args.dry_run
+    with tempfile.TemporaryDirectory() as td:
+        work = _tails_first(src, td, args.json) if args.fit_tails else src
+        gr = None if dry_run else _guard_output(args.output or src)
+        detection = fit_pages(
+            work,
+            None if dry_run else gr.target,
+            dry_run=dry_run,
+            max_spacing_cut=args.max_spacing_cut,
+            max_linespacing_cut=args.max_linespacing_cut,
+            gap_threshold=args.gap_threshold,
+            max_lines=args.max_lines,
+        )
+        if gr is not None and detection.judged:
+            _guard_finalize(gr, quiet=args.json)
+    if args.json:
+        print(json.dumps({
+            "file": str(src),
+            "dry_run": dry_run,
+            "engine": detection.engine,
+            "judged": detection.judged,
+            "pages_by_engine": detection.pages,
+            "notes": detection.notes,
+            "applied": detection.applied,
+            "fits": [f.as_dict() for f in detection.fits],
+            "output": None if gr is None or not detection.judged else str(gr.target),
+        }, ensure_ascii=False, indent=2))
+        return 0 if detection.judged else _FIT_NO_ENGINE
+    if not detection.judged:
+        print(format_page_fit_no_engine_report(detection), file=sys.stderr)
+        return _FIT_NO_ENGINE
+    for note in detection.notes:
+        print(f"note: {note}", file=sys.stderr)
+    print(format_page_fit_report(detection, dry_run))
+    if dry_run:
+        print("\n(--dry-run: 실제 변경은 적용되지 않았습니다. 쪽마다 따로 본 추정이며,"
+              " 적용할 때는 앞 쪽부터 한 곳씩 적용하고 다시 조판해 확인합니다)")
+    else:
+        print(f"\n적용 완료: {detection.applied}곳 -> {gr.target}")
+    return 0
+
+
+def _fit_pages_in_place(path: Path) -> None:
+    """``write``/``build --fit-pages``: fill pages in place; warn, never fail."""
+    from ..ops import fit_pages
+
+    detection = fit_pages(path, path)
+    if not detection.judged:
+        print(
+            "  warning: --fit-pages 미적용 — 판정 엔진 없음 (문서는 그대로 생성)",
+            file=sys.stderr,
+        )
+        for note in detection.notes:
+            print(f"    - {note}", file=sys.stderr)
+        return
+    for note in detection.notes:
+        print(f"  note: {note}", file=sys.stderr)
+    manual = sum(1 for f in detection.fits if f.status == "unfittable" and f.kind == "gap")
+    extra = f", 여백 과다 {manual}쪽은 수동 판단 필요" if manual else ""
+    print(
+        f"  --fit-pages: {detection.applied} page(s) pulled back{extra} "
+        f"[판정: {detection.engine_label}]"
+    )
+
+
 def _cmd_image(args: argparse.Namespace) -> int:
     import json
 
@@ -1086,6 +1307,16 @@ def _cmd_instructions(args: argparse.Namespace) -> int:
     return 0
 
 
+def _neutralize_decor_numbering(path: Path) -> None:
+    """Drop uncaptioned decorations from 그림·표 차례 (#101); never fails the command."""
+    from ..ops import neutralize_uncaptioned_numbering
+
+    try:
+        neutralize_uncaptioned_numbering(path)
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        print(f"  warning: could not neutralize decoration numbering: {exc}", file=sys.stderr)
+
+
 def _cmd_write(args: argparse.Namespace) -> int:
     from ..ops import fill_from_markdown
     from ..ops.template import describe_template_source, resolve_template_path
@@ -1139,10 +1370,20 @@ def _cmd_write(args: argparse.Namespace) -> int:
         result, gr.target, meta,
         fallback_title=first_heading(markdown), author=args.author,
     )
+    wings = None
+    if getattr(args, "chapter_header", True):
+        from ..ops import apply_chapter_headers
+
+        wings = apply_chapter_headers(gr.target)
+    _neutralize_decor_numbering(gr.target)
     if getattr(args, "fit_tails", False):
         _fit_tails_in_place(gr.target)
+    if getattr(args, "fit_pages", False):
+        _fit_pages_in_place(gr.target)
     _guard_finalize(gr)
     print(f"placed {result.placed} block(s) -> {gr.target}")
+    if wings is not None and wings.count:
+        print(f"  set the side wing (쪽날개) of {wings.count} chapter(s)")
     _print_meta(result.meta)
     if result.links:
         print(f"  linked {result.links} URL(s) as hyperlink fields")
@@ -1232,8 +1473,11 @@ def _cmd_build(args: argparse.Namespace) -> int:
         from ..ops import apply_chapter_headers
 
         wings = apply_chapter_headers(gr.target)
+    _neutralize_decor_numbering(gr.target)
     if getattr(args, "fit_tails", False):
         _fit_tails_in_place(gr.target)
+    if getattr(args, "fit_pages", False):
+        _fit_pages_in_place(gr.target)
     _guard_finalize(gr)
     print(f"assembled {result.placed} block(s) -> {gr.target}")
     _print_meta(result.meta)
@@ -1628,6 +1872,53 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rdocx.set_defaults(func=_cmd_docx)
 
+    sgn = sub.add_parser(
+        "sign",
+        help="stamp a signature image on the \"(인)\" mark of a PDF (an .hwp/.hwpx is "
+        "rendered to PDF first)",
+    )
+    sgn.add_argument("input", type=Path, help="source .pdf / .hwpx / .hwp")
+    sgn.add_argument(
+        "-o", "--output", type=Path, default=None,
+        help="signed .pdf (default: <input>_서명.pdf alongside the input)",
+    )
+    sgn.add_argument(
+        "--image", type=Path, default=None,
+        help="signature image, transparent-background PNG preferred "
+        "(default: profile.json \"signature_image\")",
+    )
+    sgn.add_argument(
+        "--profile", type=Path, default=None,
+        help="profile holding signature_image (default: ~/.config/hwp-agent/profile.json)",
+    )
+    sgn.add_argument(
+        "--anchor", action="append", default=None,
+        help="mark text to sign on; repeatable, first found wins "
+        "(default: \"(인)\", then \"(서명)\", then \"서명\")",
+    )
+    sgn.add_argument("--width", type=float, default=72.0, help="signature width in pt (72)")
+    sgn.add_argument("--page", type=int, default=None, help="only look on this page (1-based)")
+    sgn.add_argument(
+        "--all", action="store_true",
+        help="sign every mark found (default: only the last one in the document)",
+    )
+    sgn.add_argument("--dx", type=float, default=0.0, help="nudge right, in pt")
+    sgn.add_argument("--dy", type=float, default=0.0, help="nudge down, in pt")
+    sgn.add_argument(
+        "--preview", type=Path, default=None,
+        help="also save a PNG crop around each signature (to check the placement)",
+    )
+    sgn.add_argument(
+        "--dry-run", action="store_true",
+        help="report where it would sign (and --preview), without writing the PDF",
+    )
+    sgn.add_argument(
+        "--engine", choices=("auto", "hwp2pdf", "local", "remote", "rhwp"), default=None,
+        help="PDF engine for .hwp/.hwpx input (same as `hwp-agent pdf`)",
+    )
+    sgn.add_argument("--json", action="store_true", help="emit the result as JSON")
+    sgn.set_defaults(func=_cmd_sign)
+
     cls = sub.add_parser("classify", help="classify a doc: structured | weak | flat")
     cls.add_argument("file", type=Path, help=".hwpx file")
     cls.set_defaults(func=_cmd_classify)
@@ -1715,6 +2006,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit the report as JSON",
     )
     ft.set_defaults(func=_cmd_fit_tails)
+
+    fp = fit_sub.add_parser(
+        "pages",
+        help="pull a short chunk back onto the previous page by slightly tightening "
+        "that page's paragraph/line spacing (report-only when it cannot fit)",
+    )
+    fp.add_argument("file", type=Path, help="HWPX file to inspect or adjust")
+    fp.add_argument(
+        "-o", "--output", type=Path, default=None, help="output path (default: in-place)",
+    )
+    fp.add_argument(
+        "--max-spacing-cut", type=int, default=50,
+        help="largest cut of paragraph spacing before/after, %% (default: 50)",
+    )
+    fp.add_argument(
+        "--max-linespacing-cut", type=int, default=10,
+        help="largest cut of line spacing, %% of its value (default: 10, 160%%→144%%)",
+    )
+    fp.add_argument(
+        "--gap-threshold", type=float, default=25.0,
+        help="bottom band (%% of the body height) reported as too large (default: 25)",
+    )
+    fp.add_argument(
+        "--max-lines", type=int, default=3,
+        help="largest chunk (lines) pulled back from a nearly full page (default: 3)",
+    )
+    fp.add_argument(
+        "--fit-tails", action="store_true", default=False,
+        help="shorten widow tail lines first (fit tails), then fill pages",
+    )
+    fp.add_argument(
+        "--dry-run", action="store_true", default=False,
+        help="report per page without modifying the file",
+    )
+    fp.add_argument("--json", action="store_true", default=False, help="emit the report as JSON")
+    fp.set_defaults(func=_cmd_fit_pages)
 
     ins = sub.add_parser(
         "instructions", help="show a template's AI:INSTRUCTION directions and {{slots}}"
@@ -1849,6 +2176,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="shorten widow tail lines (layout: saved linesegarray > hwp2pdf > rhwp; "
         "warns and skips if none)",
     )
+    wr.add_argument(
+        "--fit-pages",
+        action="store_true",
+        default=False,
+        help="pull short chunks back onto the previous page after --fit-tails "
+        "(layout: saved linesegarray > hwp2pdf > rhwp; warns and skips if none)",
+    )
+    wr.add_argument(
+        "--no-chapter-header",
+        dest="chapter_header",
+        action="store_false",
+        default=True,
+        help="leave the odd-page side wings (쪽날개) as the template has them "
+        "(default: each chapter gets its own, like `build`)",
+    )
     _add_meta_args(wr)
     wr.add_argument("-o", "--output", type=Path, default=None, help="output file")
     wr.set_defaults(func=_cmd_write)
@@ -1881,6 +2223,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="shorten widow tail lines (layout: saved linesegarray > hwp2pdf > rhwp; "
         "warns and skips if none)",
+    )
+    bd.add_argument(
+        "--fit-pages",
+        action="store_true",
+        default=False,
+        help="pull short chunks back onto the previous page after --fit-tails "
+        "(layout: saved linesegarray > hwp2pdf > rhwp; warns and skips if none)",
     )
     bd.add_argument(
         "--no-toc",

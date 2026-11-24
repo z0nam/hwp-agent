@@ -204,3 +204,73 @@ def test_existing_odd_header_content_is_kept(tmp_path: Path) -> None:
     assert 'applyPageType="ODD"' in restore
     assert "RUNNING-HEAD" in restore and "<hp:rect" not in restore
     assert audit_package(tmp_path / "res.hwpx") == []
+
+
+def test_wing_paragraphs_are_not_outline_headings(tmp_path: Path) -> None:
+    """#113: `write --literal-numbering` (#97) gives the chapter titles an OUTLINE paragraph
+    shape and the wing copies it; kept as is, Hangul's 제목 차례 lists every chapter
+    title twice. The wing is decoration, so its paragraphs must be heading NONE."""
+    from hwp_agent.cli.main import main
+
+    golden = REPO_ROOT / "examples" / "정책과제-template.hwpx"
+    if not golden.is_file():
+        pytest.skip("golden template absent")
+    md = tmp_path / "r.md"
+    md.write_text("# Ⅰ. 서론\n\n가상 본문\n\n# Ⅱ. 본론\n\n가상 본문\n", encoding="utf-8")
+    out = tmp_path / "r.hwpx"
+    assert main(["write", str(md), "--template", str(golden), "--literal-numbering", "-o", str(out)]) == 0
+    with zipfile.ZipFile(out) as z:
+        header = z.read("Contents/header.xml").decode()
+        sections = "".join(
+            z.read(n).decode() for n in z.namelist() if re.fullmatch(r"Contents/section\d+\.xml", n)
+        )
+
+    def paraprs(pr_id: str) -> list[str]:
+        return re.findall(rf'<hh:paraPr id="{pr_id}" .*?</hh:paraPr>', header, re.S)
+
+    def heading_type(pr_id: str) -> str:
+        found = paraprs(pr_id)
+        assert len(found) == 1, f"paraPr id {pr_id} defined {len(found)} times"  # ids unique
+        return re.search(r'<hh:heading type="(\w+)"', found[0]).group(1)
+
+    wing_ids: set[str] = set()
+    for h in _headers(sections):  # paragraphs inside the odd-page header and its wing box
+        wing_ids |= set(re.findall(r'<hp:p [^>]*paraPrIDRef="(\d+)"', h))
+    assert wing_ids, "no wings were written"
+    # chapter titles: the real body paragraphs (HEADING_1 style) outside any header
+    body = re.sub(r"<hp:header\b.*?</hp:header>", "", sections, flags=re.S)
+    title_ids = set(re.findall(r'<hp:p [^>]*paraPrIDRef="(\d+)" styleIDRef="1"', body))
+    assert title_ids
+    # the wing never shares a paragraph shape with a chapter title, and the two differ
+    # in exactly what 차례 cares about: titles OUTLINE, wing NONE
+    assert not (wing_ids & title_ids), (wing_ids, title_ids)
+    assert {heading_type(p) for p in title_ids} == {"OUTLINE"}
+    assert {heading_type(p) for p in wing_ids} == {"NONE"}
+
+
+def test_variant_ids_never_collide_when_ids_are_not_contiguous() -> None:
+    """The new paraPr id is max id + 1, not the element count (which can equal an
+    existing id when the ids have gaps)."""
+    from lxml import etree
+
+    from hwp_agent.ops.chapter_header import _ensure_variant, _hh
+
+    ns = "http://www.hancom.co.kr/hwpml/2011/head"
+    props = etree.fromstring(
+        f'<hh:paraProperties xmlns:hh="{ns}" itemCnt="2">'
+        '<hh:paraPr id="0"><hh:align horizontal="JUSTIFY"/></hh:paraPr>'
+        '<hh:paraPr id="5"><hh:align horizontal="JUSTIFY"/></hh:paraPr>'
+        "</hh:paraProperties>"
+    )
+    new = _ensure_variant(props, "paraPr", "0", lambda el: el.find(_hh("align")).set("horizontal", "LEFT"))
+    assert new == "6"
+    props2 = etree.fromstring(
+        f'<hh:paraProperties xmlns:hh="{ns}" itemCnt="3">'
+        '<hh:paraPr id="0"><hh:align horizontal="JUSTIFY"/></hh:paraPr>'
+        '<hh:paraPr id="3"><hh:align horizontal="JUSTIFY"/></hh:paraPr>'
+        '<hh:paraPr id="4"><hh:align horizontal="JUSTIFY"/></hh:paraPr>'
+        "</hh:paraProperties>"
+    )
+    new2 = _ensure_variant(props2, "paraPr", "0", lambda el: el.find(_hh("align")).set("horizontal", "LEFT"))
+    ids = [el.get("id") for el in props2.findall(_hh("paraPr"))]
+    assert new2 == "5" and len(set(ids)) == len(ids)  # len(existing)=3 would have collided with id 3

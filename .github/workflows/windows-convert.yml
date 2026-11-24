@@ -1,0 +1,67 @@
+name: Windows convert (non-ASCII paths)
+
+# hwp2hwpx is a Java program, and the Java launcher reads its command line in the Windows
+# ANSI code page. windows-latest runs cp1252, where Hangul and emoji become "?" — so a
+# real conversion of a file whose path holds them proves the staging fix (hwp-agent#89).
+# Runs the convert tests only: a blank .hwp is generated with hwplib (needs a JDK for the
+# single-file source launcher), so no sample document has to be committed.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/hwp_agent/convert/**"
+      - "src/hwp_agent/_subproc.py"
+      - "tests/test_convert.py"
+      - "tests/data/MakeBlankHwp.java"
+      - ".github/workflows/windows-convert.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/hwp_agent/convert/**"
+      - "tests/test_convert.py"
+
+permissions:
+  contents: read
+
+jobs:
+  convert:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Show the ANSI code page (the bug needs one without Hangul)
+        shell: pwsh
+        run: |
+          Get-ItemPropertyValue HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage ACP
+          java -version
+
+      - name: Fetch the converter jar
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path vendor | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://github.com/z0nam/hwp-agent/releases/download/converter-jar/hwp2hwpx.jar" `
+            -OutFile "vendor/hwp2hwpx.jar"
+
+      - name: Install
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pytest
+
+      - name: Convert tests
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8      # console only; Java still gets the cp1252 command line
+          HWP_AGENT_REQUIRE_JAVA: "1"  # the real-Java test must run here, not skip
+        run: python -m pytest -q -rs tests/test_convert.py

@@ -58,3 +58,22 @@ succeeds**, so a refusal never leaves a half-written file.
 `read_image_size` tries Pillow first (covers every format); without Pillow it parses
 PNG / JPEG / BMP headers directly, so the common cases need no extra dependency.
 `extent` (re-encoding to the slot's aspect) would need Pillow and is not implemented.
+
+## Replacing figure images (`image list` / `image replace`)
+
+`hwp-agent image list FILE.hwpx` enumerates every figure slot — its `ref`
+(`binaryItemIDRef`, e.g. `image7`), the slot's stored format, the original pixel
+size, and the caption text from the pic's own paragraph (a pic ↔ caption is 1:1;
+the list-of-figures section has captions with no pic and is skipped). Replace one
+with `hwp-agent image replace FILE.hwpx new.png --ref image7` (or `--caption
+"[그림 III-2] …"`). Two rules the tool enforces for you, both verified against a
+real report:
+
+- **Format must match the slot.** Hangul keys off the file *extension*, not the
+  (often `image/unknown`) media-type, so a `.png` slot needs PNG bytes. A
+  mismatch is **refused** (`format_mismatch`) and nothing is written — re-encode
+  the image to the slot's format first, or pick a file that already matches.
+- **`--fit aspect` (default) keeps the box width and recomputes the height** so
+  the new image isn't stretched into the old one's aspect ratio; `--fit none`
+  leaves the display box untouched. The swap is byte-only and container-preserving
+  (see `references/hand-edit.md`), so the edited file still opens at Hangul's 높음 security level.

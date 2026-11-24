@@ -77,7 +77,7 @@ outline 선언이 없는 **flat 스타일**이라 `hwp-agent write` 가 그대�
    예시는 전부 "형식 시연용 껍데기"(연구자는 바탕글에 수동 서식으로 편집, 회사는 겉모양만
    봄)라 걷어내도 잃을 실데이터가 없다. `styles` 없이 `body` 만 두면 스타일 자동추론 유지.
    삽입/스트립은 `insert_body_marker()` 가 컨테이너 보존으로 처리. 보고서 4종은
-   `section4`(strip), 이력카드(설문폼)·브리프(본문 다중섹션)는 미선언.
+   `section4`(strip), 이력카드(설문폼)는 미선언. 브리프(본문 다중섹션)는 `meta_slots` 만 선언(#91 1단계: 표지 제목 2줄·호수·저자·뒷표지·바탕쪽 머리제목), 본문 구역↔장 대응은 2단계.
 
 **흐름 요약:** 자동추론이 되는 서식(보고서 4종)은 그대로, 안 되는/깨진 서식은
 override 로 확정. 회귀 가드가 "언제 override 가 필요한지"를 알려준다.
@@ -139,3 +139,18 @@ rm ~/Library/LaunchAgents/re.ji.hwp-agent.refresh-forms.plist
   force-push 로 갱신한다(PR 하나 유지). PR 을 머지 없이 닫으면 그 초벌구이는
   다음 소스 개정까지 재생성되지 않는다(상태파일이 이미 최신 해시라서). 필요하면
   상태파일에서 해당 항목을 지우고 재실행.
+
+## 정책이슈브리프 템플릿 (#91 2단계)
+
+`refresh-house-forms` 가 `.hwp` 에서 굽는 브리프 사본(`examples/house-forms/정책이슈브리프.normalized.hwpx`)은
+바탕쪽 순서가 구역과 어긋나 있어, 발간본 구조의 별도 템플릿 `examples/정책이슈브리프-template.hwpx` 를
+쓴다(골든 템플릿처럼 수동 큐레이션 — refresh 가 덮어쓰지 않는다). 만드는 법과 점검:
+
+```bash
+scripts/build-brief-template.py <발간본.hwpx>            # 원고·그림·메타를 지우고 슬롯으로
+scripts/build-brief-template.py --trace examples/정책이슈브리프-template.hwpx   # 남은 텍스트·주석·메타 덤프
+```
+
+구조: section0 표지·차례·1장, section1 2장, section2 3장 이후 전부(발간본이 그렇게 구성), section3 참고문헌,
+section4 뒷표지. `hwp-agent build` 는 이 템플릿(`{{ch1}}` 마커)이면 본문을 `# ` 장 제목으로 쪼개
+`ch1`→section0, `ch2`→section1, 나머지→section2 에 넣고 장 제목·바탕쪽 장 날개·차례를 슬롯으로 채운다.

@@ -40,7 +40,8 @@ class LocalRhwpBackend(RenderBackend):
             if rb is None:
                 return RenderResult(
                     out, fmt, self.name, 2,
-                    stderr="rhwp not found — install the rhwp CLI on PATH or set $RHWP_BIN",
+                    stderr="rhwp not found — run `hwp-agent setup` to download it, "
+                           "or set $RHWP_BIN",
                 )
             render = rhwp_render_fn(rb)
         try:

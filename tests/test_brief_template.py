@@ -301,3 +301,29 @@ def test_generated_tables_follow_the_published_table_sample(tmp_path: Path) -> N
     # header row: published first / interior / last-column fills (the sample has 5 columns)
     assert got[0] == [sample_bf[0][0], sample_bf[0][1], sample_bf[0][-1]]
     assert got[-1] == sample_bf[-1]  # and the note row its own
+
+
+def test_cover_title_and_authors_follow_the_institute_form() -> None:
+    """표지 제목은 왼쪽(JUSTIFY), 저자는 제목 아래 오른쪽 정렬 — 기관 서식(2026-06-15)대로."""
+    from lxml import etree
+
+    hp = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+    hh = "{http://www.hancom.co.kr/hwpml/2011/head}"
+    with zipfile.ZipFile(TPL) as z:
+        s0 = etree.fromstring(z.read("Contents/section0.xml"))
+        header = etree.fromstring(z.read("Contents/header.xml"))
+    align = {p.get("id"): p.find(f"{hh}align").get("horizontal") for p in header.iter(f"{hh}paraPr")}
+    ratio = {c.get("id"): c.find(f"{hh}ratio").get("hangul") for c in header.iter(f"{hh}charPr")}
+
+    def box(token: str):
+        rect = next(r for r in s0.iter(f"{hp}rect") if any(t.text == token for t in r.iter(f"{hp}t")))
+        p = next(p for p in rect.iter(f"{hp}p") if any(t.text == token for t in p.iter(f"{hp}t")))
+        pos, sz = rect.find(f"{hp}pos"), rect.find(f"{hp}sz")
+        return p, int(pos.get("vertOffset")), int(pos.get("horzOffset")), int(sz.get("width")), int(sz.get("height"))
+
+    tp, tv, th, tw, theight = box("{{title_1}}")
+    ap, av, ah, aw, _ = box("{{authors}}")
+    assert align[tp.get("paraPrIDRef")] == "JUSTIFY" and align[ap.get("paraPrIDRef")] == "RIGHT"
+    assert ratio[tp.find(f"{hp}run").get("charPrIDRef")] == "95"
+    assert (th, tw) == (8855, 36633) and (ah, aw) == (35433, 18160)
+    assert av >= tv + theight  # authors sit under the title box

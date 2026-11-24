@@ -634,6 +634,56 @@ def _drop_slot_paragraphs(doc: HwpxDocument, slot: str) -> int:
     return n
 
 
+def _split_authors(doc: HwpxDocument, value: str) -> bool:
+    """Fill ``{{authors}}`` as name + affiliation runs when the template asks for it (#117).
+
+    The 정책이슈브리프 cover sets each author's name larger than "제주연구원 직위". A
+    template marks that by following the ``{{authors}}`` run with an empty run in the
+    affiliation's character shape. Each author line (``\\n``-separated) is then split at
+    its first space: the name goes in the token run's shape followed by two spaces (as
+    the form has it), the rest in the empty run's shape. A line with no space is a name
+    alone. Returns False — and leaves the token for the plain fill — when no such pair
+    of runs is found.
+    """
+    token = "{{authors}}"
+    lines = [ln.strip() for ln in value.split("\n") if ln.strip()]
+    if not lines:
+        return False
+
+    def run_text(r) -> str | None:
+        ts = r.findall(_hp("t"))
+        if len(r) != len(ts) or any(len(t) for t in ts):
+            return None  # holds a control / tab / break: not a plain text run
+        return "".join(t.text or "" for t in ts)
+
+    for sec in doc.sections:
+        for p in sec.element.iter(_hp("p")):
+            runs = p.findall(_hp("run"))
+            for name_run, affil_run in zip(runs, runs[1:], strict=False):
+                if run_text(name_run) != token or run_text(affil_run) != "":
+                    continue
+                new_runs = []
+                for j, line in enumerate(lines):
+                    name, rest = (re.split(r"\s+", line, maxsplit=1) + [""])[:2]
+                    tail = "\n" if j < len(lines) - 1 else ""
+                    for src, text in ((name_run, name + ("  " if rest else "")), (affil_run, rest)):
+                        if not text and src is affil_run:
+                            continue
+                        r = src.makeelement(_hp("run"), {"charPrIDRef": src.get("charPrIDRef")})
+                        t = r.makeelement(_hp("t"), {})
+                        t.text = text
+                        r.append(t)
+                        new_runs.append(r)
+                    new_runs[-1][0].text += tail
+                for r in new_runs:
+                    affil_run.addprevious(r)
+                p.remove(name_run)
+                p.remove(affil_run)
+                sec.mark_dirty()
+                return True
+    return False
+
+
 def _newlines_to_breaks(doc: HwpxDocument) -> None:
     """``\\n`` inside filled text → ``<hp:lineBreak/>`` (two-line cover titles)."""
     for sec in doc.sections:
@@ -811,6 +861,8 @@ def apply_report_meta(
             (res.filled if co else res.blank).append("co_researcher")
         if not norm.get("subtitle") and _drop_slot_paragraphs(doc, "subtitle"):
             res.blank.append("subtitle")
+        if norm.get("authors") and _split_authors(doc, norm["authors"]):
+            res.filled.append("authors")
         doc.save_to_path(str(path))
         tokens = _meta_tokens(doc)  # re-read: lines were added / dropped
 

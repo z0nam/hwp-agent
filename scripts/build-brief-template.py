@@ -16,7 +16,9 @@ cover / back-cover art** from one and throws everything the author wrote away:
 
 Cover texts become slots (``{{volume}}`` ``{{authors}}`` ``{{title_1}}`` ``{{title_2}}``
 ``{{headline}}`` ``{{toc_1}}``…``{{toc_4}}`` ``{{publisher}}``); masterpage texts become
-``{{running_title}}`` and ``{{wing_1}}``…``{{wing_3}}``.
+``{{running_title}}`` and ``{{wing_1}}``…``{{wing_3}}``. The cover's title and author
+boxes are then reset to the institute's current form (``정책이슈브리프.hwp``,
+2026-06-15; see ``COVER_FORM``), which differs from the published brief there.
 
 Everything of the source's content is removed: all body paragraphs, tables, footnotes
 and photos (their ``BinData``), the cropped screenshot the chapter ornament was cut
@@ -49,6 +51,20 @@ HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 HC = "http://www.hancom.co.kr/hwpml/2011/core"
 OPF = "http://www.idpf.org/2007/opf/"
 PX = 75  # HWPUNIT per image pixel
+
+#: the cover's title / author boxes as the institute's current form has them
+#: (웍스 기관 서식 ``정책이슈브리프.hwp``, 2026-06-15). The published brief centres the
+#: title in a wider box and sets the authors left-aligned in a taller box; the form sets
+#: the title left (JUSTIFY) in a narrower box and the authors right-aligned on one line
+#: under it. Geometry in HWPUNIT; ``align`` / ``break_non_latin`` go into a fresh paraPr,
+#: ``ratio`` / ``spacing`` into a fresh charPr (the published shapes are left untouched).
+COVER_FORM = {
+    "authors": {"width": 18160, "height": 2108, "horz": 35433, "vert": 31144, "align": "RIGHT"},
+    "title": {
+        "width": 36633, "height": 6362, "horz": 8855, "vert": 21234,
+        "align": "JUSTIFY", "break_non_latin": "KEEP_WORD", "ratio": "95", "spacing": "-5",
+    },
+}
 
 
 def hp(tag: str) -> str:
@@ -168,6 +184,63 @@ def scrub_comment(pic, name: str, w_px: int | None = None, h_px: int | None = No
     cm.text = "\n".join(lines)
 
 
+def reshape_box(rect, width: int, height: int, horz: int, vert: int, **_) -> None:
+    """Resize / move a cover text box, keeping its drawing matrix consistent."""
+    sz, cur = rect.find(hp("sz")), rect.find(hp("curSz"))
+    ow, oh = int(cur.get("width")), int(cur.get("height"))
+    for el in (sz, cur):
+        el.set("width", str(width))
+        el.set("height", str(height))
+    rot = rect.find(hp("rotationInfo"))
+    rot.set("centerX", str(width // 2))
+    rot.set("centerY", str(height // 2))
+    sca = rect.find(".//{%s}scaMatrix" % HC)
+    sca.set("e1", f"{float(sca.get('e1')) * width / ow:.6g}")
+    sca.set("e5", f"{float(sca.get('e5')) * height / oh:.6g}")
+    pos = rect.find(hp("pos"))
+    pos.set("horzOffset", str(horz))
+    pos.set("vertOffset", str(vert))
+
+
+def restyle_cover(header, boxes: dict) -> None:
+    """Give each cover box's paragraphs fresh paraPr / charPr copies set as the form has them.
+
+    ``boxes`` maps a ``COVER_FORM`` key to its rect. Copies (new ids) rather than edits,
+    so a shape the published brief also uses elsewhere stays as it was.
+    """
+    hh = "{http://www.hancom.co.kr/hwpml/2011/head}"
+
+    def fresh(group: str, tag: str, ref: str) -> etree._Element:
+        props = header.find(f".//{hh}{group}")
+        items = props.findall(f"{hh}{tag}")
+        src = next(x for x in items if x.get("id") == ref)
+        new = copy.deepcopy(src)
+        new.set("id", str(max(int(x.get("id")) for x in items) + 1))
+        props.append(new)
+        props.set("itemCnt", str(len(items) + 1))
+        return new
+
+    for key, rect in boxes.items():
+        spec = COVER_FORM[key]
+        ps = rect.findall(f"{hp('drawText')}/{hp('subList')}/{hp('p')}")
+        para = fresh("paraProperties", "paraPr", ps[0].get("paraPrIDRef"))
+        para.find(f"{hh}align").set("horizontal", spec["align"])
+        if "break_non_latin" in spec:
+            para.find(f"{hh}breakSetting").set("breakNonLatinWord", spec["break_non_latin"])
+        char = None
+        if "ratio" in spec:
+            char = fresh("charProperties", "charPr", ps[0].find(hp("run")).get("charPrIDRef"))
+            for tag, val in (("ratio", spec["ratio"]), ("spacing", spec["spacing"])):
+                el = char.find(f"{hh}{tag}")
+                for lang in el.attrib:
+                    el.set(lang, val)
+        for p in ps:
+            p.set("paraPrIDRef", para.get("id"))
+            if char is not None:
+                for r in p.findall(hp("run")):
+                    r.set("charPrIDRef", char.get("id"))
+
+
 def build(src: Path, dst: Path) -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     zin = zipfile.ZipFile(src)
@@ -204,6 +277,10 @@ def build(src: Path, dst: Path) -> None:
     set_text(second, "{{title_2}}")
     tp.addnext(second)
     set_text(next(headline.iter(hp("p"))), "{{headline}}")
+    for key, rect in (("authors", authors), ("title", title)):
+        reshape_box(rect, **COVER_FORM[key])
+    header = load("Contents/header.xml")
+    restyle_cover(header, {"authors": authors, "title": title})
     for k, r in enumerate(titles, start=1):
         set_text(next(r.iter(hp("p"))), "{{toc_%d}}" % k if k > 1 else "{{toc_1:들어가며}}")
 
@@ -302,6 +379,7 @@ def build(src: Path, dst: Path) -> None:
         out[f"Contents/section{i}.xml"] = dump(f"Contents/section{i}.xml", root)
     for i, root in mp.items():
         out[f"Contents/masterpage{i}.xml"] = dump(f"Contents/masterpage{i}.xml", root)
+    out["Contents/header.xml"] = dump("Contents/header.xml", header)
 
     # which BinData is still referenced?
     used: set[str] = set()

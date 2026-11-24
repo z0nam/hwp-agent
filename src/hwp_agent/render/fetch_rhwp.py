@@ -27,7 +27,7 @@ from pathlib import Path
 from ..convert.fetch_jar import _sha256, data_dir
 
 RHWP_REPO = "edwardkim/rhwp"
-RHWP_VERSION = "v0.8.7"
+RHWP_VERSION = "v0.9.1"
 RELEASE_URL = os.environ.get(
     "RHWP_RELEASE_URL",
     f"https://github.com/{RHWP_REPO}/releases/download/{RHWP_VERSION}",
@@ -36,23 +36,23 @@ RELEASE_URL = os.environ.get(
 RHWP_ASSETS = {
     "windows-x86_64": (
         f"rhwp-{RHWP_VERSION}-windows-x86_64.zip",
-        "f7ac326e98f595ae8fecd8da7a614ee9a37db77bdf938782a8e07c9da473ec6f",
+        "2214c5b07408f18417e450e6e8f44a9f0a4cd917b09839f3ec3577ba19945c9c",
     ),
     "macos-aarch64": (
         f"rhwp-{RHWP_VERSION}-macos-aarch64.tar.gz",
-        "6ed46aa63f6d10c447842999f73abc59cf9586c5645fefc5e763bd6a6d43662d",
+        "a8217038f2d2ef33b1fcf215cc570faacb09c8d53366f2aaa88701ecb245c125",
     ),
     "macos-x86_64": (
         f"rhwp-{RHWP_VERSION}-macos-x86_64.tar.gz",
-        "07b1a5ea570e410d1b52b4d848a94f00c64674e84004883c62efad7daab61da4",
+        "15ce4148235377b02275fbe16929cb16faac8d151fcd755c6facd58ecafc4f2e",
     ),
     "linux-x86_64": (
         f"rhwp-{RHWP_VERSION}-linux-x86_64.tar.gz",
-        "f1e541a25cfe76b6bc1daf18bf9c1f9a5ac5e03e2c01b188daaf54107214f631",
+        "9283dd9ecd3182ddb50eeba9a2f26d2d23b5386e39defb081e52a3706916e65d",
     ),
     "linux-aarch64": (
         f"rhwp-{RHWP_VERSION}-linux-aarch64.tar.gz",
-        "c4a70f5ed11b99586ee89d1ac9069145d58a0831d00e87858bb01626e2ebf313",
+        "85d17b51b96badadafd4a1f890c0d182a44d3100ff1a9f41c9235bf901f4cdd8",
     ),
 }
 

@@ -96,7 +96,7 @@ runtime; install a JRE 17+ (e.g. [Temurin](https://adoptium.net/)) to run
 It also downloads **rhwp** — the fallback render engine used when Hangul is open
 on this PC and no hwp2pdf server is set (see "Layout engines"). The version and
 each platform's sha256 are pinned in `src/hwp_agent/render/fetch_rhwp.py`
-(currently v0.8.7 from [edwardkim/rhwp](https://github.com/edwardkim/rhwp), MIT);
+(currently v0.9.1 from [edwardkim/rhwp](https://github.com/edwardkim/rhwp), MIT);
 it lands in `%LOCALAPPDATA%\hwp-agent\rhwp` (macOS/Linux
 `~/.local/share/hwp-agent/rhwp`) together with rhwp's own `LICENSE`. A failed
 download only warns. `RHWP_RELEASE_URL` points it at a mirror with the same

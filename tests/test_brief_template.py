@@ -123,7 +123,9 @@ def test_build_fills_chapters_wings_cover_and_references(tmp_path: Path) -> None
         everything = "".join(s.values()) + "".join(mp.values())
     # 표지·차례
     assert "123" in s[0] and "가상 정책 이슈 제목입니다" in s[0] and "두 번째 줄 부제" in s[0]
-    assert "홍길동 제주연구원 연구위원" in s[0] and "김철수 제주연구원 부연구위원" in s[0]
+    # name and 소속·직위 land in separate runs (#117)
+    assert re.search(r"홍길동\s*\|+제주연구원 연구위원", s[0]), s[0]
+    assert re.search(r"김철수\s*\|+제주연구원 부연구위원", s[0])
     assert "가상 요지 문장" in s[0] and "가상 시사점" in s[0]  # headline + Contents entries
     # 장 구역: chapter 1 → s0, chapter 2 → s1, chapters 3… → s2
     assert "첫째 장 불릿" in s[0] and "둘째 장 불릿" not in s[0]
@@ -326,6 +328,47 @@ def test_cover_title_and_authors_follow_the_institute_form() -> None:
     ap, av, ah, aw, _ = box("{{authors}}")
     assert align[tp.get("paraPrIDRef")] == "JUSTIFY" and align[ap.get("paraPrIDRef")] == "RIGHT"
     assert ratio[tp.find(f"{hp}run").get("charPrIDRef")] == "95"
-    assert height[ap.find(f"{hp}run").get("charPrIDRef")] == "1100"  # 11pt, the form's charPr 16
+    # name run at 13pt, then an empty 11pt run carrying the form's 소속 shape (charPr 16)
+    name_run, affil_run = ap.findall(f"{hp}run")[:2]
+    assert height[name_run.get("charPrIDRef")] == "1300"
+    assert height[affil_run.get("charPrIDRef")] == "1100"
+    assert "".join(t.text or "" for t in affil_run.iter(f"{hp}t")) == ""
     assert (th, tw) == (8855, 36633) and (ah, aw) == (35433, 18160)
     assert av >= tv + theight  # authors sit under the title box
+
+
+def test_cover_authors_split_into_name_and_affiliation_runs(tmp_path: Path) -> None:
+    """#117: 저자마다 이름은 13pt, '제주연구원 직위'는 11pt run — 서식(2026-06-15)대로."""
+    from lxml import etree
+
+    hp = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+    hh = "{http://www.hancom.co.kr/hwpml/2011/head}"
+    body = BODY.replace(
+        "저자: 홍길동 제주연구원 연구위원 ; 김철수 제주연구원 부연구위원",
+        "저자: 홍길동 제주연구원 연구위원 ; 김철수  제주연구원 부연구위원 ; 이름만",
+    )
+    (tmp_path / "b.md").write_text(body, encoding="utf-8")
+    (tmp_path / "m.json").write_text(
+        json.dumps({"template": str(TPL), "output": "out.hwpx", "parts": {"body": "b.md"}}),
+        encoding="utf-8",
+    )
+    build_report(tmp_path / "m.json")
+    with zipfile.ZipFile(tmp_path / "out.hwpx") as z:
+        s0 = etree.fromstring(z.read("Contents/section0.xml"))
+        header = etree.fromstring(z.read("Contents/header.xml"))
+    height = {c.get("id"): c.get("height") for c in header.iter(f"{hh}charPr")}
+    p = next(
+        p for p in s0.iter(f"{hp}p")
+        if any("홍길동" in (t.text or "") for t in p.findall(f"{hp}run/{hp}t"))
+    )
+    got = []
+    for r in p.findall(f"{hp}run"):
+        for t in r.findall(f"{hp}t"):
+            breaks = (c for c in t if c.tag == f"{hp}lineBreak")
+            text = (t.text or "") + "".join("\n" + (c.tail or "") for c in breaks)
+            got.append((height[r.get("charPrIDRef")], text))
+    assert got == [
+        ("1300", "홍길동  "), ("1100", "제주연구원 연구위원\n"),
+        ("1300", "김철수  "), ("1100", "제주연구원 부연구위원\n"),
+        ("1300", "이름만"),
+    ], got

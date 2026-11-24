@@ -56,7 +56,9 @@ def test_front_matter_fills_cover_back_cover_and_running_title(tmp_path: Path) -
     # 서식은 제목 줄마다 문단 — 첫째·둘째 줄이 각각 자기 문단에
     assert "가상 정책 이슈 제목입니다" in cover and "두 번째 줄 부제" in cover
     assert "가상 정책 이슈 제목입니다 두 번째" not in cover  # two paragraphs, not one line
-    assert "홍길동 제주연구원 연구위원" in cover and "김철수 제주연구원 부연구위원" in cover
+    # the form's author line is a 13pt name run + an 11pt 소속·직위 run: filled per author (#117)
+    assert re.search(r"홍길동\s*\|+제주연구원 연구위원", cover), cover
+    assert re.search(r"김철수\s*\|+제주연구원 부연구위원", cover)
     assert "{{" not in cover
     assert "가상 본문입니다" in _text(out, "Contents/section1.xml")  # 본문 구역
     back = _text(out, "Contents/section4.xml")

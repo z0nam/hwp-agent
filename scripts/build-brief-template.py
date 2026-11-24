@@ -57,15 +57,11 @@ PX = 75  # HWPUNIT per image pixel
 #: title in a wider box and sets the authors left-aligned in a taller box; the form sets
 #: the title left (JUSTIFY) in a narrower box and the authors right-aligned on one line
 #: under it. Geometry in HWPUNIT; ``align`` / ``break_non_latin`` go into a fresh paraPr,
-#: ``char_height`` / ``ratio`` / ``spacing`` into a fresh charPr (the published shapes
-#: are left untouched).
+#: ``ratio`` / ``spacing`` into a fresh charPr (the published shapes are left untouched).
 COVER_FORM = {
-    # the form sets the name at 13pt and "제주연구원 직위" at 11pt (charPr 16); the slot is
-    # one run, so the whole line takes the 11pt shape
-    "authors": {
-        "width": 18160, "height": 2108, "horz": 35433, "vert": 31144, "align": "RIGHT",
-        "char_height": "1100",
-    },
+    # character shapes stay the published ones, which are the form's: name 13pt, then
+    # "제주연구원 직위" 11pt in a second run (kept empty; the fill splits each line, #117)
+    "authors": {"width": 18160, "height": 2108, "horz": 35433, "vert": 31144, "align": "RIGHT"},
     "title": {
         "width": 36633, "height": 6362, "horz": 8855, "vert": 21234,
         "align": "JUSTIFY", "break_non_latin": "KEEP_WORD", "ratio": "95", "spacing": "-5",
@@ -280,15 +276,12 @@ def restyle_cover(header, boxes: dict) -> None:
         if "break_non_latin" in spec:
             para.find(f"{hh}breakSetting").set("breakNonLatinWord", spec["break_non_latin"])
         char = None
-        if "ratio" in spec or "char_height" in spec:
+        if "ratio" in spec:
             char = fresh("charProperties", "charPr", ps[0].find(hp("run")).get("charPrIDRef"))
-            if "char_height" in spec:
-                char.set("height", spec["char_height"])
             for tag in ("ratio", "spacing"):
-                if tag in spec:
-                    el = char.find(f"{hh}{tag}")
-                    for lang in el.attrib:
-                        el.set(lang, spec[tag])
+                el = char.find(f"{hh}{tag}")
+                for lang in el.attrib:
+                    el.set(lang, spec[tag])
         for p in ps:
             p.set("paraPrIDRef", para.get("id"))
             if char is not None:
@@ -341,6 +334,10 @@ def build(src: Path, dst: Path) -> None:
     set_text(ps[0], "{{authors}}")
     for extra in ps[1:]:
         extra.getparent().remove(extra)
+    # name run + an (emptied) smaller 소속·직위 run: the fill puts each author's
+    # affiliation in the second one (#117)
+    if len(ps[0].findall(hp("run"))) != 2:
+        raise RuntimeError("cover author line is not name run + affiliation run")
     tp = next(title.iter(hp("p")))
     second = copy.deepcopy(tp)
     set_text(tp, "{{title_1}}")

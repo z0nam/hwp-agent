@@ -916,7 +916,19 @@ def bake_one(src: Path, out: Path, workdir: Path, config: dict | None = None) ->
 
         slots = bake_meta_slots(out, config["meta_slots"])
         summary["meta_slots"] = len(slots)
+
+    # 원본 서식의 문서 정보(작성자·제목·DRM 추적값)와 미리보기는 공개 저장소에 싣지 않는다 (#120)
+    from hwp_agent.ops.metadata import neutralize_template
+
+    neutralize_template(out, template_title(out))
     return summary
+
+
+def template_title(path: Path) -> str:
+    """``정책과제_서식.normalized.hwpx`` → ``정책과제 서식`` (중립 제목·미리보기 문구)."""
+    name = path.name.removesuffix(".hwpx").removesuffix(".normalized")
+    name = re.sub(r"\(.*?\)", "", name)  # "…서식(성함,과제종류,과제명)" 의 안내 괄호
+    return re.sub(r"[_\s]+", " ", name).strip()
 
 
 # ── Slack DM ────────────────────────────────────────────────────────────────

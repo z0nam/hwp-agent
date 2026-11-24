@@ -314,3 +314,9 @@ with zipfile.ZipFile(SRC) as zsrc, zipfile.ZipFile(DST, "w") as zout:
 print("wrote", DST)
 print("overrides:", sorted(overrides))
 print("dropped orphan images:", sorted(orphans.items()))
+
+# ===== drop the source report's document info + preview (#120) =====
+from hwp_agent.ops.metadata import neutralize_template  # noqa: E402
+
+neutralize_template(DST, "정책과제 서식")
+print("neutralized content.hpf metadata + Preview")

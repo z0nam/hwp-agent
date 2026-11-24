@@ -80,7 +80,13 @@ from .links import (
     DEFAULT_LINK_ALIGN_THRESHOLD,
     should_left_align,
 )
-from .metadata import Metadata, read_metadata, update_metadata
+from .metadata import (
+    Metadata,
+    neutralize_template,
+    read_metadata,
+    reset_package_metadata,
+    update_metadata,
+)
 from .normalize import (
     NormalizeAction,
     NormalizePlan,
@@ -133,6 +139,8 @@ from .verify import (
 __all__ = [
     "Metadata",
     "read_metadata",
+    "neutralize_template",
+    "reset_package_metadata",
     "update_metadata",
     "FormSlot",
     "FormSpec",

@@ -169,6 +169,17 @@ def _sample_level(p) -> int | None:
     return None
 
 
+_OUTLINE_LINK_RE = re.compile(r"\?#(\d+);0;1;0;")
+
+
+def _linked_level(p, by_id: dict[str, int]) -> int | None:
+    """Level of the heading an outline-hyperlink entry points at (a refill)."""
+    for sp in p.iter(_hp("stringParam")):
+        if sp.get("name") == "Command" and (m := _OUTLINE_LINK_RE.fullmatch(sp.text or "")):
+            return by_id.get(m.group(1))
+    return None
+
+
 def _section_parts(names) -> list[str]:
     parts = [n for n in names if re.fullmatch(r"Contents/section\d+\.xml", n)]
     return sorted(parts, key=lambda n: int(re.search(r"(\d+)", n).group(1)))
@@ -287,8 +298,11 @@ def _clear_page_number(p) -> None:
 
 def _fill_headings(root, headings: list[TocEntry], result: TocResult, *, toc_field: bool):
     paras = root.findall(_hp("p"))
+    # a previous fill's entries link to their heading: take its level from there,
+    # since an unnumbered title (``# 서론``) has no visible level to read
+    by_id = {h.target_id: h.level for h in headings}
     sample = [(i, p, lvl) for i, p in enumerate(paras) if _is_entry(p)
-              and (lvl := _sample_level(p))]
+              and (lvl := _sample_level(p) or _linked_level(p, by_id))]
     if not sample:
         return
     templates: dict[int, etree._Element] = {}
@@ -314,8 +328,8 @@ def _fill_headings(root, headings: list[TocEntry], result: TocResult, *, toc_fie
     used = [h for h in headings if h.level <= max_level]
     for h in used:
         tpl = templates.get(h.level)
-        if tpl is None:  # template shows fewer levels in between: nearest shallower
-            tpl = templates[max(k for k in templates if k <= h.level)]
+        if tpl is None:  # template shows fewer levels: nearest, shallower first
+            tpl = templates[min(templates, key=lambda k: (abs(k - h.level), k > h.level))]
         if h.level == 1 and new:
             for g in gap:
                 gp = copy.deepcopy(g)

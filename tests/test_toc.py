@@ -283,3 +283,20 @@ def test_lists_leave_no_page_break_inside(tmp_path: Path) -> None:
     # exactly one break between the table list and the figure list
     fig = texts.index(FIGURES[0])
     assert len([i for i in breaks if last < i < fig]) == 1
+
+
+@pytest.mark.parametrize("literal", [False, True])
+def test_refill_with_unnumbered_chapter(tmp_path: Path, literal: bool) -> None:
+    """An unnumbered chapter title has no visible level; a refill must still find
+    and replace its entry (it used to raise on an empty max())."""
+    body = "# 서론\n\n## 1. 배경\n\n본문.\n\n# Ⅱ. 분석\n\n## 1. 현황\n\n본문.\n"
+    res, out = _build(tmp_path, body=body, literal_numbering=literal)
+    assert res.toc["headings"] == 4
+    again = tmp_path / "again.hwpx"
+    assert len(fill_toc(out, again).headings) == 4
+    texts, _, _ = _lists(again) if "표 차례" in _texts(
+        _sections(again)["Contents/section1.xml"]) else (
+        [t for t in _texts(_sections(again)["Contents/section1.xml"]) if t], [], [])
+    assert texts[:5] == ["요약", "서론", "1. 배경", "Ⅱ. 분석", "1. 현황"]
+    assert texts.count("서론") == 1
+    assert audit_package_links(again)["broken"] == []

@@ -26,7 +26,6 @@ from .bands import (
     detect_section_bands,
 )
 from .chapter_header import ChapterHeaderResult, WingSpec, apply_chapter_headers
-from .numbering import neutralize_uncaptioned_numbering
 from .doctor import diagnose_template
 from .extract import extract_markdown
 from .fit_pages import (
@@ -90,6 +89,7 @@ from .normalize import (
     apply_style_roles,
     plan_normalization,
 )
+from .numbering import neutralize_uncaptioned_numbering
 from .profile import (
     Profile,
     ProfileFillResult,
@@ -120,6 +120,7 @@ from .template import (
     resolve_template_path,
 )
 from .text_edit import Anchor, InsertResult, TextEditError, find_anchors, insert_markdown
+from .toc import RestyleResult, TocEntry, TocResult, fill_toc, restyle_toc
 from .verify import (
     PageIssue,
     PageVerdict,
@@ -203,6 +204,11 @@ __all__ = [
     "format_tail_fit_report",
     "apply_tail_fits",
     "apply_chapter_headers",
+    "fill_toc",
+    "restyle_toc",
+    "RestyleResult",
+    "TocEntry",
+    "TocResult",
     "neutralize_uncaptioned_numbering",
     "ChapterHeaderResult",
     "WingSpec",

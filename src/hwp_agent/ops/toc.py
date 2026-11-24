@@ -1,0 +1,739 @@
+"""Fill a report template's 목차 section — 차례·표 차례·그림 차례 (issue #33).
+
+The JI house forms ship their 목차 section as **static sample text**: a previous
+report's chapter list (``Ⅰ. 세계경제 전망 ⇥ 2``…), then ``표 차례`` / ``그림 차례``
+headers over that report's captions. ``build`` left all of it in place, so every
+built report carried someone else's table of contents.
+
+:func:`fill_toc` rewrites those lists from the built document itself:
+
+* **차례** — one entry per HEADING_1‥n paragraph (as many levels as the template's
+  sample shows), each a Hangul in-document hyperlink to the heading
+  (``HWPHYPERLINK_TARGET_OUTLINE``), the whole list wrapped in Hangul's own
+  ``TABLEOFCONTENTS`` field when every heading is an outline paragraph (#97,
+  ``--literal-numbering``) — otherwise a static list, since a 차례 새로 고침
+  would find no outline headings to collect;
+* **표 차례 / 그림 차례** — one entry per captioned table / figure (``<hp:caption>``
+  on a ``numberingType`` TABLE / PICTURE object), linked to it
+  (``HWPHYPERLINK_TARGET_TABLE`` / ``…_FIGURE``).
+
+Page numbers are **not** computed: they exist only after Hangul lays the document
+out. Each entry ends with the template's right-aligned tab and an empty page slot
+for Hangul to fill (도구 › 차례/색인 › 차례 새로 고침).
+
+The markup copies what Hangul itself writes — measured on a report whose 차례 was
+made in Hangul and saved as HWPX (see ``docs/toc.md``). Entries reuse the
+template's own sample entry paragraphs (paraPr/charPr/tab), so the look is the
+form's; the sample's separator paragraphs between chapters (a blank + a rule line)
+are repeated between generated chapters. Entries that are not numbered sample
+headings (``요약``·``참고문헌``·``부록``) stay, with their sample page numbers
+cleared.
+"""
+
+from __future__ import annotations
+
+import copy
+import re
+import zipfile
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from lxml import etree
+
+from .container import _rewrite_zip_preserving
+from .links import HYPERLINK_FIELD_ID, new_field_id
+
+_HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+_HH = "http://www.hancom.co.kr/hwpml/2011/head"
+
+#: Hangul's ``fieldid`` for a 차례 field and the ``Command`` it writes for
+#: 차례 만들기 (개요 문단, 하이퍼링크) — verbatim from a Hangul-saved report.
+TOC_FIELD_ID = "628387683"
+TOC_COMMAND = (
+    "TableOfContents:set:140:ContentsMake:uint:17 ContentsStyles:wstring:0: "
+    "ContentsLevel:int:1 ContentsAutoTabRight:int:0 ContentsLeader:int:0 "
+    "ContentsHyperlink:bool:1  "
+)
+
+
+def toc_command(make: int, level: int, leader: int) -> str:
+    """A 차례 field ``Command``. ``set:<n>`` is the length of what follows less one (140 in
+    :data:`TOC_COMMAND`). ``ContentsMake`` flags, from two Hangul-made fields: 1 제목
+    차례, 2 표 차례, 4 그림 차례, 16 개요 문단으로 모으기 (17 = 제목 by outline, 6 =
+    표 + 그림); ``ContentsLeader`` is the tab's leader (``<hp:tab leader>``)."""
+    rest = (
+        f"ContentsMake:uint:{make} ContentsStyles:wstring:0: ContentsLevel:int:{level} "
+        f"ContentsAutoTabRight:int:0 ContentsLeader:int:{leader} ContentsHyperlink:bool:1  "
+    )
+    return f"TableOfContents:set:{len(rest) - 1}:{rest}"
+
+
+#: a 표 차례 field, as Hangul writes it for 표 차례 only (ContentsLevel 2 as measured)
+def table_toc_command(leader: int = 0) -> str:
+    return toc_command(2, 2, leader)
+
+#: hyperlink target kinds, as Hangul writes them in ``?#<id>;0;<kind>;0;``
+_TARGETS = {
+    "outline": (1, "HWPHYPERLINK_TARGET_OUTLINE"),
+    "table": (2, "HWPHYPERLINK_TARGET_TABLE"),
+    "figure": (3, "HWPHYPERLINK_TARGET_FIGURE"),
+}
+
+#: sample entry levels in a template's 차례: ``Ⅰ.`` / ``1.`` / ``1)``
+_LEVEL_RES = (
+    re.compile(r"^\s*(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+|[IVX]+)\.\s"),
+    re.compile(r"^\s*\d+\.\s"),
+    re.compile(r"^\s*\d+\)\s"),
+)
+_LIST_HEADER_RE = re.compile(r"^\s*(표|그림)\s*차\s*례\s*$")
+_ARABIC_PAGE_RE = re.compile(r"^\s*\d+\s*$")
+#: paragraph ids Hangul treats as "none" (can't be a hyperlink target)
+_NO_ID = {"", "0", "2147483648"}
+
+
+def _hp(tag: str) -> str:
+    return f"{{{_HP}}}{tag}"
+
+
+@dataclass
+class TocEntry:
+    level: int  # 1-based
+    text: str
+    target_id: str
+
+
+@dataclass
+class TocResult:
+    section: str | None = None
+    headings: list[TocEntry] = field(default_factory=list)
+    tables: list[TocEntry] = field(default_factory=list)
+    figures: list[TocEntry] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    #: the 차례 is wrapped in Hangul's ``TABLEOFCONTENTS`` field (only when every
+    #: heading is an outline paragraph — otherwise 차례 새로 고침 could not find them)
+    in_field: bool = False
+    #: the 표 차례 is a Hangul 차례 field (ContentsMake 2) — its page numbers fill in
+    #: on 차례 새로 고침; Hangul then sets its entries in the 차례 1 style
+    table_field: bool = False
+    #: level → (paraPr id, charPr id) of the form's sample entry (for the 차례 styles)
+    looks: dict = field(default_factory=dict, repr=False)
+    field_entries: list = field(default_factory=list, repr=False)
+
+    @property
+    def filled(self) -> bool:
+        return self.section is not None
+
+
+# --------------------------------------------------------------------------- #
+# reading
+# --------------------------------------------------------------------------- #
+def _text(el, *, autonum: dict | None = None) -> str:
+    """Visible text of a paragraph's own runs (tabs as ``\\t``).
+
+    With *autonum* (from :func:`_autonum_values`), an ``<hp:autoNum>`` shows the
+    number Hangul gives it (caption numbers)."""
+    out: list[str] = []
+    for run in el.findall(_hp("run")):
+        for child in run:
+            if child.tag == _hp("t"):
+                out.append(child.text or "")
+                for sub in child:
+                    out.append("\t" if sub.tag == _hp("tab") else "")
+                    out.append(sub.tail or "")
+            elif autonum is not None and child.tag == _hp("ctrl"):
+                for an in child.iter(_hp("autoNum")):
+                    out.append(str(autonum.get(an, an.get("num", ""))))
+    return "".join(out)
+
+
+#: ``<hp:startNum>`` attribute per autoNum ``numType`` (a section restarting a count)
+_START_ATTR = {"TABLE": "tbl", "PICTURE": "pic", "EQUATION": "equation"}
+
+
+def _autonum_values(roots) -> dict:
+    """The number Hangul shows for each ``<hp:autoNum>``, counted in document order.
+
+    The saved ``num`` is only a cache — ``write`` clones one caption for every table,
+    so they all say 1 until Hangul renumbers them. Counting per ``numType`` the way
+    Hangul does: +1 per autoNum, ``<hp:newNum>`` sets the next number, and a
+    section's ``<hp:startNum tbl/pic/equation>`` (non-zero) restarts that count."""
+    counters: dict[str, int] = {}
+    values: dict = {}
+    for root in roots:
+        for el in root.iter(_hp("startNum"), _hp("newNum"), _hp("autoNum")):
+            if el.tag == _hp("startNum"):
+                for kind, attr in _START_ATTR.items():
+                    start = int(el.get(attr, "0") or 0)
+                    if start > 0:
+                        counters[kind] = start - 1
+            elif el.tag == _hp("newNum"):
+                counters[el.get("numType", "")] = int(el.get("num", "1")) - 1
+            else:
+                kind = el.get("numType", "")
+                counters[kind] = counters.get(kind, 0) + 1
+                values[el] = counters[kind]
+    return values
+
+
+def _label(p) -> str:
+    """An entry's label — its text before the page-number tab."""
+    return _text(p).split("\t", 1)[0].strip()
+
+
+def _is_entry(p) -> bool:
+    return any(t.get("type") == "2" for t in p.iter(_hp("tab")))
+
+
+def _sample_level(p) -> int | None:
+    label = _label(p)
+    for i, rx in enumerate(_LEVEL_RES):
+        if rx.match(label):
+            return i + 1
+    return None
+
+
+_OUTLINE_LINK_RE = re.compile(r"\?#(\d+);0;1;0;")
+
+
+def _linked_level(p, by_id: dict[str, int]) -> int | None:
+    """Level of the heading an outline-hyperlink entry points at (a refill)."""
+    for sp in p.iter(_hp("stringParam")):
+        if sp.get("name") == "Command" and (m := _OUTLINE_LINK_RE.fullmatch(sp.text or "")):
+            return by_id.get(m.group(1))
+    return None
+
+
+def _section_parts(names) -> list[str]:
+    parts = [n for n in names if re.fullmatch(r"Contents/section\d+\.xml", n)]
+    return sorted(parts, key=lambda n: int(re.search(r"(\d+)", n).group(1)))
+
+
+def find_toc_section(sections: dict[str, etree._Element]) -> str | None:
+    """The part holding the template's 목차: numbered sample entries, or a
+    ``표 차례`` / ``그림 차례`` header."""
+    for name, root in sections.items():
+        paras = root.findall(_hp("p"))
+        if any(_LIST_HEADER_RE.match(_text(p)) for p in paras):
+            return name
+        if sum(1 for p in paras if _is_entry(p) and _sample_level(p)) >= 2:
+            return name
+    return None
+
+
+def _caption_entries(obj, kind: str, autonum: dict) -> TocEntry | None:
+    cap = obj.find(_hp("caption"))
+    if cap is None:
+        return None
+    text = " ".join(
+        t for p in cap.iter(_hp("p")) if (t := _text(p, autonum=autonum).strip())
+    )
+    if not text:
+        return None
+    target = obj.get("id", "")
+    if kind == "figure":
+        # Hangul links a 그림 차례 entry to the picture; our figures are 1×2 tables
+        pic = next(obj.iter(_hp("pic")), None)
+        if pic is not None and pic.get("id"):
+            target = pic.get("id")
+    return TocEntry(1, re.sub(r"\s+", " ", text), target)
+
+
+# --------------------------------------------------------------------------- #
+# writing
+# --------------------------------------------------------------------------- #
+def _el(xml: str):
+    return etree.fromstring(f'<hp:x xmlns:hp="{_HP}">{xml}</hp:x>')[0]
+
+
+def _hyperlink_begin(field_id: int, target_id: str, kind: str) -> str:
+    n, target_type = _TARGETS[kind]
+    return (
+        f'<hp:ctrl><hp:fieldBegin id="{field_id}" type="HYPERLINK" name="" editable="0" '
+        f'dirty="1" zorder="-1" fieldid="{HYPERLINK_FIELD_ID}" metaTag="">'
+        f'<hp:parameters cnt="5" name=""><hp:integerParam name="Prop">0</hp:integerParam>'
+        f'<hp:stringParam name="Command">?#{target_id};0;{n};0;</hp:stringParam>'
+        f'<hp:stringParam name="Category">HWPHYPERLINK_TYPE_HWP</hp:stringParam>'
+        f'<hp:stringParam name="TargetType">{target_type}</hp:stringParam>'
+        f'<hp:stringParam name="DocOpenType">HWPHYPERLINK_JUMP_CURRENTTAB</hp:stringParam>'
+        f"</hp:parameters></hp:fieldBegin></hp:ctrl>"
+    )
+
+
+def _toc_begin(field_id: int, command: str = TOC_COMMAND) -> str:
+    return (
+        f'<hp:ctrl><hp:fieldBegin id="{field_id}" type="TABLEOFCONTENTS" name="" '
+        f'editable="1" dirty="0" zorder="-1" fieldid="{TOC_FIELD_ID}" metaTag="">'
+        f'<hp:parameters cnt="2" name=""><hp:integerParam name="Prop">8</hp:integerParam>'
+        f'<hp:stringParam name="Command" xml:space="preserve">{command}</hp:stringParam>'
+        f"</hp:parameters></hp:fieldBegin></hp:ctrl>"
+    )
+
+
+def _field_end(field_id: int, fieldid: str) -> str:
+    return f'<hp:ctrl><hp:fieldEnd beginIDRef="{field_id}" fieldid="{fieldid}"/></hp:ctrl>'
+
+
+def _strip_layout(p) -> None:
+    for lsa in p.findall(_hp("linesegarray")):
+        p.remove(lsa)
+
+
+def _entry_para(template, entry: TocEntry, kind: str):
+    """A copy of the template's sample entry *template* showing *entry*, linked to
+    its target, with the right tab and an empty page slot."""
+    p = copy.deepcopy(template)
+    _strip_layout(p)
+    runs = p.findall(_hp("run"))
+    char = runs[0].get("charPrIDRef", "0") if runs else "0"
+    tab = next(template.iter(_hp("tab")))
+    for r in runs:
+        p.remove(r)
+    fid = new_field_id()
+    run = _el(f'<hp:run charPrIDRef="{char}"/>')
+    run.append(_el(_hyperlink_begin(fid, entry.target_id, kind)))
+    t = _el("<hp:t/>")
+    t.text = entry.text
+    tab = copy.deepcopy(tab)
+    tab.tail = None
+    t.append(tab)
+    run.append(t)
+    run.append(_el(_field_end(fid, HYPERLINK_FIELD_ID)))
+    run.append(_el("<hp:t/>"))
+    p.insert(0, run)
+    return p
+
+
+def _clear_page_number(p) -> None:
+    """Drop the sample page number after an entry's right tab (keep ⅰ-style front
+    matter numbers, which the template fixes)."""
+    seen_tab = False
+    for t in list(p.iter(_hp("t"))):
+        if seen_tab and _ARABIC_PAGE_RE.match(t.text or ""):
+            t.text = ""
+        for sub in t:
+            if sub.tag == _hp("tab") and sub.get("type") == "2":
+                seen_tab = True
+                if _ARABIC_PAGE_RE.match(sub.tail or ""):
+                    sub.tail = None
+            elif seen_tab and _ARABIC_PAGE_RE.match(sub.tail or ""):
+                sub.tail = None
+
+
+def _fill_headings(root, headings: list[TocEntry], result: TocResult, *, toc_field: bool):
+    paras = root.findall(_hp("p"))
+    # a previous fill's entries link to their heading: take its level from there,
+    # since an unnumbered title (``# 서론``) has no visible level to read
+    by_id = {h.target_id: h.level for h in headings}
+    sample = [(i, p, lvl) for i, p in enumerate(paras) if _is_entry(p)
+              and (lvl := _sample_level(p) or _linked_level(p, by_id))]
+    if not sample:
+        return
+    templates: dict[int, etree._Element] = {}
+    for _, p, lvl in sample:
+        templates.setdefault(lvl, p)
+    first_i, last_i = sample[0][0], sample[-1][0]
+    # a previous fill's 차례 field: replace through its begin/end paragraphs (only the
+    # one before the 표·그림 차례 pages — theirs are handled by _fill_list)
+    limit = next((i for i, p in enumerate(paras) if _LIST_HEADER_RE.match(_text(p))),
+                 len(paras))
+    marks = _field_marks(paras, 0, limit)
+    first_i, last_i = min([first_i, *marks]), max([last_i, *marks])
+    # separator between chapters: what sits before the 2nd level-1 sample entry
+    gap: list = []
+    level1 = [i for i, _, lvl in sample if lvl == 1]
+    if len(level1) >= 2:
+        prev_entry = max(i for i, _, _ in sample if i < level1[1])
+        gap = paras[prev_entry + 1: level1[1]]
+    anchor = paras[first_i]
+    new: list = []
+    max_level = max(templates)
+    used = [h for h in headings if h.level <= max_level]
+    for h in used:
+        tpl = templates.get(h.level)
+        if tpl is None:  # template shows fewer levels: nearest, shallower first
+            tpl = templates[min(templates, key=lambda k: (abs(k - h.level), k > h.level))]
+        if h.level == 1 and new:
+            for g in gap:
+                gp = copy.deepcopy(g)
+                _strip_layout(gp)
+                new.append(gp)
+        para = _entry_para(tpl, h, "outline")
+        new.append(para)
+        result.field_entries.append((para, h.level))
+    for lvl, tpl in templates.items():
+        runs = tpl.findall(_hp("run"))
+        result.looks[lvl] = (tpl.get("paraPrIDRef", "0"),
+                             runs[0].get("charPrIDRef", "0") if runs else "0")
+    if toc_field and new:
+        result.in_field = True
+        new.append(_wrap_in_toc_field([p for p in new if _is_entry(p)], TOC_COMMAND))
+    for p in new:
+        anchor.addprevious(p)
+    for p in paras[first_i: last_i + 1]:
+        root.remove(p)
+    result.headings = used
+
+
+def _field_marks(paras, lo: int, hi: int) -> list[int]:
+    """Paragraph indices holding the begin / end of a ``TABLEOFCONTENTS`` field whose
+    begin lies in ``paras[lo:hi]`` (a previous fill's field, replaced with it)."""
+    ids = {fb.get("id") for p in paras[lo:hi] for fb in p.iter(_hp("fieldBegin"))
+           if fb.get("type") == "TABLEOFCONTENTS"}
+    return [i for i, p in enumerate(paras)
+            if any(fb.get("id") in ids for fb in p.iter(_hp("fieldBegin")))
+            or any(fe.get("beginIDRef") in ids for fe in p.iter(_hp("fieldEnd")))]
+
+
+def _wrap_in_toc_field(entries: list, command: str):
+    """Put a 차례 field begin into the first entry's first run; return the paragraph
+    holding its end, to go right after the last entry (Hangul's layout)."""
+    fid = new_field_id()
+    entries[0].find(_hp("run")).insert(0, _el(_toc_begin(fid, command)))
+    end = copy.deepcopy(entries[-1])
+    for r in end.findall(_hp("run")):
+        end.remove(r)
+    char = entries[-1].find(_hp("run")).get("charPrIDRef", "0")
+    run = _el(f'<hp:run charPrIDRef="{char}"/>')
+    run.append(_el(_field_end(fid, TOC_FIELD_ID)))
+    run.append(_el("<hp:t/>"))
+    end.insert(0, run)
+    return end
+
+
+def _fill_list(root, kind: str, items: list[TocEntry], *, toc_field: bool = False) -> bool:
+    """Replace the sample entries under the ``표 차례`` / ``그림 차례`` header.
+
+    Returns False if the template has no such list. With no *items*, the header
+    goes too (an empty list would only show a dangling title). *toc_field* wraps the
+    entries in a Hangul 차례 field for that list (표 차례: ``ContentsMake`` 2)."""
+    word = "표" if kind == "table" else "그림"
+    paras = root.findall(_hp("p"))
+    head = next((i for i, p in enumerate(paras)
+                 if (m := _LIST_HEADER_RE.match(_text(p))) and m.group(1) == word), None)
+    if head is None:
+        return False
+    stop = next((i for i in range(head + 1, len(paras))
+                 if _LIST_HEADER_RE.match(_text(paras[i]))), len(paras))
+    sample = [i for i in range(head + 1, stop) if _is_entry(paras[i])]
+    if not sample:
+        return True
+    tpl = paras[sample[0]]
+    new = [_entry_para(tpl, it, kind) for it in items]
+    if toc_field and new:
+        leader = int(next(tpl.iter(_hp("tab"))).get("leader", "0") or 0)
+        new.append(_wrap_in_toc_field(new, table_toc_command(leader)))
+    for p in new:
+        tpl.addprevious(p)
+    # a sample list spanning two pages carries a page break + top spacers in between;
+    # left behind they would make an empty page, so the whole span goes (with a
+    # previous fill's field end)
+    marks = _field_marks(paras, head + 1, stop)
+    for p in paras[sample[0]: max([sample[-1], *marks]) + 1]:
+        root.remove(p)
+    if not items:
+        _drop_list_page(root, head)
+    return True
+
+
+def _blank(p) -> bool:
+    """A layout-only paragraph: no text and nothing but text runs."""
+    return not "".join(t.text or "" for t in p.iter(_hp("t"))).strip() and all(
+        c.tag == _hp("t") for run in p.findall(_hp("run")) for c in run
+    )
+
+
+def _drop_list_page(root, head: int) -> None:
+    """Remove an emptied list's header with the page it opened: the page-break
+    paragraph above it and the blank spacers around it (else an empty page stays)."""
+    paras = root.findall(_hp("p"))
+    start = head
+    i = head - 1
+    while i >= 0 and _blank(paras[i]):
+        if paras[i].get("pageBreak") == "1":
+            start = i
+            break
+        i -= 1
+    end = head + 1
+    while end < len(paras) and _blank(paras[end]) and paras[end].get("pageBreak") != "1":
+        end += 1
+    for p in paras[start:end]:
+        root.remove(p)
+
+
+def fill_toc(
+    src: str | Path,
+    dst: str | Path | None = None,
+    *,
+    toc_field: bool = True,
+) -> TocResult:
+    """Rewrite the template's 목차 lists from the document's headings and captions.
+
+    Rewrites *dst* (default: *src* in place) changing only the sections it touches;
+    a document without a recognisable 목차 section is copied unchanged and the
+    result's :attr:`TocResult.filled` is False. *toc_field* wraps the heading list
+    in Hangul's ``TABLEOFCONTENTS`` field (see module docstring).
+    """
+    from .styles import role_map
+
+    src = Path(src)
+    dst = Path(dst) if dst is not None else src
+    result = TocResult()
+    roles = role_map(src)
+    levels = {roles[f"HEADING_{n}"]: n for n in (3, 2, 1) if f"HEADING_{n}" in roles}
+
+    with zipfile.ZipFile(src) as zf:
+        parts = _section_parts(zf.namelist())
+        raw = {n: zf.read(n) for n in parts}
+        outline_pp = _outline_para_prs(zf)
+    sections = {n: etree.fromstring(raw[n]) for n in parts}
+    toc_part = find_toc_section(sections)
+    overrides: dict[str, bytes] = {}
+    if toc_part is not None:
+        result.section = toc_part
+        after = parts[parts.index(toc_part) + 1:]
+        used_ids = {p.get("id") for r in sections.values() for p in r.iter(_hp("p"))}
+        autonum = _autonum_values(sections[n] for n in parts)
+        headings: list[TocEntry] = []
+        heading_pp: list[str] = []
+        for name in after:
+            root = sections[name]
+            for p in root.findall(_hp("p")):
+                lvl = levels.get(p.get("styleIDRef", ""))
+                text = re.sub(r"\s+", " ", _text(p)).strip()
+                if lvl is None or not text:
+                    continue
+                if p.get("id", "") in _NO_ID or p.get("id") in {h.target_id for h in headings}:
+                    while (nid := str(new_field_id())) in used_ids:
+                        pass
+                    used_ids.add(nid)
+                    p.set("id", nid)
+                    overrides[name] = b""
+                headings.append(TocEntry(lvl, text, p.get("id")))
+                heading_pp.append(p.get("paraPrIDRef", ""))
+            for obj in root.iter(_hp("tbl"), _hp("pic")):
+                kind = {"TABLE": "table", "PICTURE": "figure"}.get(obj.get("numberingType"))
+                if kind is None or obj.get("id", "") in _NO_ID:
+                    continue
+                entry = _caption_entries(obj, kind, autonum)
+                if entry is not None:
+                    (result.tables if kind == "table" else result.figures).append(entry)
+        toc_root = sections[toc_part]
+        # Hangul's 차례 새로 고침 gathers outline paragraphs; wrapping non-outline
+        # headings in the field would let a refresh empty the list
+        field_ok = bool(heading_pp) and all(pp in outline_pp for pp in heading_pp)
+        _fill_headings(toc_root, headings, result, toc_field=toc_field and field_ok)
+        filled = _fill_list(toc_root, "table", result.tables, toc_field=toc_field)
+        result.table_field = filled and toc_field and bool(result.tables)
+        if not filled and result.tables:
+            result.warnings.append("목차 섹션에 '표 차례'가 없어 표 차례를 만들지 않았습니다")
+        if not _fill_list(toc_root, "figure", result.figures) and result.figures:
+            result.warnings.append("목차 섹션에 '그림 차례'가 없어 그림 차례를 만들지 않았습니다")
+        for p in toc_root.findall(_hp("p")):
+            if _is_entry(p) and not _sample_level(p):
+                _clear_page_number(p)
+        if not headings:
+            result.warnings.append("본문에서 제목(HEADING_1·2) 문단을 찾지 못해 차례가 비었습니다")
+        overrides[toc_part] = b""
+
+    if (result.in_field or result.table_field) and result.looks:
+        with zipfile.ZipFile(src) as zf:
+            hraw = zf.read(_HEADER)
+        head = etree.fromstring(hraw)
+        ids = _ensure_toc_styles(head, result.looks)
+        for para, lvl in result.field_entries:
+            para.set("styleIDRef", ids[f"차례 {min(lvl, 3)}"])
+        overrides[_HEADER] = _serialize(hraw, head)
+    for name in overrides:
+        if name == _HEADER:
+            continue
+        overrides[name] = _serialize(raw[name], sections[name])
+    if not overrides:
+        if src != dst:
+            dst.write_bytes(src.read_bytes())
+        return result
+    tmp = dst.with_suffix(dst.suffix + ".toc.tmp")
+    _rewrite_zip_preserving(src, tmp, overrides)
+    tmp.replace(dst)
+    return result
+
+
+_HEADER = "Contents/header.xml"
+#: Hangul's own style names for a 차례 (TOC). A 차례 새로 고침 formats the entries
+#: with these by name — measured: with them defined, a refresh kept the form's look
+#: (indent, size, colour); without them it fell back to 바탕글. Linked entry text is
+#: still painted blue + underlined by a refresh; a 하이퍼링크 char style does not stop
+#: that (measured), so none is added.
+_TOC_STYLES = (
+    ("차례 제목", "TOC Heading", "PARA", 1),
+    ("차례 1", "TOC 1", "PARA", 1),
+    ("차례 2", "TOC 2", "PARA", 2),
+    ("차례 3", "TOC 3", "PARA", 3),
+)
+
+
+def _ensure_toc_styles(head, looks: dict) -> dict[str, str]:
+    """Name → style id for the 차례 styles, appending any the header lacks with the
+    form's sample look (new entries go at the end of the list; itemCnt kept).
+    A template's own 차례 styles are reused untouched."""
+    styles = head.find(f".//{{{_HH}}}styles")
+    existing = {}
+    for st in styles.findall(f"{{{_HH}}}style"):
+        existing.setdefault(st.get("name"), st.get("id"))
+        existing.setdefault(st.get("engName"), st.get("id"))
+    base = styles.find(f"{{{_HH}}}style")
+    next_id = max(int(st.get("id")) for st in styles.findall(f"{{{_HH}}}style")) + 1
+    out: dict[str, str] = {}
+    for name, eng, kind, lvl in _TOC_STYLES:
+        sid = existing.get(name) or existing.get(eng)
+        if sid is None:
+            para_pr, char_pr = looks[min(looks, key=lambda k: (abs(k - lvl), k > lvl))]
+            st = copy.deepcopy(base)
+            sid = str(next_id)
+            next_id += 1
+            st.set("id", sid)
+            st.set("type", kind)
+            st.set("name", name)
+            st.set("engName", eng)
+            st.set("paraPrIDRef", para_pr if kind == "PARA" else "0")
+            st.set("charPrIDRef", char_pr)
+            st.set("nextStyleIDRef", sid if kind == "PARA" else "0")
+            styles.append(st)
+        out[name] = sid
+    styles.set("itemCnt", str(len(styles.findall(f"{{{_HH}}}style"))))
+    return out
+
+
+def _outline_para_prs(zf: zipfile.ZipFile) -> set[str]:
+    """ids of the paraPr entries that make a paragraph an outline heading."""
+    try:
+        head = etree.fromstring(zf.read("Contents/header.xml"))
+    except KeyError:
+        return set()
+    return {
+        pp.get("id")
+        for pp in head.iter(f"{{{_HH}}}paraPr")
+        if (h := pp.find(f"{{{_HH}}}heading")) is not None and h.get("type") == "OUTLINE"
+    }
+
+
+def _serialize(raw: bytes, root) -> bytes:
+    """*root* as bytes, keeping the part's original XML declaration verbatim."""
+    head = raw[: raw.index(b"<", raw.index(b"?>"))] if raw.startswith(b"<?xml") else b""
+    return head + etree.tostring(root, encoding="UTF-8")
+
+
+# --------------------------------------------------------------------------- #
+# after a 차례 새로 고침 in Hangul
+# --------------------------------------------------------------------------- #
+_TITLE_LINE_RE = re.compile(r"^\s*<\s*(제목|표|그림|수식)\s*차\s*례\s*>\s*$")
+
+
+@dataclass
+class RestyleResult:
+    fields: int = 0  # TABLEOFCONTENTS fields seen
+    runs: int = 0  # link runs set back to their 차례 style's look
+    titles: int = 0  # `<제목 차례>`-style title lines removed (drop_titles)
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.runs or self.titles)
+
+
+def _link_look(char_pr) -> bool:
+    """Hangul's look for linked 차례 text: blue + underlined."""
+    if char_pr is None:
+        return False
+    ul = char_pr.find(f"{{{_HH}}}underline")
+    return (char_pr.get("textColor", "").upper() == "#0000FF"
+            and ul is not None and ul.get("type", "NONE") != "NONE")
+
+
+def _toc_field_paras(root) -> tuple[list, int]:
+    """Top-level paragraphs inside a ``TABLEOFCONTENTS`` field (begin → end, both
+    included), and how many such fields begin in *root*."""
+    open_ids: set[str] = set()
+    inside: list = []
+    count = 0
+    for p in root.findall(_hp("p")):
+        begins = {fb.get("id") for fb in p.iter(_hp("fieldBegin"))
+                  if fb.get("type") == "TABLEOFCONTENTS"}
+        count += len(begins)
+        open_ids |= begins
+        if open_ids:
+            inside.append(p)
+        open_ids -= {fe.get("beginIDRef") for fe in p.iter(_hp("fieldEnd"))}
+    return inside, count
+
+
+def restyle_toc(
+    src: str | Path,
+    dst: str | Path | None = None,
+    *,
+    drop_titles: bool = False,
+) -> RestyleResult:
+    """Undo what a Hangul 차례 새로 고침 does to the look of our 차례 fields.
+
+    A refresh re-creates every entry with the 차례 1/2/3 styles (their look is the
+    form's, see :data:`_TOC_STYLES`) but paints the linked text blue + underlined in
+    a fresh char shape. This sets those runs — only inside ``TABLEOFCONTENTS``
+    fields, never body hyperlinks — back to their paragraph style's char shape. The
+    links, page numbers and paragraph shapes stay. *drop_titles* also removes the
+    ``<제목 차례>`` / ``<표 차례>`` title lines a refresh inserts (a field begin in
+    such a line moves to the next paragraph); the next refresh puts them back.
+    Idempotent; writes *dst* (default: *src* in place) changing only those parts.
+    """
+    src = Path(src)
+    dst = Path(dst) if dst is not None else src
+    result = RestyleResult()
+    with zipfile.ZipFile(src) as zf:
+        head = etree.fromstring(zf.read(_HEADER))
+        parts = _section_parts(zf.namelist())
+        raw = {n: zf.read(n) for n in parts}
+    char_prs = {c.get("id"): c for c in head.iter(f"{{{_HH}}}charPr")}
+    style_char = {s.get("id"): s.get("charPrIDRef") for s in head.iter(f"{{{_HH}}}style")}
+    overrides: dict[str, bytes] = {}
+    for name in parts:
+        root = etree.fromstring(raw[name])
+        inside, n_fields = _toc_field_paras(root)
+        result.fields += n_fields
+        before = (result.runs, result.titles)
+        for p in inside:
+            if drop_titles and _TITLE_LINE_RE.match(_text(p)):
+                result.titles += _drop_title_line(root, p)
+                continue
+            base = style_char.get(p.get("styleIDRef", ""))
+            if base is None or _link_look(char_prs.get(base)):
+                continue
+            for run in p.findall(_hp("run")):
+                if _link_look(char_prs.get(run.get("charPrIDRef"))):
+                    run.set("charPrIDRef", base)
+                    result.runs += 1
+        if (result.runs, result.titles) != before:
+            overrides[name] = _serialize(raw[name], root)
+    if not overrides:
+        if src != dst:
+            dst.write_bytes(src.read_bytes())
+        return result
+    tmp = dst.with_suffix(dst.suffix + ".toc.tmp")
+    _rewrite_zip_preserving(src, tmp, overrides)
+    tmp.replace(dst)
+    return result
+
+
+def _drop_title_line(root, p) -> bool:
+    """Remove a refresh's title line; a field begin it holds moves to the next line."""
+    ctrls = [c for c in p.iter(_hp("ctrl")) if c.find(_hp("fieldBegin")) is not None]
+    nxt = p.getnext()
+    while nxt is not None and nxt.tag != _hp("p"):
+        nxt = nxt.getnext()
+    if ctrls and nxt is not None:
+        first = nxt.find(_hp("run"))
+        if first is None:
+            first = etree.SubElement(nxt, _hp("run"))
+            first.set("charPrIDRef", "0")
+        for c in reversed(ctrls):
+            first.insert(0, c)
+    elif ctrls:
+        return False  # nowhere to move the field begin: keep the line
+    root.remove(p)
+    return True

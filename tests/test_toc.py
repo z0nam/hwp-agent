@@ -15,6 +15,7 @@ import zipfile
 import zlib
 from pathlib import Path
 
+import pytest
 from lxml import etree
 
 from hwp_agent.cli.main import main
@@ -40,6 +41,12 @@ BODY = """# Ⅰ. 서론
 |---|---|
 | 가 | 1 |
 
+가상 표 셋
+
+| 구분 | 값 |
+|---|---|
+| 다 | 3 |
+
 ## 2. 연구 방법
 
 ![가상 그림 하나](fig.png)
@@ -53,7 +60,18 @@ BODY = """# Ⅰ. 서론
 | 구분 | 값 |
 |---|---|
 | 나 | 2 |
+
+[그림 Ⅱ-1] 가상 그림 둘
+
+![왼쪽](fig.png) ![오른쪽](fig.png)
+주) 좌: 가, 우: 나
 """
+
+#: what the body captions say — the lists must match them exactly
+TABLES = ["<표 Ⅰ-1> 가상 표 하나", "<표 Ⅰ-2> 가상 표 셋", "<표 Ⅱ-1> 가상 표 둘"]
+FIGURES = ["[그림 Ⅰ-1] 가상 그림 하나", "[그림 Ⅱ-1] 가상 그림 둘"]
+HEADINGS = ["Ⅰ. 서론", "1. 연구 배경", "2. 연구 방법", "Ⅱ. 분석", "1. 현황"]
+BRIEF = REPO_ROOT / "examples" / "정책이슈브리프-template.hwpx"
 
 
 def _png(path: Path) -> None:
@@ -97,41 +115,72 @@ def _commands(root, field_type: str) -> list[str]:
     ]
 
 
-def test_build_rewrites_toc_from_headings_and_captions(tmp_path: Path) -> None:
-    res, out = _build(tmp_path)
-    assert res.toc == {"section": "Contents/section1.xml", "headings": 5, "tables": 2,
-                       "figures": 1}
-    secs = _sections(out)
-    toc = secs["Contents/section1.xml"]
-    texts = [t for t in _texts(toc) if t]
+def _lists(out: Path) -> tuple[list[str], list[str], list[str]]:
+    texts = [t for t in _texts(_sections(out)["Contents/section1.xml"]) if t]
+    tables = texts[texts.index("표 차례") + 1: texts.index("그림 차례")]
+    figures = texts[texts.index("그림 차례") + 1:]
+    return texts, tables, figures
+
+
+def _toc_fields(root) -> tuple[list, list]:
+    begins = [fb for fb in root.iter(f"{_HP}fieldBegin") if fb.get("type") == "TABLEOFCONTENTS"]
+    ends = [fe for fe in root.iter(f"{_HP}fieldEnd") if fe.get("fieldid") == TOC_FIELD_ID]
+    return begins, ends
+
+
+def _body_captions(out: Path) -> list[str]:
+    caps = []
+    for name, root in _sections(out).items():
+        if name == "Contents/section1.xml":
+            continue
+        for obj in root.iter(f"{_HP}tbl"):
+            cap = obj.find(f"{_HP}caption")
+            if obj.get("numberingType") in ("TABLE", "PICTURE") and cap is not None:
+                caps.append(" ".join(t for t in _texts(cap.find(f"{_HP}subList")) if t))
+    return caps
+
+
+@pytest.mark.parametrize("literal", [False, True])
+def test_build_rewrites_toc_from_headings_and_captions(tmp_path: Path, literal: bool) -> None:
+    res, out = _build(tmp_path, literal_numbering=literal)
+    assert res.toc == {"section": "Contents/section1.xml", "headings": 5, "tables": 3,
+                       "figures": 2, "field": literal}
+    texts, tables, figures = _lists(out)
     # the form's sample report is gone
     assert not any("세계경제" in t or "GDP" in t or "제주경제" in t for t in texts)
-    assert texts[:6] == ["요약","Ⅰ. 서론", "1. 연구 배경", "2. 연구 방법", "Ⅱ. 분석", "1. 현황"]
-    # number-less part entries stay, their sample page numbers cleared
+    # headings once each: the chapter wing (textbox / odd-page header) is not counted
+    assert texts[:6] == ["요약", *HEADINGS]
     assert "참고문헌" in texts and "부록" in texts
-    tables = texts[texts.index("표 차례") + 1: texts.index("그림 차례")]
-    assert len(tables) == 2 and "가상 표 하나" in tables[0] and "가상 표 둘" in tables[1]
-    assert re.search(r"그림 .*1.*가상 그림 하나", texts[texts.index("그림 차례") + 1])
+    # table / figure lists say exactly what the body captions say
+    assert tables == TABLES and figures == FIGURES
+    assert sorted(_body_captions(out)) == sorted(TABLES + FIGURES)
 
 
-def test_toc_field_wraps_heading_entries_like_hangul(tmp_path: Path) -> None:
-    _, out = _build(tmp_path)
-    secs = _sections(out)
-    toc = secs["Contents/section1.xml"]
-    begins = [fb for fb in toc.iter(f"{_HP}fieldBegin") if fb.get("type") == "TABLEOFCONTENTS"]
-    assert len(begins) == 1
-    assert begins[0].get("fieldid") == TOC_FIELD_ID
+def test_outline_headings_get_hangul_toc_field(tmp_path: Path) -> None:
+    """--literal-numbering headings are outline paragraphs (#97): wrap them like Hangul."""
+    _, out = _build(tmp_path, literal_numbering=True)
+    toc = _sections(out)["Contents/section1.xml"]
+    begins, ends = _toc_fields(toc)
+    assert len(begins) == 1 and begins[0].get("fieldid") == TOC_FIELD_ID
     assert _commands(toc, "TABLEOFCONTENTS") == [TOC_COMMAND]
-    ends = [fe for fe in toc.iter(f"{_HP}fieldEnd")
-            if fe.get("beginIDRef") == begins[0].get("id")]
-    assert len(ends) == 1 and ends[0].get("fieldid") == TOC_FIELD_ID
-    # every field in the package is paired; integrity clean
+    assert len(ends) == 1 and ends[0].get("beginIDRef") == begins[0].get("id")
     assert audit_package_links(out)["broken"] == []
     assert audit_package(out) == []
 
 
-def test_entry_links_point_at_their_targets(tmp_path: Path) -> None:
+def test_non_outline_headings_get_a_static_toc(tmp_path: Path) -> None:
+    """Without outline headings a 차례 새로 고침 would find nothing — no field."""
     _, out = _build(tmp_path)
+    toc = _sections(out)["Contents/section1.xml"]
+    assert _toc_fields(toc) == ([], [])
+    assert len(_commands(toc, "HYPERLINK")) == 5 + 3 + 2
+    assert audit_package_links(out)["broken"] == []
+    assert audit_package(out) == []
+
+
+@pytest.mark.parametrize("literal", [False, True])
+def test_entry_links_point_at_their_targets(tmp_path: Path, literal: bool) -> None:
+    _, out = _build(tmp_path, literal_numbering=literal)
     secs = _sections(out)
     toc = secs.pop("Contents/section1.xml")
     para_ids = {p.get("id") for r in secs.values() for p in r.iter(f"{_HP}p")}
@@ -140,11 +189,10 @@ def test_entry_links_point_at_their_targets(tmp_path: Path) -> None:
     links = [re.fullmatch(r"\?#(\d+);0;(\d);0;", c) for c in _commands(toc, "HYPERLINK")]
     assert all(links)
     kinds = [m.group(2) for m in links]
-    assert kinds.count("1") == 5 and kinds.count("2") == 2 and kinds.count("3") == 1
+    assert kinds.count("1") == 5 and kinds.count("2") == 3 and kinds.count("3") == 2
     for m in links:
         pool = {"1": para_ids, "2": tbl_ids, "3": pic_ids}[m.group(2)]
         assert m.group(1) in pool
-    # heading targets are unique, real ids
     outline = [m.group(1) for m in links if m.group(2) == "1"]
     assert len(set(outline)) == 5 and not {"0", "2147483648"} & set(outline)
 
@@ -163,8 +211,13 @@ def test_page_numbers_are_left_empty(tmp_path: Path) -> None:
 def test_no_tables_drops_the_table_list_header(tmp_path: Path) -> None:
     res, out = _build(tmp_path, body="# Ⅰ. 서론\n\n## 1. 배경\n\n본문.\n")
     assert res.toc["tables"] == 0 and res.toc["figures"] == 0
-    texts = _texts(_sections(out)["Contents/section1.xml"])
+    toc = _sections(out)["Contents/section1.xml"]
+    texts = _texts(toc)
     assert "표 차례" not in texts and "그림 차례" not in texts
+    # their pages go too: nothing after the 차례 but no page break / blank spacers
+    paras = toc.findall(f"{_HP}p")
+    last = max(i for i, t in enumerate(texts) if t)
+    assert not [p for p in paras[last + 1:] if p.get("pageBreak") == "1"]
 
 
 def test_toc_false_keeps_the_template(tmp_path: Path) -> None:
@@ -177,38 +230,56 @@ def test_toc_false_keeps_the_template(tmp_path: Path) -> None:
 def test_cli_no_toc(tmp_path: Path, capsys) -> None:
     _build(tmp_path)  # writes manifest + inputs
     assert main(["build", str(tmp_path / "m.json"), "-o", str(tmp_path / "a.hwpx")]) == 0
-    assert "목차: 차례 5 · 표 차례 2 · 그림 차례 1" in capsys.readouterr().out
+    assert "목차: 차례 5 · 표 차례 3 · 그림 차례 2" in capsys.readouterr().out
     assert main(["build", str(tmp_path / "m.json"), "-o", str(tmp_path / "b.hwpx"),
                  "--no-toc"]) == 0
     assert "목차:" not in capsys.readouterr().out
 
 
-def test_table_list_numbers_follow_document_order(tmp_path: Path) -> None:
-    """Every built caption caches autoNum num=1; the list must count like Hangul."""
-    _, out = _build(tmp_path)
-    texts = [t for t in _texts(_sections(out)["Contents/section1.xml"]) if t]
-    tables = texts[texts.index("표 차례") + 1: texts.index("그림 차례")]
-    nums = [re.search(r"(\d+)\D*가상 표", t).group(1) for t in tables]
-    assert nums[0] != nums[1], tables
-
-
-def test_fill_twice_keeps_one_toc_field_pair(tmp_path: Path) -> None:
-    _, out = _build(tmp_path)
+@pytest.mark.parametrize("literal", [False, True])
+def test_fill_twice_is_stable(tmp_path: Path, literal: bool) -> None:
+    _, out = _build(tmp_path, literal_numbering=literal)
     again = tmp_path / "again.hwpx"
     res = fill_toc(out, again)
-    assert len(res.headings) == 5
+    assert len(res.headings) == 5 and res.in_field == literal
     toc = _sections(again)["Contents/section1.xml"]
-    begins = [fb.get("id") for fb in toc.iter(f"{_HP}fieldBegin")
-              if fb.get("type") == "TABLEOFCONTENTS"]
-    ends = [fe for fe in toc.iter(f"{_HP}fieldEnd") if fe.get("fieldid") == TOC_FIELD_ID]
-    assert len(begins) == 1 and len(ends) == 1
-    assert ends[0].get("beginIDRef") == begins[0]
+    begins, ends = _toc_fields(toc)
+    assert (len(begins), len(ends)) == ((1, 1) if literal else (0, 0))
+    if literal:
+        assert ends[0].get("beginIDRef") == begins[0].get("id")
+    assert _lists(again) == _lists(out)
     assert audit_package_links(again)["broken"] == []
     assert audit_package(again) == []
 
 
-def test_template_without_toc_section_is_untouched(tmp_path: Path) -> None:
+@pytest.mark.parametrize("tpl", [DEFAULT_TPL, BRIEF], ids=["default", "brief"])
+def test_template_without_toc_section_is_untouched(tmp_path: Path, tpl: Path) -> None:
+    """The brief fills its own 차례 slots ({{toc_1}}…) — fill_toc must not touch it."""
     dst = tmp_path / "copy.hwpx"
-    res = fill_toc(DEFAULT_TPL, dst)
+    res = fill_toc(tpl, dst)
     assert not res.filled
-    assert dst.read_bytes() == DEFAULT_TPL.read_bytes()
+    assert dst.read_bytes() == tpl.read_bytes()
+
+
+def test_built_brief_keeps_its_own_toc(tmp_path: Path) -> None:
+    """A built brief (차례 filled from its {{toc_n}} slots) is not a 목차 section."""
+    res, out = _build(tmp_path, template=str(BRIEF))
+    assert res.toc is None
+    again = tmp_path / "again.hwpx"
+    assert not fill_toc(out, again).filled
+    assert again.read_bytes() == out.read_bytes()
+
+
+def test_lists_leave_no_page_break_inside(tmp_path: Path) -> None:
+    """The form's sample 표 차례 runs over two pages; its page break must not stay
+    between the generated entries (it made an empty page)."""
+    _, out = _build(tmp_path)
+    paras = _sections(out)["Contents/section1.xml"].findall(f"{_HP}p")
+    texts = ["".join(t.text or "" for t in p.iter(f"{_HP}t")).strip() for p in paras]
+    first = texts.index(TABLES[0])
+    last = texts.index(TABLES[-1])
+    breaks = [i for i, p in enumerate(paras) if p.get("pageBreak") == "1"]
+    assert not [i for i in breaks if first < i <= last]
+    # exactly one break between the table list and the figure list
+    fig = texts.index(FIGURES[0])
+    assert len([i for i in breaks if last < i < fig]) == 1

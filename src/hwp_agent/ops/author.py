@@ -3446,6 +3446,7 @@ def build_report(
                 "headings": len(toc_res.headings),
                 "tables": len(toc_res.tables),
                 "figures": len(toc_res.figures),
+                "field": toc_res.in_field,
             }
         result.warnings += [f"[목차] {w}" for w in toc_res.warnings]
     finish_report_meta(

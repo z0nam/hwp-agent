@@ -1493,7 +1493,12 @@ def _cmd_build(args: argparse.Namespace) -> int:
         t = result.toc
         print(
             f"  목차: 차례 {t['headings']} · 표 차례 {t['tables']} · 그림 차례 {t['figures']} "
-            "(쪽 번호는 한글에서 차례 새로 고침)"
+            + (
+                "(쪽 번호는 한글에서 차례 새로 고침)"
+                if t.get("field")
+                else "(쪽 번호는 한글에서 입력 — 제목이 개요 문단이 아니라 차례 필드 없이 씀; "
+                "--literal-numbering이면 차례 새로 고침 가능)"
+            )
         )
     if result.unmapped_roles:
         print(f"  unmapped (fell back to BODY): {', '.join(result.unmapped_roles)}")

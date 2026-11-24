@@ -10,7 +10,9 @@ built report carried someone else's table of contents.
 * **차례** — one entry per HEADING_1‥n paragraph (as many levels as the template's
   sample shows), each a Hangul in-document hyperlink to the heading
   (``HWPHYPERLINK_TARGET_OUTLINE``), the whole list wrapped in Hangul's own
-  ``TABLEOFCONTENTS`` field;
+  ``TABLEOFCONTENTS`` field when every heading is an outline paragraph (#97,
+  ``--literal-numbering``) — otherwise a static list, since a 차례 새로 고침
+  would find no outline headings to collect;
 * **표 차례 / 그림 차례** — one entry per captioned table / figure (``<hp:caption>``
   on a ``numberingType`` TABLE / PICTURE object), linked to it
   (``HWPHYPERLINK_TARGET_TABLE`` / ``…_FIGURE``).
@@ -42,6 +44,7 @@ from .container import _rewrite_zip_preserving
 from .links import HYPERLINK_FIELD_ID, new_field_id
 
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+_HH = "http://www.hancom.co.kr/hwpml/2011/head"
 
 #: Hangul's ``fieldid`` for a 차례 field and the ``Command`` it writes for
 #: 차례 만들기 (개요 문단, 하이퍼링크) — verbatim from a Hangul-saved report.
@@ -89,6 +92,9 @@ class TocResult:
     tables: list[TocEntry] = field(default_factory=list)
     figures: list[TocEntry] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: the 차례 is wrapped in Hangul's ``TABLEOFCONTENTS`` field (only when every
+    #: heading is an outline paragraph — otherwise 차례 새로 고침 could not find them)
+    in_field: bool = False
 
     @property
     def filled(self) -> bool:
@@ -317,6 +323,7 @@ def _fill_headings(root, headings: list[TocEntry], result: TocResult, *, toc_fie
                 new.append(gp)
         new.append(_entry_para(tpl, h, "outline"))
     if toc_field and new:
+        result.in_field = True
         entries = [p for p in new if _is_entry(p)]
         fid = new_field_id()
         entries[0].find(_hp("run")).insert(0, _el(_toc_begin(fid)))
@@ -349,17 +356,44 @@ def _fill_list(root, kind: str, items: list[TocEntry]) -> bool:
         return False
     stop = next((i for i in range(head + 1, len(paras))
                  if _LIST_HEADER_RE.match(_text(paras[i]))), len(paras))
-    sample = [p for p in paras[head + 1: stop] if _is_entry(p)]
+    sample = [i for i in range(head + 1, stop) if _is_entry(paras[i])]
     if not sample:
         return True
-    tpl = sample[0]
+    tpl = paras[sample[0]]
     for it in items:
-        sample[0].addprevious(_entry_para(tpl, it, kind))
-    for p in sample:
+        tpl.addprevious(_entry_para(tpl, it, kind))
+    # a sample list spanning two pages carries a page break + top spacers in between;
+    # left behind they would make an empty page, so the whole span goes
+    for p in paras[sample[0]: sample[-1] + 1]:
         root.remove(p)
     if not items:
-        root.remove(paras[head])
+        _drop_list_page(root, head)
     return True
+
+
+def _blank(p) -> bool:
+    """A layout-only paragraph: no text and nothing but text runs."""
+    return not "".join(t.text or "" for t in p.iter(_hp("t"))).strip() and all(
+        c.tag == _hp("t") for run in p.findall(_hp("run")) for c in run
+    )
+
+
+def _drop_list_page(root, head: int) -> None:
+    """Remove an emptied list's header with the page it opened: the page-break
+    paragraph above it and the blank spacers around it (else an empty page stays)."""
+    paras = root.findall(_hp("p"))
+    start = head
+    i = head - 1
+    while i >= 0 and _blank(paras[i]):
+        if paras[i].get("pageBreak") == "1":
+            start = i
+            break
+        i -= 1
+    end = head + 1
+    while end < len(paras) and _blank(paras[end]) and paras[end].get("pageBreak") != "1":
+        end += 1
+    for p in paras[start:end]:
+        root.remove(p)
 
 
 def fill_toc(
@@ -386,6 +420,7 @@ def fill_toc(
     with zipfile.ZipFile(src) as zf:
         parts = _section_parts(zf.namelist())
         raw = {n: zf.read(n) for n in parts}
+        outline_pp = _outline_para_prs(zf)
     sections = {n: etree.fromstring(raw[n]) for n in parts}
     toc_part = find_toc_section(sections)
     overrides: dict[str, bytes] = {}
@@ -395,6 +430,7 @@ def fill_toc(
         used_ids = {p.get("id") for r in sections.values() for p in r.iter(_hp("p"))}
         autonum = _autonum_values(sections[n] for n in parts)
         headings: list[TocEntry] = []
+        heading_pp: list[str] = []
         for name in after:
             root = sections[name]
             for p in root.findall(_hp("p")):
@@ -409,6 +445,7 @@ def fill_toc(
                     p.set("id", nid)
                     overrides[name] = b""
                 headings.append(TocEntry(lvl, text, p.get("id")))
+                heading_pp.append(p.get("paraPrIDRef", ""))
             for obj in root.iter(_hp("tbl"), _hp("pic")):
                 kind = {"TABLE": "table", "PICTURE": "figure"}.get(obj.get("numberingType"))
                 if kind is None or obj.get("id", "") in _NO_ID:
@@ -417,7 +454,10 @@ def fill_toc(
                 if entry is not None:
                     (result.tables if kind == "table" else result.figures).append(entry)
         toc_root = sections[toc_part]
-        _fill_headings(toc_root, headings, result, toc_field=toc_field)
+        # Hangul's 차례 새로 고침 gathers outline paragraphs; wrapping non-outline
+        # headings in the field would let a refresh empty the list
+        field_ok = bool(heading_pp) and all(pp in outline_pp for pp in heading_pp)
+        _fill_headings(toc_root, headings, result, toc_field=toc_field and field_ok)
         if not _fill_list(toc_root, "table", result.tables) and result.tables:
             result.warnings.append("목차 섹션에 '표 차례'가 없어 표 차례를 만들지 않았습니다")
         if not _fill_list(toc_root, "figure", result.figures) and result.figures:
@@ -439,6 +479,19 @@ def fill_toc(
     _rewrite_zip_preserving(src, tmp, overrides)
     tmp.replace(dst)
     return result
+
+
+def _outline_para_prs(zf: zipfile.ZipFile) -> set[str]:
+    """ids of the paraPr entries that make a paragraph an outline heading."""
+    try:
+        head = etree.fromstring(zf.read("Contents/header.xml"))
+    except KeyError:
+        return set()
+    return {
+        pp.get("id")
+        for pp in head.iter(f"{{{_HH}}}paraPr")
+        if (h := pp.find(f"{{{_HH}}}heading")) is not None and h.get("type") == "OUTLINE"
+    }
 
 
 def _serialize(raw: bytes, root) -> bytes:

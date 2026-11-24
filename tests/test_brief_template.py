@@ -264,6 +264,7 @@ def test_cover_title_and_authors_follow_the_institute_form() -> None:
         header = etree.fromstring(z.read("Contents/header.xml"))
     align = {p.get("id"): p.find(f"{hh}align").get("horizontal") for p in header.iter(f"{hh}paraPr")}
     ratio = {c.get("id"): c.find(f"{hh}ratio").get("hangul") for c in header.iter(f"{hh}charPr")}
+    height = {c.get("id"): c.get("height") for c in header.iter(f"{hh}charPr")}
 
     def box(token: str):
         rect = next(r for r in s0.iter(f"{hp}rect") if any(t.text == token for t in r.iter(f"{hp}t")))
@@ -275,5 +276,6 @@ def test_cover_title_and_authors_follow_the_institute_form() -> None:
     ap, av, ah, aw, _ = box("{{authors}}")
     assert align[tp.get("paraPrIDRef")] == "JUSTIFY" and align[ap.get("paraPrIDRef")] == "RIGHT"
     assert ratio[tp.find(f"{hp}run").get("charPrIDRef")] == "95"
+    assert height[ap.find(f"{hp}run").get("charPrIDRef")] == "1100"  # 11pt, the form's charPr 16
     assert (th, tw) == (8855, 36633) and (ah, aw) == (35433, 18160)
     assert av >= tv + theight  # authors sit under the title box

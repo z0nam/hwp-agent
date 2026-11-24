@@ -300,3 +300,70 @@ def test_refill_with_unnumbered_chapter(tmp_path: Path, literal: bool) -> None:
     assert texts[:5] == ["요약", "서론", "1. 배경", "Ⅱ. 분석", "1. 현황"]
     assert texts.count("서론") == 1
     assert audit_package_links(again)["broken"] == []
+
+
+_HH = "{http://www.hancom.co.kr/hwpml/2011/head}"
+
+
+def _styles(path: Path) -> list[etree._Element]:
+    with zipfile.ZipFile(path) as z:
+        head = etree.fromstring(z.read("Contents/header.xml"))
+    return head.find(f".//{_HH}styles").findall(f"{_HH}style")
+
+
+def test_field_defines_hangul_toc_styles(tmp_path: Path) -> None:
+    """A 차례 새로 고침 formats entries with Hangul's 차례 styles (by name) and the
+    하이퍼링크 char style — defined with the form's look, the refresh keeps it."""
+    _, out = _build(tmp_path, literal_numbering=True)
+    styles = _styles(out)
+    by_name = {s.get("name"): s for s in styles}
+    for name in ("차례 제목", "차례 1", "차례 2", "차례 3", "하이퍼링크"):
+        assert name in by_name, name
+    assert by_name["하이퍼링크"].get("type") == "CHAR"
+    with zipfile.ZipFile(POLICY) as z:
+        n_before = len(etree.fromstring(z.read("Contents/header.xml"))
+                       .find(f".//{_HH}styles").findall(f"{_HH}style"))
+    # appended at the end, ids continuing the list
+    assert [int(s.get("id")) for s in styles] == list(range(len(styles)))
+    assert len(styles) == n_before + 5
+    # entries carry them: chapter → 차례 1, section → 차례 2, look = the form's sample
+    toc = _sections(out)["Contents/section1.xml"]
+    entries = [p for p in toc.findall(f"{_HP}p")
+               if any(";0;1;0;" in c for c in _commands(p, "HYPERLINK"))]
+    sid = {by_name[n].get("id"): n for n in ("차례 1", "차례 2")}
+    assert [sid[p.get("styleIDRef")] for p in entries] == [
+        "차례 1", "차례 2", "차례 2", "차례 1", "차례 2"]
+    for p in entries:
+        st = by_name[sid[p.get("styleIDRef")]]
+        assert st.get("paraPrIDRef") == p.get("paraPrIDRef")
+    assert audit_package(out) == []
+
+
+def test_refill_reuses_toc_styles(tmp_path: Path) -> None:
+    _, out = _build(tmp_path, literal_numbering=True)
+    again = tmp_path / "again.hwpx"
+    fill_toc(out, again)
+    assert len(_styles(again)) == len(_styles(out))
+    assert audit_package(again) == []
+
+
+def test_static_toc_adds_no_styles(tmp_path: Path) -> None:
+    _, out = _build(tmp_path)
+    assert not {"차례 1", "하이퍼링크"} & {s.get("name") for s in _styles(out)}
+
+
+def test_cli_build_keeps_decorations_out_of_lists(tmp_path: Path) -> None:
+    """#109: only captioned tables / figures keep a numbering type in a build — a
+    Hangul 표·그림 차례 would otherwise collect cover pictures and rule lines."""
+    _build(tmp_path, literal_numbering=True)  # writes manifest + inputs
+    out = tmp_path / "cli.hwpx"
+    assert main(["build", str(tmp_path / "m.json"), "-o", str(out)]) == 0
+    numbered = []
+    with zipfile.ZipFile(out) as z:
+        for name in z.namelist():
+            if re.fullmatch(r"Contents/(section|masterpage)\d+\.xml", name):
+                for el in etree.fromstring(z.read(name)).iter():
+                    if isinstance(el.tag, str) and el.get("numberingType") not in (None, "NONE"):
+                        numbered.append((el.get("numberingType"),
+                                         el.find(f"{_HP}caption") is not None))
+    assert sorted(numbered) == [("PICTURE", True)] * 2 + [("TABLE", True)] * 3

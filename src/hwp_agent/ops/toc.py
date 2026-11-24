@@ -95,6 +95,9 @@ class TocResult:
     #: the 차례 is wrapped in Hangul's ``TABLEOFCONTENTS`` field (only when every
     #: heading is an outline paragraph — otherwise 차례 새로 고침 could not find them)
     in_field: bool = False
+    #: level → (paraPr id, charPr id) of the form's sample entry (for the 차례 styles)
+    looks: dict = field(default_factory=dict, repr=False)
+    field_entries: list = field(default_factory=list, repr=False)
 
     @property
     def filled(self) -> bool:
@@ -335,9 +338,15 @@ def _fill_headings(root, headings: list[TocEntry], result: TocResult, *, toc_fie
                 gp = copy.deepcopy(g)
                 _strip_layout(gp)
                 new.append(gp)
-        new.append(_entry_para(tpl, h, "outline"))
+        para = _entry_para(tpl, h, "outline")
+        new.append(para)
+        result.field_entries.append((para, h.level))
     if toc_field and new:
         result.in_field = True
+        for lvl, tpl in templates.items():
+            runs = tpl.findall(_hp("run"))
+            result.looks[lvl] = (tpl.get("paraPrIDRef", "0"),
+                                 runs[0].get("charPrIDRef", "0") if runs else "0")
         entries = [p for p in new if _is_entry(p)]
         fid = new_field_id()
         entries[0].find(_hp("run")).insert(0, _el(_toc_begin(fid)))
@@ -483,7 +492,17 @@ def fill_toc(
             result.warnings.append("본문에서 제목(HEADING_1·2) 문단을 찾지 못해 차례가 비었습니다")
         overrides[toc_part] = b""
 
+    if result.in_field:
+        with zipfile.ZipFile(src) as zf:
+            hraw = zf.read(_HEADER)
+        head = etree.fromstring(hraw)
+        ids = _ensure_toc_styles(head, result.looks)
+        for para, lvl in result.field_entries:
+            para.set("styleIDRef", ids[f"차례 {min(lvl, 3)}"])
+        overrides[_HEADER] = _serialize(hraw, head)
     for name in overrides:
+        if name == _HEADER:
+            continue
         overrides[name] = _serialize(raw[name], sections[name])
     if not overrides:
         if src != dst:
@@ -493,6 +512,52 @@ def fill_toc(
     _rewrite_zip_preserving(src, tmp, overrides)
     tmp.replace(dst)
     return result
+
+
+_HEADER = "Contents/header.xml"
+#: Hangul's own style names for a 차례 (TOC). A 차례 새로 고침 formats the entries
+#: with these by name — measured: with them defined, a refresh kept the form's look;
+#: without them it fell back to 바탕글. The 하이퍼링크 char style keeps a refresh
+#: from painting linked entry text blue + underlined.
+_TOC_STYLES = (
+    ("차례 제목", "TOC Heading", "PARA", 1),
+    ("차례 1", "TOC 1", "PARA", 1),
+    ("차례 2", "TOC 2", "PARA", 2),
+    ("차례 3", "TOC 3", "PARA", 3),
+    ("하이퍼링크", "Hyperlink", "CHAR", 1),
+)
+
+
+def _ensure_toc_styles(head, looks: dict) -> dict[str, str]:
+    """Name → style id for the 차례 styles, appending any the header lacks with the
+    form's sample look (new entries go at the end of the list; itemCnt kept).
+    A template's own 차례 / 하이퍼링크 styles are reused untouched."""
+    styles = head.find(f".//{{{_HH}}}styles")
+    existing = {}
+    for st in styles.findall(f"{{{_HH}}}style"):
+        existing.setdefault(st.get("name"), st.get("id"))
+        existing.setdefault(st.get("engName"), st.get("id"))
+    base = styles.find(f"{{{_HH}}}style")
+    next_id = max(int(st.get("id")) for st in styles.findall(f"{{{_HH}}}style")) + 1
+    out: dict[str, str] = {}
+    for name, eng, kind, lvl in _TOC_STYLES:
+        sid = existing.get(name) or existing.get(eng)
+        if sid is None:
+            para_pr, char_pr = looks[min(looks, key=lambda k: (abs(k - lvl), k > lvl))]
+            st = copy.deepcopy(base)
+            sid = str(next_id)
+            next_id += 1
+            st.set("id", sid)
+            st.set("type", kind)
+            st.set("name", name)
+            st.set("engName", eng)
+            st.set("paraPrIDRef", para_pr if kind == "PARA" else "0")
+            st.set("charPrIDRef", char_pr)
+            st.set("nextStyleIDRef", sid if kind == "PARA" else "0")
+            styles.append(st)
+        out[name] = sid
+    styles.set("itemCnt", str(len(styles.findall(f"{{{_HH}}}style"))))
+    return out
 
 
 def _outline_para_prs(zf: zipfile.ZipFile) -> set[str]:

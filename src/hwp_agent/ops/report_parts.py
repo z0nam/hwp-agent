@@ -33,6 +33,7 @@ REF_ENTRY_STYLE = "참고문헌"
 
 _H1_RE = re.compile(r"^#[ \t]+(.+?)[ \t]*#*[ \t]*$")
 _FENCE_RE = re.compile(r"^[ \t]*(```|~~~)")
+_FOOTNOTE_DEF_RE = re.compile(r"^\[\^([^\]\s]+)\]:")
 
 
 def _hp(tag: str) -> str:
@@ -47,6 +48,7 @@ def split_report_parts(markdown: str) -> list[tuple[str, str]] | None:
     itself is dropped (the template section has its own title). Everything else is
     the body. Fenced code is not scanned.
     """
+    markdown, notes = _pull_footnote_defs(markdown)
     buckets: dict[str, list[str]] = {}
     current = "body"
     found = False
@@ -64,11 +66,45 @@ def split_report_parts(markdown: str) -> list[tuple[str, str]] | None:
         buckets.setdefault(current, []).append(line)
     if not found:
         return None
-    return [
-        ("{{" + name + "}}", "\n".join(buckets[name]).strip() + "\n")
-        for name in PART_ORDER
-        if name in buckets and "\n".join(buckets[name]).strip()
-    ]
+    parts = []
+    for name in PART_ORDER:
+        text = "\n".join(buckets.get(name, [])).strip()
+        if not text:
+            continue
+        # each part is filled on its own: give it the definitions it refers to
+        used = [d for fid, d in notes if f"[^{fid}]" in text]
+        if name == "body":  # one nothing refers to keeps write's unused-note warning
+            used += [d for fid, d in notes if not any(
+                f"[^{fid}]" in "\n".join(v) for v in buckets.values()
+            )]
+        parts.append(("{{" + name + "}}", "\n\n".join([text, *used]) + "\n"))
+    return parts
+
+
+def _pull_footnote_defs(markdown: str) -> tuple[str, list[tuple[str, str]]]:
+    """Take ``[^id]: …`` definitions (with indented continuation lines) out of
+    *markdown*: ``(rest, [(id, definition_text), …])``. Fenced code is left alone."""
+    out: list[str] = []
+    notes: list[tuple[str, str]] = []
+    lines = markdown.splitlines()
+    fenced = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if _FENCE_RE.match(line):
+            fenced = not fenced
+        m = None if fenced else _FOOTNOTE_DEF_RE.match(line)
+        if not m:
+            out.append(line)
+            i += 1
+            continue
+        block = [line]
+        i += 1
+        while i < len(lines) and lines[i].strip() and lines[i][:1] in (" ", "\t"):
+            block.append(lines[i])
+            i += 1
+        notes.append((m.group(1), "\n".join(block)))
+    return "\n".join(out), notes
 
 
 # --- 요약 form (#106) ---------------------------------------------------------
@@ -160,6 +196,16 @@ def _fill_choice(paras, items: list[str]) -> list[str]:
     return left
 
 
+def find_summary_form(section_root):
+    """The 요약 form table (first row 구분 | 주요내용…) in a section element, or None."""
+    for tbl in section_root.iter(_hp("tbl")):
+        tr = tbl.find(_hp("tr"))
+        cells = tr.findall(_hp("tc")) if tr is not None else []
+        if len(cells) >= 2 and _key(_para_text(cells[0])) == "구분":
+            return tbl
+    return None
+
+
 def fill_summary_form(path: str | Path, part: str, rows: list[tuple[str, str]]) -> list[str]:
     """Write *rows* (구분, 주요내용) into the 요약 form table of section *part*
     (e.g. ``Contents/section2.xml``); returns warnings."""
@@ -168,13 +214,7 @@ def fill_summary_form(path: str | Path, part: str, rows: list[tuple[str, str]]) 
     with zipfile.ZipFile(path) as z:
         raw = z.read(name)
     root = etree.fromstring(raw)
-    form = None
-    for tbl in root.iter(_hp("tbl")):
-        tr = tbl.find(_hp("tr"))
-        cells = tr.findall(_hp("tc")) if tr is not None else []
-        if len(cells) >= 2 and _key(_para_text(cells[0])) == "구분":
-            form = tbl
-            break
+    form = find_summary_form(root)
     if form is None:
         return ["요약 양식 표(구분/주요내용)를 찾지 못해 요약 표를 채우지 못했습니다"]
     # 구분 label → its content cells; the 정책 활용 분야 boxes run on over a second

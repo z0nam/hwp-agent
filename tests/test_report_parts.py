@@ -157,3 +157,28 @@ def test_other_templates_keep_the_old_write(template: Path) -> None:
     if not template.is_file():
         pytest.skip("template absent")
     assert _report_parts(template, "# 요약\n\n요약문\n\n# Ⅰ. 서론\n\n본문\n") is None
+
+
+def test_split_gives_each_part_the_footnotes_it_uses() -> None:
+    md = "# Ⅰ. 서론\n\n본문[^a]\n\n# 참고문헌\n\n문헌\n\n[^a]: 각주 내용\n    이어지는 줄\n"
+    parts = dict(split_report_parts(md))
+    assert "[^a]: 각주 내용\n    이어지는 줄" in parts["{{body}}"]
+    assert "[^a]:" not in parts["{{references}}"]
+
+
+def test_summary_table_without_a_form_stays_a_table(tmp_path: Path) -> None:
+    from hwp_agent.ops import fill_from_markdown
+
+    tpl = tmp_path / "t.hwpx"
+    out = tmp_path / "o.hwpx"
+    tpl.write_bytes(DEFAULT_TPL.read_bytes())
+    fill_from_markdown(tpl, "{{summary}}\n", output=tpl)  # a marker paragraph, no form
+    with zipfile.ZipFile(tpl) as z:
+        assert "{{summary}}" in z.read("Contents/section0.xml").decode()
+    fill_from_markdown(
+        tpl, "| 구분 | 주요내용 |\n|---|---|\n| 연구 목표 | 표로 남는 내용 |\n",
+        output=out, marker_token="{{summary}}",
+    )
+    with zipfile.ZipFile(out) as z:
+        xml = z.read("Contents/section0.xml").decode()
+    assert "표로 남는 내용" in xml and "<hp:tbl" in xml

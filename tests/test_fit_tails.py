@@ -22,11 +22,29 @@ from hwp_agent.ops.fit_tails import (
     format_tail_fit_report,
 )
 from hwp_agent.ops.integrity import audit_package
+from hwp_agent.render.fetch_rhwp import RHWP_VERSION
 from hwp_agent.render.rhwp import resolve_rhwp
 
 # Committed fixture (scripts/build-tail-fit-sample.py): body paragraphs tagged
 # [S] [A] [B] [C] [D] [E] — see that script for what each one exercises.
 SAMPLE = Path(__file__).parent / "data" / "tail_fit_sample.hwpx"
+
+
+def _pinned_rhwp() -> str:
+    """rhwp for tests that read SAMPLE's layout; skip unless it is the pinned version.
+
+    The fixture's tails are cut against one rhwp's line breaks (#126: v0.7.17
+    broke these lines at 44/85 chars, v0.9.1 at 50/101 like Hangul). Another
+    version is no regression, just a different layout: re-run
+    scripts/build-tail-fit-sample.py when bumping ``RHWP_VERSION``.
+    """
+    rhwp = resolve_rhwp()
+    if not rhwp:
+        pytest.skip("rhwp CLI not available")
+    out = subprocess.run([rhwp, "--version"], capture_output=True, text=True).stdout
+    if RHWP_VERSION not in out.split():
+        pytest.skip(f"SAMPLE is laid out for rhwp {RHWP_VERSION}, found {out.strip() or rhwp}")
+    return rhwp
 
 
 def test_compute_tail_fit_spacing_only() -> None:
@@ -310,9 +328,7 @@ def _by_tag(candidates):
 def test_rhwp_fit_reduces_lines_against_control(tmp_path: Path) -> None:
     """#39 follow-up: the reduction is measured against a control laid out the same
     way (linesegarray removed, charPr unchanged), not against the Hangul cache."""
-    rhwp = resolve_rhwp()
-    if not rhwp:
-        pytest.skip("rhwp CLI not available")
+    rhwp = _pinned_rhwp()
 
     cands = _by_tag(detect_tail_fits(SAMPLE, max_chars=4))
     assert {"[A]", "[B]", "[C]"} <= {t for t, c in cands.items() if c.fittable}
@@ -327,9 +343,7 @@ def test_rhwp_fit_reduces_lines_against_control(tmp_path: Path) -> None:
 
 
 def test_rhwp_no_room_means_no_fit(tmp_path: Path) -> None:
-    rhwp = resolve_rhwp()
-    if not rhwp:
-        pytest.skip("rhwp CLI not available")
+    _pinned_rhwp()
     cands = detect_tail_fits(SAMPLE, max_chars=4, min_spacing=0, min_ratio=100)
     assert cands and not any(c.fittable for c in cands)
     assert "한도 초과" in format_tail_fit_report(cands, min_spacing=0, min_ratio=100)
@@ -554,9 +568,7 @@ def test_saved_layout_skips_hwp2pdf(tmp_path: Path, fake_hwp2pdf) -> None:
 
 
 def test_hwp2pdf_overlap_falls_back_to_rhwp(tmp_path: Path, fake_hwp2pdf) -> None:
-    rhwp = resolve_rhwp()
-    if not rhwp:
-        pytest.skip("rhwp CLI not available")
+    _pinned_rhwp()
     fake_hwp2pdf.hwp_running = ["777"]
     det = detect_tail_fits_with_engine(SAMPLE, max_chars=4)
     assert det.engine == "rhwp" and "한글과 다를 수 있음" in det.engine_label
@@ -676,9 +688,7 @@ def test_partial_layout_empty_result_is_not_no_tails(
 
 
 def test_partial_layout_rest_judged_by_rhwp(tmp_path: Path, fake_hwp2pdf) -> None:
-    rhwp = resolve_rhwp()
-    if not rhwp:
-        pytest.skip("rhwp CLI not available")
+    _pinned_rhwp()
     bare = _bare(tmp_path)
     _partial_resave(fake_hwp2pdf, laid_out=3)
     det = detect_tail_fits_with_engine(bare, max_chars=4)

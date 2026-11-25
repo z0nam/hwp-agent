@@ -16,7 +16,8 @@ characters. Paragraph roles (looked up by their leading tag in the tests):
 linesegarray but the variants without it credited the lineseg removal as a
 spacing/ratio effect ("-1줄" for nothing).
 
-Needs rhwp (``$RHWP_BIN`` or PATH). Re-run only when the fixture must change:
+Needs rhwp (``$RHWP_BIN`` or PATH) at the pinned ``RHWP_VERSION`` — the tails are
+cut against its line breaks, so re-run this whenever that pin moves (#126):
 
     uv run python scripts/build-tail-fit-sample.py tests/data/tail_fit_sample.hwpx
 """
@@ -82,7 +83,9 @@ def _texts() -> dict[str, str]:
 def _write(texts: dict[str, str], dst: Path) -> None:
     with tempfile.TemporaryDirectory() as td:
         md = Path(td) / "content.md"
-        md.write_text("\n\n".join(texts.values()) + "\n", encoding="utf-8")
+        # a fixed creator, so the fixture never carries the builder's profile name
+        front = '---\ncreator: "hwp-agent"\n---\n'
+        md.write_text(front + "\n\n".join(texts.values()) + "\n", encoding="utf-8")
         if cli_main(["write", str(md), "--template", str(TEMPLATE), "-o", str(dst)]) != 0:
             raise SystemExit("hwp-agent write failed")
 
@@ -122,7 +125,11 @@ def build(dst: Path, rhwp: str) -> None:
                 para = lay[(0, idx[tag])]
                 tail = len(texts[tag]) - para.last_ts
                 if want is not None and tail != want:
-                    texts[tag] = texts[tag][: para.last_ts + want]
+                    cut = texts[tag][: para.last_ts + want]
+                    # write strips a trailing space, which would shorten the tail by one
+                    if cut.endswith(" "):
+                        cut = cut[:-1] + "다"
+                    texts[tag] = cut
                     done = False
             if done:
                 break

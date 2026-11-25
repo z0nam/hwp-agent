@@ -40,7 +40,7 @@ from pathlib import Path
 from hwpx.document import HwpxDocument
 
 from .equation import math_pieces
-from .figures import FIGURE_FRAMING_RE, figure_parts, figure_source
+from .figures import FIGURE_FRAMING_RE, figure_parts, figure_source, group_sources
 from .links import hyperlink_url
 from .styles import role_map
 
@@ -330,15 +330,15 @@ def _emit_table(lines: list[str], tbl, notes: list[str] | None = None) -> None:
     lines.append("")
 
 
-def _emit_figure(lines: list[str], tbl, pic, notes: list[str]) -> None:
+def _emit_figure(lines: list[str], tbl, holder, notes: list[str]) -> None:
     """A ``write`` figure table as ``![title](path){#id}`` + its note lines.
 
     The inverse of the figure path in ``write``: the caption minus its ``[그림 …]``
     framing is the alt text (links in it come back as ``[text](url)``), the path and
-    ``{#id}`` come from the picture's alt text, and each paragraph of the lower cell
-    is one 출처/주 line directly under the image line.
+    ``{#id}`` come from the picture's alt text (a picture group's, #119), and each
+    paragraph of the lower cell is one 출처/주 line directly under the image line.
     """
-    cap = tbl.find(f"{{{_HP}}}caption")
+    cap = holder.find(f"{{{_HP}}}caption")
     title = " ".join(
         _p_text(p, notes, deep=True).strip() for p in cap.iter(f"{{{_HP}}}p")
     ).strip() if cap is not None else ""
@@ -347,13 +347,16 @@ def _emit_figure(lines: list[str], tbl, pic, notes: list[str]) -> None:
     # title, the rest are `![](path)`, and the {#id} anchor closes the line
     first = tbl.find(f"{{{_HP}}}tr/{{{_HP}}}tc")
     pics = [
-        q for q in (first.iter(f"{{{_HP}}}pic") if first is not None else [pic])
-        if q.find(f"{{{_HC}}}img") is not None
-    ] or [pic]
+        q for q in first.iter(f"{{{_HP}}}pic") if q.find(f"{{{_HC}}}img") is not None
+    ]
+    if holder.tag == f"{{{_HP}}}container":
+        sources = group_sources(holder)
+        sources += [(None, None)] * (len(pics) - len(sources))
+    else:
+        sources = [figure_source(q) for q in pics]
     label = None
     tokens = []
-    for n, q in enumerate(pics):
-        path, lab = figure_source(q)
+    for n, (path, lab) in enumerate(sources):
         label = label or lab
         path = path or ""
         if any(c.isspace() for c in path) or ")" in path:

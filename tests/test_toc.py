@@ -22,7 +22,12 @@ from hwp_agent.cli.main import main
 from hwp_agent.ops import build_report, fill_toc
 from hwp_agent.ops.integrity import audit_package
 from hwp_agent.ops.links import audit_package_links
-from hwp_agent.ops.toc import TOC_COMMAND, TOC_FIELD_ID, table_toc_command
+from hwp_agent.ops.toc import (
+    TOC_COMMAND,
+    TOC_FIELD_ID,
+    figure_toc_command,
+    table_toc_command,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 POLICY = REPO_ROOT / "examples" / "house-forms" / "정책과제_서식.normalized.hwpx"
@@ -123,7 +128,7 @@ def _lists(out: Path) -> tuple[list[str], list[str], list[str]]:
 
 
 def _toc_fields(root, make: int = 17) -> tuple[list, list]:
-    """Begins / ends of the 차례 fields of one kind (ContentsMake 17 제목, 2 표)."""
+    """Begins / ends of the 차례 fields of one kind (ContentsMake 17 제목, 2 표, 4 그림)."""
     begins = [fb for fb in root.iter(f"{_HP}fieldBegin") if fb.get("type") == "TABLEOFCONTENTS"
               and f"ContentsMake:uint:{make} " in _commands(fb, "TABLEOFCONTENTS")[0]]
     ids = {fb.get("id") for fb in begins}
@@ -137,7 +142,7 @@ def _body_captions(out: Path) -> list[str]:
     for name, root in _sections(out).items():
         if name == "Contents/section1.xml":
             continue
-        for obj in root.iter(f"{_HP}tbl"):
+        for obj in root.iter(f"{_HP}tbl", f"{_HP}container"):  # figures: groups, #119
             cap = obj.find(f"{_HP}caption")
             if obj.get("numberingType") in ("TABLE", "PICTURE") and cap is not None:
                 caps.append(" ".join(t for t in _texts(cap.find(f"{_HP}subList")) if t))
@@ -148,7 +153,8 @@ def _body_captions(out: Path) -> list[str]:
 def test_build_rewrites_toc_from_headings_and_captions(tmp_path: Path, literal: bool) -> None:
     res, out = _build(tmp_path, literal_numbering=literal)
     assert res.toc == {"section": "Contents/section1.xml", "headings": 5, "tables": 3,
-                       "figures": 2, "field": literal}
+                       "figures": 2, "field": literal, "table_field": True,
+                       "figure_field": True}
     texts, tables, figures = _lists(out)
     # the form's sample report is gone
     assert not any("세계경제" in t or "GDP" in t or "제주경제" in t for t in texts)
@@ -166,10 +172,11 @@ def test_outline_headings_get_hangul_toc_field(tmp_path: Path) -> None:
     toc = _sections(out)["Contents/section1.xml"]
     begins, ends = _toc_fields(toc)
     assert len(begins) == 1 and begins[0].get("fieldid") == TOC_FIELD_ID
-    assert _commands(toc, "TABLEOFCONTENTS") == [TOC_COMMAND, table_toc_command()]
+    assert _commands(toc, "TABLEOFCONTENTS") == [
+        TOC_COMMAND, table_toc_command(), figure_toc_command()]
     assert len(ends) == 1 and ends[0].get("beginIDRef") == begins[0].get("id")
     # every 차례 field end has its begin (no strays)
-    assert len([fe for fe in toc.iter(f"{_HP}fieldEnd") if fe.get("fieldid") == TOC_FIELD_ID]) == 2
+    assert len([fe for fe in toc.iter(f"{_HP}fieldEnd") if fe.get("fieldid") == TOC_FIELD_ID]) == 3
     assert audit_package_links(out)["broken"] == []
     assert audit_package(out) == []
 
@@ -180,6 +187,7 @@ def test_non_outline_headings_get_a_static_toc(tmp_path: Path) -> None:
     toc = _sections(out)["Contents/section1.xml"]
     assert _toc_fields(toc) == ([], [])
     assert len(_toc_fields(toc, 2)[0]) == 1  # the 표 차례 needs no outline
+    assert len(_toc_fields(toc, 4)[0]) == 1  # nor the 그림 차례 (#119)
     assert len(_commands(toc, "HYPERLINK")) == 5 + 3 + 2
     assert audit_package_links(out)["broken"] == []
     assert audit_package(out) == []
@@ -192,7 +200,8 @@ def test_entry_links_point_at_their_targets(tmp_path: Path, literal: bool) -> No
     toc = secs.pop("Contents/section1.xml")
     para_ids = {p.get("id") for r in secs.values() for p in r.iter(f"{_HP}p")}
     tbl_ids = {t.get("id") for r in secs.values() for t in r.iter(f"{_HP}tbl")}
-    pic_ids = {t.get("id") for r in secs.values() for t in r.iter(f"{_HP}pic")}
+    # a figure's caption is on its picture group (#119)
+    pic_ids = {t.get("id") for r in secs.values() for t in r.iter(f"{_HP}container")}
     links = [re.fullmatch(r"\?#(\d+);0;(\d);0;", c) for c in _commands(toc, "HYPERLINK")]
     assert all(links)
     kinds = [m.group(2) for m in links]
@@ -253,8 +262,9 @@ def test_fill_twice_is_stable(tmp_path: Path, literal: bool) -> None:
     begins, ends = _toc_fields(toc)
     assert (len(begins), len(ends)) == ((1, 1) if literal else (0, 0))
     assert tuple(map(len, _toc_fields(toc, 2))) == (1, 1)
+    assert tuple(map(len, _toc_fields(toc, 4))) == (1, 1)
     assert len([fe for fe in toc.iter(f"{_HP}fieldEnd")
-                if fe.get("fieldid") == TOC_FIELD_ID]) == (2 if literal else 1)
+                if fe.get("fieldid") == TOC_FIELD_ID]) == (3 if literal else 2)
     assert _lists(again) == _lists(out)
     assert audit_package_links(again)["broken"] == []
     assert audit_package(again) == []
@@ -396,7 +406,8 @@ def test_golden_template_toc(tmp_path: Path, literal: bool) -> None:
     (scripts/add-golden-toc.py): build fills it like the house form."""
     res, out = _build(tmp_path, template=str(GOLDEN), literal_numbering=literal)
     assert res.toc == {"section": "Contents/section1.xml", "headings": 5, "tables": 3,
-                       "figures": 2, "field": literal}
+                       "figures": 2, "field": literal, "table_field": True,
+                       "figure_field": True}
     texts, tables, figures = _lists(out)
     assert texts[:6] == ["요약", *HEADINGS]
     assert tables == TABLES and figures == FIGURES

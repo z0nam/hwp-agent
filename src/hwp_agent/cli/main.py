@@ -1457,6 +1457,30 @@ def _add_meta_args(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _toc_page_hint(t: dict) -> str:
+    """How each 목차 list gets its page numbers: a field fills them on Hangul's
+    차례 새로 고침, a static list needs them typed in."""
+    lists = [
+        ("차례", t["headings"], t.get("field")),
+        ("표 차례", t["tables"], t.get("table_field")),
+        ("그림 차례", t["figures"], t.get("figure_field")),
+    ]
+    refresh = [name for name, n, field in lists if n and field]
+    manual = [name for name, n, field in lists if n and not field]
+    parts = []
+    if refresh:
+        parts.append(f"{'·'.join(refresh)}는 한글에서 차례 새로 고침")
+    if manual:
+        parts.append(f"{'·'.join(manual)}는 직접 입력")
+    if not parts:
+        return ""
+    hint = f"(쪽 번호: {', '.join(parts)}"
+    if t["headings"] and not t.get("field"):
+        hint += (" — 제목이 개요 문단이 아니라 차례는 필드 없이 씀; "
+                 "--literal-numbering이면 차례도 새로 고침")
+    return hint + ")"
+
+
 def _cmd_build(args: argparse.Namespace) -> int:
     import json
 
@@ -1516,16 +1540,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
         print(f"  set the side wing (쪽날개) of {wings.count} chapter(s)")
     if result.toc:
         t = result.toc
-        print(
-            f"  목차: 차례 {t['headings']} · 표 차례 {t['tables']} · 그림 차례 {t['figures']} "
-            + (
-                "(쪽 번호: 차례·표 차례는 한글에서 차례 새로 고침, 그림 차례는 직접 입력)"
-                if t.get("field")
-                else "(쪽 번호: 표 차례는 한글에서 차례 새로 고침, 차례·그림 차례는 직접 입력 — "
-                "제목이 개요 문단이 아니라 차례는 필드 없이 씀; "
-                "--literal-numbering이면 차례도 새로 고침)"
-            )
-        )
+        print(f"  목차: 차례 {t['headings']} · 표 차례 {t['tables']} · 그림 차례 {t['figures']} "
+              + _toc_page_hint(t))
     if result.unmapped_roles:
         print(f"  unmapped (fell back to BODY): {', '.join(result.unmapped_roles)}")
     for warning in result.warnings:

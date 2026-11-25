@@ -307,6 +307,8 @@ def _apply_fit_to_block(block: str, fit: str, px_w: int, px_h: int) -> str:
     """Rewrite the pic block's geometry for the new image. ``fit='none'`` is a no-op."""
     if fit == "none":
         return block
+    if re.match(r'<hp:pic\b[^>]*\bgroupLevel="[1-9]', block):
+        return _fit_grouped(block, px_w, px_h)
 
     sz = re.search(r'<hp:sz\b[^>]*\bwidth="(\d+)"[^>]*\bheight="(\d+)"', block)
     target_w = int(sz.group(1)) if sz else 0
@@ -340,6 +342,39 @@ def _apply_fit_to_block(block: str, fit: str, px_w: int, px_h: int) -> str:
     block = re.sub(r'(<hp:imgClip\b[^>]*\bbottom=")\d+(")', rf"\g<1>{dim_h}\g<2>", block, count=1)
     block = set_wh_dim(block, dim_w, dim_h)
     return block
+
+
+def _fit_grouped(block: str, px_w: int, px_h: int) -> str:
+    """A picture inside a group (``write`` figures, #119) has no ``<hp:sz>``: its
+    display box is ``curSz``, and ``orgSz`` is the native size scaled onto it by the
+    ``scaMatrix``. Keep the display width, take the new aspect for the height, and
+    point the native size, crop and scale at the new image. The group box (and its
+    other pictures) stay as they are, so :func:`replace_image` warns when the height
+    changes."""
+    cur = re.search(r'<hp:curSz\b[^>]*\bwidth="(\d+)"', block)
+    w = int(cur.group(1)) if cur else 0
+    if not w:
+        return block
+    h = round(w * px_h / px_w)
+    dim_w, dim_h = px_w * _PX_TO_HWPUNIT, px_h * _PX_TO_HWPUNIT
+
+    def set_attr(tag: str, attr: str, value, text: str) -> str:
+        return re.sub(rf'(<{tag}\b[^>]*\b{attr}=")[^"]*(")', rf"\g<1>{value}\g<2>",
+                      text, count=1)
+
+    block = set_attr("hp:curSz", "height", h, block)
+    block = set_attr("hp:orgSz", "width", dim_w, block)
+    block = set_attr("hp:orgSz", "height", dim_h, block)
+    block = set_attr("hp:rotationInfo", "centerY", h // 2, block)
+    block = set_attr("hc:scaMatrix", "e1", f"{w / dim_w:.6f}", block)
+    block = set_attr("hc:scaMatrix", "e5", f"{h / dim_h:.6f}", block)
+    block = re.sub(r'(<hc:pt1\b[^>]*\bx=")\d+(")', rf"\g<1>{dim_w}\g<2>", block, count=1)
+    block = re.sub(r'(<hc:pt2\b[^>]*\bx=")\d+("[^>]*\by=")\d+(")',
+                   rf"\g<1>{dim_w}\g<2>{dim_h}\g<3>", block, count=1)
+    block = re.sub(r'(<hc:pt3\b[^>]*\by=")\d+(")', rf"\g<1>{dim_h}\g<2>", block, count=1)
+    block = set_attr("hp:imgClip", "right", dim_w, block)
+    block = set_attr("hp:imgClip", "bottom", dim_h, block)
+    return set_wh_dim(block, dim_w, dim_h)
 
 
 def set_wh_dim(block: str, dim_w: int, dim_h: int) -> str:
@@ -434,6 +469,14 @@ def replace_image(
     if span and fit != "none":
         block = section_xml[span[0] : span[1]]
         new_block = _apply_fit_to_block(block, fit, px_w, px_h)
+        grouped = re.match(r'<hp:pic\b[^>]*\bgroupLevel="[1-9]', block)
+        old_h = re.search(r'<hp:curSz\b[^>]*\bheight="(\d+)"', block)
+        new_h = re.search(r'<hp:curSz\b[^>]*\bheight="(\d+)"', new_block)
+        if grouped and old_h and new_h and old_h.group(1) != new_h.group(1):
+            result.warnings.append(
+                f"{target.ref}: 묶음 개체 안의 그림이라 높이만 새 비율로 바꿨고 묶음 크기는 "
+                "그대로입니다 — 비율이 다른 그림이면 원고에서 다시 write/build 하세요"
+            )
         if new_block != block:
             section_xml = section_xml[: span[0]] + new_block + section_xml[span[1] :]
             overrides[target.section] = section_xml.encode("utf-8")

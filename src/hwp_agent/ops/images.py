@@ -236,10 +236,15 @@ def list_images(path: str | Path) -> list[PicInfo]:
                         caption = _para_text(node)
                         break
                 comment = pic.find(f"{{{_HP}}}shapeComment")
-                origname, px_w, px_h = parse_alt_text(
-                    comment.text or "" if comment is not None else ""
-                )
+                text = comment.text or "" if comment is not None else ""
+                if comment is None:
+                    text = _group_alt_text(pic, parents)
+                origname, px_w, px_h = parse_alt_text(text)
+                # a picture inside a group (write figures, #119) has no <hp:sz>: its
+                # display box is curSz
                 sz = pic.find(f"{{{_HP}}}sz")
+                if sz is None:
+                    sz = pic.find(f"{{{_HP}}}curSz")
                 ew = int(sz.get("width", "0")) if sz is not None else 0
                 eh = int(sz.get("height", "0")) if sz is not None else 0
                 pics.append(
@@ -256,6 +261,19 @@ def list_images(path: str | Path) -> list[PicInfo]:
                     )
                 )
     return pics
+
+
+def _group_alt_text(pic, parents: dict) -> str:
+    """Alt text of a picture inside a group: Hangul drops a grouped picture's own
+    shapeComment, so ``write`` keeps each one in the group's, after Hangul's
+    ``묶음 개체입니다.`` line, one ``그림입니다.`` block per picture in order (#119)."""
+    group = parents.get(pic)
+    if group is None or group.tag != f"{{{_HP}}}container":
+        return ""
+    comment = group.find(f"{{{_HP}}}shapeComment")
+    blocks = (comment.text or "").split("그림입니다.")[1:] if comment is not None else []
+    index = group.findall(f"{{{_HP}}}pic").index(pic)
+    return blocks[index] if index < len(blocks) else ""
 
 
 def _manifest_ext(hpf: str) -> dict[str, str]:

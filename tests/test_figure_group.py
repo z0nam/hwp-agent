@@ -144,6 +144,7 @@ def test_caption_goes_on_a_text_wide_picture_group(tmp_path: Path) -> None:
 
 def test_group_keeps_each_pictures_source_for_extract(tmp_path: Path) -> None:
     out = _write(tmp_path, "![두 장](wide.png) ![](sq.png){#fig_pair}\n주) 좌: 가\n")
+    assert [p.origname for p in list_images(out)] == ["wide.png", "sq.png"]
     comment = figure_group(_figure_tables(out)[0]).find(f"{_HP}shapeComment").text
     assert comment.startswith(GROUP_COMMENT)
     assert "원본 그림의 이름: wide.png" in comment and "원본 그림의 이름: sq.png" in comment
@@ -242,6 +243,9 @@ def test_image_list_and_replace_inside_a_group(tmp_path: Path) -> None:
     out = _write(tmp_path, "![한 장](wide.png)\n")
     pics = list_images(out)
     assert len(pics) == 1 and pics[0].caption.startswith("[그림 1] 한 장")
+    # metadata read from the group: source in its comment, size from curSz
+    assert (pics[0].origname, pics[0].px_w, pics[0].px_h) == ("wide.png", 40, 25)
+    assert pics[0].extent_w > 0 and pics[0].extent_h > 0
     before = figure_group(_figure_tables(out)[0]).find(f"{_HP}pic")
     w0 = int(before.find(f"{_HP}curSz").get("width"))
     new = _png(tmp_path / "new.png", 40, 40)

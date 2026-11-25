@@ -10,14 +10,14 @@ sample chapter title.
 :func:`apply_chapter_headers` fixes that without splitting sections (XML-built
 content sections are rejected by Hangul, see ``docs/section-split.md``): each
 HEADING_1 paragraph of such a section gets an **odd-page header control** holding a
-white, borderless text box that covers the baked-in title and shows the chapter's
-own title in vertical writing. A header control takes effect from the page it sits
+white, borderless box that covers the baked-in title and the chapter's own title
+as a turned 글맵시. A header control takes effect from the page it sits
 on until the next one, so each chapter's odd pages carry that chapter's title. A
 running header the template already has is cloned into each wing header, and the
 header in force before the wings is put back at the start of the following section
 so the last chapter's wing doesn't run on into it (header controls outlive their
 section).
-The text uses the chapter heading's own charPr (font, colour, weight) at the wing's
+The title uses the chapter heading's own font, colour and weight at the wing's
 size.
 
 Sections without HEADING_1 paragraphs (표지·목차·요약…) and sections whose odd
@@ -30,8 +30,9 @@ Measured with hwp2pdf (Hangul) on 2026-10-21 — why it looks the way it does:
   x at the left margin, y about :data:`_HEADER_ORIGIN_DY` below the top margin
   (3004-3025 for top margins 6503/8503/10503 and header margins 0/2000).
 * A rotated text box (``rotationInfo``) turns the box but not its text, whatever
-  the ``renderingInfo`` matrices say — so the wing is written vertically (Hangul
-  upright, top to bottom) instead of the picture's sideways glyphs.
+  the ``renderingInfo`` matrices say. A 글맵시 (``hp:textart``) turns its glyphs with
+  it (2026-11-25), so the wing title is one, turned to read bottom to top like the
+  picture's, over a white box hiding the picture's own title.
 """
 
 from __future__ import annotations
@@ -80,8 +81,10 @@ class WingSpec:
     thickness: int = 1100
     #: height of the box (along the text); long enough for ~40 characters
     length: int = 30000
-    #: glyph height of the wing title (HWPUNIT, 100 = 1pt)
-    char_height: int = 800
+    #: em of the wing title, also the 글맵시's thickness (HWPUNIT, 100 = 1pt)
+    char_height: int = 700
+    #: gap from :attr:`top` to where the title's glyphs start
+    text_inset: int = 200
     fill: str = "#FFFFFF"
     #: paper the geometry was measured on; other paper sizes are left alone
     paper_width: int = 53858
@@ -220,15 +223,27 @@ def _header_ctrl(header_id: int, text_width: int, para_pr: str, char_pr: str, bo
 
 
 def _wing_box(
-    *, title: str, shape_id: int, char_pr: str, para_pr: str, paper_w: int,
-    margin_left: int, margin_top: int, spec: WingSpec,
+    *, title: str, shape_id: int, paper_w: int, margin_left: int, margin_top: int,
+    spec: WingSpec, look: tuple[str, str, bool],
 ) -> str:
-    """The wing: a white, borderless, vertically-written text box (module docstring)."""
+    """The wing: a white, borderless box over the picture's title, and the chapter's
+    own title as a 글맵시 turned to read bottom to top like the picture's (module
+    docstring). Takes ids *shape_id* … *shape_id* + 3.
+    """
     w, h = spec.thickness, spec.length
     # header-hosted objects sit relative to the header origin, not the paper
+    dy = margin_top + _HEADER_ORIGIN_DY
     horz = paper_w - spec.right_to_center - w // 2 - margin_left
-    vert = spec.top - margin_top - _HEADER_ORIGIN_DY
+    vert = spec.top - dy
     mats = "".join(_IDENTITY.format(m) for m in ("transMatrix", "scaMatrix", "rotMatrix"))
+    face, color, bold = look
+    art = _title_art(
+        text=title, shape_id=shape_id + 2, angle=270, em=spec.char_height,
+        horz=paper_w - spec.right_to_center - spec.char_height // 2 - margin_left,
+        # a header-hosted 글맵시 sits from the top margin, without the box's extra
+        # header-origin drop (hwp2pdf, 2026-11-25)
+        vert=spec.top + spec.text_inset - margin_top, face=face, color=color, bold=bold,
+    ).replace(f' xmlns:hp="{_HP}" xmlns:hc="{_HC}"', "", 1)
     return (
         f'<hp:rect id="{shape_id}" zOrder="100" numberingType="NONE" '
         f'textWrap="IN_FRONT_OF_TEXT" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" '
@@ -243,14 +258,6 @@ def _wing_box(
         f'<hc:fillBrush><hc:winBrush faceColor="{spec.fill}" hatchColor="#000000" '
         f'alpha="0"/></hc:fillBrush>'
         f'<hp:shadow type="NONE" color="#B2B2B2" offsetX="0" offsetY="0" alpha="0"/>'
-        f'<hp:drawText lastWidth="{w}" name="" editable="0">'
-        f'<hp:subList id="" textDirection="VERTICAL" lineWrap="BREAK" vertAlign="CENTER" '
-        f'linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" '
-        f'hasTextRef="0" hasNumRef="0">'
-        f'<hp:p id="0" paraPrIDRef="{para_pr}" styleIDRef="0" pageBreak="0" '
-        f'columnBreak="0" merged="0"><hp:run charPrIDRef="{char_pr}">'
-        f'<hp:t>{escape(title)}</hp:t></hp:run></hp:p></hp:subList>'
-        f'<hp:textMargin left="0" right="0" top="200" bottom="0"/></hp:drawText>'
         f'<hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/>'
         f'<hc:pt3 x="0" y="{h}"/>'
         f'<hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" '
@@ -261,7 +268,137 @@ def _wing_box(
         f'horzOffset="{horz & 0xFFFFFFFF}"/>'
         f'<hp:outMargin left="0" right="0" top="0" bottom="0"/>'
         f'<hp:shapeComment>사각형입니다.</hp:shapeComment></hp:rect>'
+        + art
     )
+
+
+#: advance widths (per 1000 em) of KoPubWorld돋움체 Bold, the forms' heading face, for
+#: ASCII 32-126; used to size a title's 글맵시 box to its text
+_ASCII_ADV = [int(v) for v in (
+    "290 300 320 590 590 874 706 180 310 310 446 590 300 570 300 446 563 563 563 563 "
+    "563 563 563 563 563 563 316 316 425 590 425 486 882 662 664 664 713 609 555 712 "
+    "718 283 500 609 555 872 718 758 609 758 664 601 555 718 621 990 609 609 555 310 "
+    "446 310 434 490 291 506 562 506 562 562 341 562 562 232 232 506 232 891 562 549 "
+    "562 562 341 506 341 562 504 802 506 504 451 310 386 310 527"
+).split()]
+#: the square a 글맵시 lays its text out in (orgSz); scaMatrix stretches it to curSz
+_TEXTART_ORG = 14173
+#: the pictures set their titles tighter than the face's advances: "Ⅰ. 세계경제 전망"
+#: runs 188 px where the advances at its glyph size give 204 (hwp2pdf, 2026-11-25)
+_TITLE_TRACKING = 0.92
+#: shapeComment marking the title 글맵시 this module writes (see :func:`fit_title_art`)
+TITLE_ART_COMMENT = "쪽 제목 글맵시입니다."
+
+
+def _advance(text: str) -> int:
+    """Width of *text* in 1/1000 em of the heading face (KoPubWorld돋움체 Bold)."""
+    import unicodedata
+
+    total = 0
+    for ch in text:
+        o = ord(ch)
+        if 32 <= o < 127:
+            total += _ASCII_ADV[o - 32]
+        elif 0xAC00 <= o <= 0xD7A3 or 0x3130 <= o <= 0x318F:
+            total += 872  # Hangul syllables and jamo
+        elif ch in "·“”‘’":
+            total += 319 if ch == "·" else 410 if ch in "“”" else 290
+        elif unicodedata.east_asian_width(ch) in "WFA":
+            total += 900  # Ⅰ-Ⅹ, ·, …, full-width forms
+        else:
+            total += 600
+    return total
+
+
+def _title_length(text: str, em: int) -> int:
+    """Length of a title 글맵시 holding *text* at *em* (HWPUNIT)."""
+    return max(1, int(_advance(text) * em * _TITLE_TRACKING) // 1000)
+
+
+def _char_look(header_root, char_pr_id: str) -> tuple[str, str, bool]:
+    """(Hangul font face, text colour, bold) of ``charPr`` *char_pr_id*."""
+    cp = header_root.find(f".//{_hh('charPr')}[@id='{char_pr_id}']")
+    if cp is None:
+        return "KoPubWorld돋움체 Bold", "#06004B", True
+    ref = cp.find(_hh("fontRef"))
+    face = None
+    if ref is not None:
+        for ff in header_root.iter(_hh("fontface")):
+            if ff.get("lang") == "HANGUL":
+                font = ff.find(f"{_hh('font')}[@id='{ref.get('hangul', '0')}']")
+                face = font.get("face") if font is not None else None
+    return (face or "KoPubWorld돋움체 Bold", cp.get("textColor", "#000000"),
+            cp.find(_hh("bold")) is not None)
+
+
+def _title_art(
+    *, text: str, shape_id: int, horz: int, vert: int, em: int, angle: int,
+    face: str, color: str, bold: bool,
+) -> str:
+    """A 글맵시 (text art) showing *text* turned *angle* (90: reads top to bottom, 270:
+    bottom to top) with its box's top-left at (*horz*, *vert*).
+
+    Hangul turns a 글맵시's glyphs with the object, unlike a text box's text (module
+    docstring). The geometry follows what Hangul itself writes (checked on a Hangul
+    re-save, 2026-11-25): text laid out in an ``orgSz`` square stretched to ``curSz``
+    by ``scaMatrix``; ``sz`` and ``rotationInfo``'s centre are the box *after* turning,
+    and ``rotMatrix`` turns the stretched box back onto it. The glyphs fill the box,
+    so it is sized to *text* at *em* from the heading face's advance widths.
+    """
+    w = _title_length(text, em)  # along the text
+    h = em  # across it
+    rot = (0, -1, h, 1, 0, 0) if angle == 90 else (0, 1, 0, -1, 0, w)
+    org = _TEXTART_ORG
+    # like the heading itself: a bold charPr on the Bold face (the pictures' weight)
+    style = "진하게" if bold else "보통"
+    attr = escape(text, {'"': "&quot;"})
+    return (
+        f'<hp:textart xmlns:hp="{_HP}" xmlns:hc="{_HC}" id="{shape_id}" zOrder="101" '
+        f'numberingType="NONE" textWrap="IN_FRONT_OF_TEXT" textFlow="BOTH_SIDES" lock="0" '
+        f'dropcapstyle="None" href="" groupLevel="0" instid="{shape_id + 1}" text="{attr}">'
+        f'<hp:offset x="0" y="0"/><hp:orgSz width="{org}" height="{org}"/>'
+        f'<hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="0" vertical="0"/>'
+        f'<hp:rotationInfo angle="{angle}" centerX="{h // 2}" centerY="{w // 2}" '
+        f'rotateimage="1"/><hp:renderingInfo>{_IDENTITY.format("transMatrix")}'
+        f'<hc:scaMatrix e1="{w / org:.6f}" e2="0" e3="0" e4="0" e5="{h / org:.6f}" e6="0"/>'
+        f'<hc:rotMatrix e1="{rot[0]}" e2="{rot[1]}" e3="{rot[2]}" e4="{rot[3]}" '
+        f'e5="{rot[4]}" e6="{rot[5]}"/></hp:renderingInfo>'
+        f'<hp:lineShape color="{color}" width="0" style="NONE" '
+        f'endCap="ROUND" headStyle="NORMAL" tailStyle="NORMAL" headfill="0" tailfill="0" '
+        f'headSz="SMALL_SMALL" tailSz="SMALL_SMALL" outlineStyle="INNER" alpha="0"/>'
+        f'<hc:fillBrush><hc:winBrush faceColor="{color}" hatchColor="#000000" alpha="0"/>'
+        f'</hc:fillBrush>'
+        f'<hp:shadow type="NONE" color="#B2B2B2" offsetX="0" offsetY="0" alpha="0"/>'
+        f'<hc:pt0 x="0" y="0"/><hc:pt1 x="{org}" y="0"/><hc:pt2 x="{org}" y="{org}"/>'
+        f'<hc:pt3 x="0" y="{org}"/>'
+        f'<hp:textartPr fontName="{escape(face, {chr(34): "&quot;"})}" fontStyle="{style}" '
+        f'fontType="TTF" textShape="RECTANGLE" lineSpacing="120" charSpacing="100" '
+        f'align="LEFT"><hp:shadow type="NONE" color="#000000" offsetX="0" offsetY="0" '
+        f'alpha="0"/></hp:textartPr>'
+        f'<hp:sz width="{h}" widthRelTo="ABSOLUTE" height="{w}" heightRelTo="ABSOLUTE" '
+        f'protect="0"/>'
+        f'<hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="0" allowOverlap="1" '
+        f'holdAnchorAndSO="0" vertRelTo="PAPER" horzRelTo="PAPER" vertAlign="TOP" '
+        f'horzAlign="LEFT" vertOffset="{vert & 0xFFFFFFFF}" '
+        f'horzOffset="{horz & 0xFFFFFFFF}"/>'
+        f'<hp:outMargin left="0" right="0" top="0" bottom="0"/>'
+        f"<hp:shapeComment>{TITLE_ART_COMMENT}</hp:shapeComment></hp:textart>"
+    )
+
+
+def fit_title_art(art, text: str) -> None:
+    """Re-size a title 글맵시 (lxml element) to *text*, keeping its top, centre line,
+    thickness and turn — for a slot filled after the box was made."""
+    h = int(art.find(_hp("curSz")).get("height"))
+    w = _title_length(text, h)
+    art.set("text", text)
+    art.find(_hp("curSz")).set("width", str(w))
+    art.find(_hp("sz")).set("height", str(w))
+    art.find(_hp("rotationInfo")).set("centerY", str(w // 2))
+    ri = art.find(_hp("renderingInfo"))
+    ri.find(f"{{{_HC}}}scaMatrix").set("e1", f"{w / _TEXTART_ORG:.6f}")
+    if art.find(_hp("rotationInfo")).get("angle") == "270":
+        ri.find(f"{{{_HC}}}rotMatrix").set("e6", str(w))
 
 
 def _prepend_run(p, ctrl, char_pr: str, *, after_headers: bool = True) -> None:
@@ -308,7 +445,8 @@ def _odd_header_ctrl(active, header_id: int, renumber, text_width: int, para_pr:
     if box:
         first = sub.find(_hp("p"))
         run = etree.Element(_hp("run"), charPrIDRef=char_pr)
-        run.append(etree.fromstring(f'<x xmlns:hp="{_HP}" xmlns:hc="{_HC}">{box}</x>')[0])
+        for obj in etree.fromstring(f'<x xmlns:hp="{_HP}" xmlns:hc="{_HC}">{box}</x>'):
+            run.append(obj)  # the cover box and the title 글맵시
         lsa = first.find(_hp("linesegarray"))
         if lsa is not None:
             lsa.addprevious(run)
@@ -415,11 +553,12 @@ def apply_chapter_headers(
                     char_pr = _wing_char_pr(char_props, base_char, spec.char_height)
                     para_pr = _wing_para_pr(para_props, p.get("paraPrIDRef", "0"))
                     shape_id = next(ids)
-                    next(ids)  # the box's instid
+                    for _ in range(3):  # cover's instid, 글맵시's id and instid
+                        next(ids)
                     box = _wing_box(
-                        title=_para_text(p), shape_id=shape_id, char_pr=char_pr,
-                        para_pr=para_pr, paper_w=paper_w, margin_left=left,
-                        margin_top=top, spec=spec,
+                        title=_para_text(p), shape_id=shape_id, paper_w=paper_w,
+                        margin_left=left, margin_top=top, spec=spec,
+                        look=_char_look(header_root, base_char),
                     )
                     ctrl = _odd_header_ctrl(
                         active, next(ids), renumber, text_width, para_pr, char_pr, box
@@ -443,3 +582,34 @@ def apply_chapter_headers(
     _rewrite_zip_preserving(src, tmp, overrides)
     tmp.replace(dst)
     return result
+
+
+
+@dataclass
+class FinalizeResult:
+    #: the side-wing result, ``None`` when *chapter_header* was off
+    wings: ChapterHeaderResult | None = None
+    warnings: list[str] = field(default_factory=list)
+
+
+def finalize_report(path: str | Path, *, chapter_header: bool = True) -> FinalizeResult:
+    """The finishing steps ``write``/``build`` run on a filled report, in place (#95).
+
+    Per-chapter odd-page side wings (:func:`apply_chapter_headers`, unless
+    *chapter_header* is false), then uncaptioned decorations kept out of the 그림·표
+    차례 (:func:`~.numbering.neutralize_uncaptioned_numbering`, #101 — a failure there
+    is a warning, never an error). For callers of
+    :func:`~.author.fill_from_markdown` / :func:`~.author.build_report` outside the
+    CLI, which runs exactly this. Run it once per output: wings are added, not
+    replaced.
+    """
+    from .numbering import neutralize_uncaptioned_numbering
+
+    res = FinalizeResult()
+    if chapter_header:
+        res.wings = apply_chapter_headers(path)
+    try:
+        neutralize_uncaptioned_numbering(path)
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        res.warnings.append(f"could not neutralize decoration numbering: {exc}")
+    return res

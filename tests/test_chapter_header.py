@@ -60,8 +60,10 @@ def test_each_chapter_gets_its_own_odd_page_wing(tmp_path: Path) -> None:
     assert len(headers) == len(TITLES)  # one per chapter
     for h, title in zip(headers, TITLES, strict=True):
         assert 'applyPageType="ODD"' in h
-        assert 'textDirection="VERTICAL"' in h
-        assert re.findall(r"<hp:t>([^<]+)</hp:t>", h) == [title]
+        # the title as a 글맵시 turned to read bottom to top, like the picture's
+        assert re.findall(r'<hp:textart [^>]*text="([^"]*)"', h) == [title]
+        assert '<hp:rotationInfo angle="270"' in h
+        assert not re.findall(r"<hp:t>([^<]+)</hp:t>", h)
     # each header sits in its chapter's HEADING_1 paragraph, just ahead of the title
     for title in TITLES:
         heading = re.search(
@@ -73,7 +75,7 @@ def test_each_chapter_gets_its_own_odd_page_wing(tmp_path: Path) -> None:
     assert audit_package(out) == []
 
 
-def test_wing_text_uses_the_heading_char_pr_at_wing_size(tmp_path: Path) -> None:
+def test_wing_text_uses_the_heading_look_at_wing_size(tmp_path: Path) -> None:
     build_report(_manifest(tmp_path))
     out = tmp_path / "out.hwpx"
     apply_chapter_headers(out)
@@ -84,19 +86,16 @@ def test_wing_text_uses_the_heading_char_pr_at_wing_size(tmp_path: Path) -> None
         r'</hp:header></hp:ctrl></hp:run><hp:run charPrIDRef="(\d+)"><hp:t>'
         + re.escape(TITLES[0]), body,
     )
-    heading_cp = m.group(1)
-    wing_cp = re.search(
-        r'textDirection="VERTICAL".*?<hp:run charPrIDRef="(\d+)">', _headers(body)[0], re.S
-    ).group(1)
-
-    def char_pr(i: str) -> str:
-        return re.search(rf'<hh:charPr id="{i}"[^>]*>.*?</hh:charPr>', header, re.S).group(0)
-
-    base, wing = char_pr(heading_cp), char_pr(wing_cp)
-    assert 'height="800"' in wing
-    # same font, colour and weight — only id and size differ
-    norm = lambda s: re.sub(r' (id|height)="[^"]*"', "", s)  # noqa: E731
-    assert norm(base) == norm(wing)
+    cp = re.search(rf'<hh:charPr id="{m.group(1)}"[^>]*>.*?</hh:charPr>', header, re.S).group(0)
+    hangul = re.search(r'<hh:fontRef hangul="(\d+)"', cp).group(1)
+    faces = re.search(r'<hh:fontface lang="HANGUL".*?</hh:fontface>', header, re.S).group(0)
+    face = re.search(rf'<hh:font id="{hangul}" face="([^"]+)"', faces).group(1)
+    color = re.search(r'textColor="([^"]+)"', cp).group(1)
+    wing = _headers(body)[0]
+    # same face and colour as the chapter heading, at the wing's size
+    assert f'fontName="{face}"' in wing
+    assert f'<hc:winBrush faceColor="{color}"' in wing
+    assert re.search(r'<hp:textart .*?<hp:curSz width="\d+" height="700"/>', wing, re.S)
 
 
 def test_sections_without_chapter_titles_are_untouched(tmp_path: Path) -> None:

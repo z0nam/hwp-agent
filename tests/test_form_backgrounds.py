@@ -7,6 +7,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from lxml import etree
 
 from hwp_agent.ops import add_running_title_slot, clean_form_backgrounds, finalize_report
 from hwp_agent.ops import form_backgrounds as fb
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = ROOT / "examples" / "정책과제-template.hwpx"
 HOUSE = sorted((ROOT / "examples" / "house-forms").glob("*과제_서식.normalized.hwpx"))
 
+HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 MD = "# Ⅰ. 서론\n\n본문 문장입니다.\n\n# Ⅱ. 분석\n\n본문 문장입니다.\n"
 
 
@@ -28,7 +30,7 @@ def _mp_texts(path: Path) -> list[str]:
     return [
         v.decode("utf-8")
         for n, v in _parts(path).items()
-        if n.startswith("Contents/masterpage") and b"VERTICAL" in v
+        if n.startswith("Contents/masterpage") and fb.TITLE_ART_COMMENT.encode() in v
     ]
 
 
@@ -74,8 +76,13 @@ def test_write_fills_running_title_from_meta(tmp_path: Path) -> None:
     out = tmp_path / "out.hwpx"
     assert main(["write", str(md), "--template", str(GOLDEN), "-o", str(out)]) == 0
     texts = _mp_texts(out)
-    assert sum("<hp:t>가상 보고서 제목</hp:t>" in t for t in texts) == 4
+    assert sum('text="가상 보고서 제목"' in t for t in texts) == 4
     assert not any(fb.SLOT in t for t in texts)
+    # sized to the filled title, not the token (a 글맵시 stretches text to its box)
+    art = etree.fromstring(texts[0].encode()).find(f".//{{{HP}}}textart")
+    em = int(art.find(f"{{{HP}}}curSz").get("height"))
+    want = int((7 * 872 + 2 * 290) * em * 0.92) // 1000
+    assert int(art.find(f"{{{HP}}}curSz").get("width")) == want
 
 
 def test_write_without_meta_blanks_running_title(tmp_path: Path) -> None:
@@ -86,6 +93,9 @@ def test_write_without_meta_blanks_running_title(tmp_path: Path) -> None:
     out = tmp_path / "out.hwpx"
     assert main(["write", str(md), "--template", str(GOLDEN), "-o", str(out)]) == 0
     assert not any("running_title" in t for t in _mp_texts(out))
+    with zipfile.ZipFile(out) as z:  # the empty 글맵시 is gone, not left as a 0-length box
+        assert not any(b"<hp:textart" in z.read(n) and fb.TITLE_ART_COMMENT.encode() in z.read(n)
+                       for n in z.namelist() if n.startswith("Contents/masterpage"))
 
 
 def test_finalize_report_matches_cli_write(tmp_path: Path) -> None:
@@ -113,3 +123,26 @@ def test_finalize_report_without_chapter_header(tmp_path: Path) -> None:
     out = tmp_path / "out.hwpx"
     fill_from_markdown(GOLDEN, MD, output=out)
     assert finalize_report(out, chapter_header=False).wings is None
+
+
+def test_title_art_geometry_follows_hangul() -> None:
+    """Values Hangul itself writes for a turned 글맵시 (re-save, 2026-11-25)."""
+    from hwp_agent.ops.chapter_header import _title_art
+
+    for angle, rot in ((90, ("0", "-1", "600", "1", "0", "0")),
+                       (270, ("0", "1", "0", "-1", "0", "W"))):
+        art = etree.fromstring(_title_art(
+            text='가"나', shape_id=10, horz=100, vert=200, em=600, angle=angle,
+            face="KoPubWorld돋움체 Bold", color="#06004B", bold=True,
+        ))
+        w = int((2 * 872 + 320) * 600 * 0.92) // 1000
+        assert art.get("text") == '가"나'
+        sz = art.find(f"{{{HP}}}sz")
+        assert (sz.get("width"), sz.get("height")) == ("600", str(w))  # after turning
+        ri = art.find(f"{{{HP}}}rotationInfo")
+        assert (ri.get("angle"), ri.get("centerX"), ri.get("centerY")) == (
+            str(angle), "300", str(w // 2))
+        m = art.find(f".//{{{fb._HC}}}rotMatrix")
+        assert tuple(m.get(f"e{i}") for i in range(1, 7)) == tuple(
+            str(w) if v == "W" else v for v in rot)
+        assert art.find(f".//{{{HP}}}textartPr").get("fontStyle") == "진하게"  # as the heading

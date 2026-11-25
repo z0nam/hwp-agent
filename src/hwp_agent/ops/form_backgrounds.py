@@ -10,10 +10,11 @@ never reach pixels, so every document built from these forms printed the sample.
   of the form's original bytes, for copies with the lettering painted over in the
   surrounding flat colour (``assets/form-backgrounds/``; ``map.json`` maps original
   hash → clean file). Every other part is copied byte-for-byte.
-* :func:`add_running_title_slot` puts the report title back as text: a borderless,
-  transparent, vertically written ``{{running_title}}`` box where the picture's
-  title was, on each even master page showing a cleaned picture. ``report_meta``
-  fills it (``running_title`` ← meta, else the title). The odd-page chapter title
+* :func:`add_running_title_slot` puts the report title back as text: a
+  ``{{running_title}}`` 글맵시 turned to read top to bottom where the picture's title
+  was, on each even master page showing a cleaned picture. ``report_meta`` fills it
+  (``running_title`` ← meta, else the title) and :func:`fit_running_titles` sizes it
+  to the filled text. The odd-page chapter title
   is :mod:`.chapter_header`'s job; with the sample erased, a document that skips
   it shows no chapter title rather than the sample's.
 """
@@ -30,14 +31,14 @@ from lxml import etree
 
 from .chapter_header import (
     _HC,
-    _HP,
-    _IDENTITY,
+    TITLE_ART_COMMENT,
     WingSpec,
+    _char_look,
     _hh,
     _hp,
     _serialize,
-    _wing_char_pr,
-    _wing_para_pr,
+    _title_art,
+    fit_title_art,
 )
 from .container import _rewrite_zip_preserving
 
@@ -86,55 +87,67 @@ def clean_form_backgrounds(path: str | Path, output: str | Path | None = None) -
     return sorted(overrides)
 
 
-def _title_box(shape_id: int, char_pr: str, para_pr: str, spec: WingSpec) -> str:
-    """Transparent vertical text box mirroring the odd-page wing on the left margin.
+def _title_box(shape_id: int, look: tuple[str, str, bool], spec: WingSpec) -> str:
+    """The ``{{running_title}}`` 글맵시 mirroring the odd-page wing on the left margin,
+    turned to read top to bottom like the picture's title.
 
     Master-page objects are placed on the paper (unlike header-hosted ones), so the
     offsets are plain paper coordinates. Measured on the even pictures (2244×3071 px
     over 53858×73700 HWPUNIT): the title glyphs span x 148-176 px, from y 354 px.
     """
-    w, h = spec.thickness, spec.length
-    horz = spec.right_to_center - w // 2  # same distance from the left edge
-    vert = spec.top
-    mats = "".join(_IDENTITY.format(m) for m in ("transMatrix", "scaMatrix", "rotMatrix"))
-    return (
-        f'<hp:rect xmlns:hp="{_HP}" xmlns:hc="{_HC}" id="{shape_id}" zOrder="100" '
-        f'numberingType="NONE" textWrap="IN_FRONT_OF_TEXT" textFlow="BOTH_SIDES" lock="0" '
-        f'dropcapstyle="None" href="" groupLevel="0" instid="{shape_id + 1}" ratio="0">'
-        f'<hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/>'
-        f'<hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="0" vertical="0"/>'
-        f'<hp:rotationInfo angle="0" centerX="{w // 2}" centerY="{h // 2}" rotateimage="1"/>'
-        f'<hp:renderingInfo>{mats}</hp:renderingInfo>'
-        f'<hp:lineShape color="#000000" width="0" style="NONE" endCap="FLAT" '
-        f'headStyle="NORMAL" tailStyle="NORMAL" headfill="1" tailfill="1" '
-        f'headSz="SMALL_SMALL" tailSz="SMALL_SMALL" outlineStyle="NORMAL" alpha="0"/>'
-        f'<hp:shadow type="NONE" color="#B2B2B2" offsetX="0" offsetY="0" alpha="0"/>'
-        f'<hp:drawText lastWidth="{w}" name="" editable="0">'
-        f'<hp:subList id="" textDirection="VERTICAL" lineWrap="BREAK" vertAlign="CENTER" '
-        f'linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" '
-        f'hasTextRef="0" hasNumRef="0">'
-        f'<hp:p id="0" paraPrIDRef="{para_pr}" styleIDRef="0" pageBreak="0" '
-        f'columnBreak="0" merged="0"><hp:run charPrIDRef="{char_pr}">'
-        f"<hp:t>{SLOT}</hp:t></hp:run></hp:p></hp:subList>"
-        f'<hp:textMargin left="0" right="0" top="200" bottom="0"/></hp:drawText>'
-        f'<hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/>'
-        f'<hc:pt3 x="0" y="{h}"/>'
-        f'<hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" '
-        f'protect="0"/>'
-        f'<hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="0" allowOverlap="1" '
-        f'holdAnchorAndSO="0" vertRelTo="PAPER" horzRelTo="PAPER" vertAlign="TOP" '
-        f'horzAlign="LEFT" vertOffset="{vert}" horzOffset="{horz}"/>'
-        f'<hp:outMargin left="0" right="0" top="0" bottom="0"/>'
-        f"<hp:shapeComment>사각형입니다.</hp:shapeComment></hp:rect>"
+    face, color, bold = look
+    return _title_art(
+        text=SLOT, shape_id=shape_id, angle=90, em=spec.char_height,
+        horz=spec.right_to_center - spec.char_height // 2,  # same distance from the left
+        vert=spec.top + spec.text_inset, face=face, color=color, bold=bold,
     )
+
+
+def fit_running_titles(path: str | Path) -> int:
+    """Size each title 글맵시 on the master pages to the text now in it.
+
+    Run after the slot is filled (:mod:`.report_meta`): the box was sized for the
+    ``{{running_title}}`` token and a 글맵시 stretches its text to fill the box. One
+    left empty is removed. Returns how many were changed.
+    """
+    path = Path(path)
+    overrides: dict[str, bytes] = {}
+    count = 0
+    with zipfile.ZipFile(path) as z:
+        for name in z.namelist():
+            if not (name.startswith("Contents/masterpage") and name.endswith(".xml")):
+                continue
+            raw = z.read(name)
+            if TITLE_ART_COMMENT.encode() not in raw:
+                continue
+            root = etree.fromstring(raw)
+            for art in list(root.iter(_hp("textart"))):
+                comment = art.find(_hp("shapeComment"))
+                if comment is None or comment.text != TITLE_ART_COMMENT:
+                    continue
+                text = art.get("text", "")
+                if SLOT in text:
+                    continue
+                if text.strip():
+                    fit_title_art(art, text)
+                else:
+                    art.getparent().remove(art)
+                count += 1
+                overrides[name] = _serialize(raw, root)
+    if overrides:
+        tmp = path.with_name(path.name + ".fit.tmp")
+        _rewrite_zip_preserving(path, tmp, overrides)
+        tmp.replace(path)
+    return count
 
 
 def add_running_title_slot(path: str | Path, spec: WingSpec | None = None) -> list[str]:
     """Add the ``{{running_title}}`` box to even master pages with a cleaned title picture.
 
-    The text takes the HEADING_1 style's character shape at the odd-page wing's
-    size, like :func:`~.chapter_header.apply_chapter_headers`, so both margins match.
-    Master pages that already hold the slot are skipped (re-running is a no-op).
+    The text takes the HEADING_1 style's face and colour at the odd-page wing's size,
+    like :func:`~.chapter_header.apply_chapter_headers`, so both margins match.
+    Master pages that already hold the slot are skipped (re-running is a no-op); an
+    older vertically written slot box is replaced.
     Returns the master-page parts changed.
     """
     from .styles import role_map
@@ -158,8 +171,12 @@ def add_running_title_slot(path: str | Path, spec: WingSpec | None = None) -> li
     targets = []
     for name in sorted(n for n in raw if n.startswith("Contents/masterpage")):
         root = etree.fromstring(raw[name])
-        if root.get("type") != "EVEN" or SLOT.encode() in raw[name]:
+        if root.get("type") != "EVEN" or TITLE_ART_COMMENT.encode() in raw[name]:
             continue
+        # an older slot: a vertically written text box holding the token — replace it
+        for old in list(root.iter(_hp("rect"))):
+            if any(t.text and SLOT in t.text for t in old.iter(_hp("t"))):
+                old.getparent().remove(old)
         for pic in root.iter(_hp("pic")):
             img = pic.find(f"{{{_HC}}}img")
             if img is not None and bin_hash.get(img.get("binaryItemIDRef")) in clean:
@@ -173,10 +190,7 @@ def add_running_title_slot(path: str | Path, spec: WingSpec | None = None) -> li
     style = header.find(f".//{_hh('style')}[@id='{h1}']") if h1 is not None else None
     if style is None:
         return []
-    char_pr = _wing_char_pr(
-        header.find(f".//{_hh('charProperties')}"), style.get("charPrIDRef"), spec.char_height
-    )
-    para_pr = _wing_para_pr(header.find(f".//{_hh('paraProperties')}"), style.get("paraPrIDRef"))
+    look = _char_look(header, style.get("charPrIDRef"))
     next_id = 1 + max(
         (
             int(v)
@@ -188,11 +202,10 @@ def add_running_title_slot(path: str | Path, spec: WingSpec | None = None) -> li
     )
     overrides: dict[str, bytes] = {}
     for name, root, pic in targets:
-        box = etree.fromstring(_title_box(next_id, char_pr, para_pr, spec))
+        box = etree.fromstring(_title_box(next_id, look, spec))
         next_id += 2
         pic.addnext(box)
         overrides[name] = _serialize(raw[name], root)
-    overrides["Contents/header.xml"] = _serialize(raw["Contents/header.xml"], header)
     tmp = path.with_name(path.name + ".slot.tmp")
     _rewrite_zip_preserving(path, tmp, overrides)
     tmp.replace(path)

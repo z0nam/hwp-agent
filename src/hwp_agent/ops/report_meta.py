@@ -781,7 +781,8 @@ def _fill_masterpage_slots(path: Path | str, values: dict[str, str]) -> list[str
             new = xml
             for slot, value in values.items():
                 for tok in re.findall(r"\{\{\s*" + re.escape(slot) + r"(?::[^}]*)?\s*\}\}", new):
-                    new = new.replace(tok, escape(value))
+                    # quotes too: a 글맵시 holds its text in an attribute (#95)
+                    new = new.replace(tok, escape(value, {'"': "&quot;"}))
                     if slot not in done:
                         done.append(slot)
             if new != xml:
@@ -956,6 +957,9 @@ def apply_report_meta(
         # form fill never reaches master pages, so a left-over {{running_title}}
         # would print on every even page for good — blank it (#95)
         _fill_masterpage_slots(path, {"running_title": ""})
+    from .form_backgrounds import fit_running_titles
+
+    fit_running_titles(path)  # a 글맵시 title stretches to its box: re-size it (#95)
 
     title = (norm.get("title") or "").replace("\n", " ").strip() or (
         fallback_title.strip() if fallback_title else None

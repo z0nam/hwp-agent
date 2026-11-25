@@ -46,6 +46,7 @@ from .figures import (
     is_figure_table,
     load_image,
     parse_figure_line,
+    group_pictures,
     picture_xml,
     rebase_figure_paths,
 )
@@ -1990,6 +1991,10 @@ def _figure_caption(
     return cap
 
 
+#: HWPUNIT between neighbouring pictures of one figure (#96)
+FIGURE_GAP = 400
+
+
 def _build_figure(
     doc, section, fig: FigureBlock, *, base_dir: Path, cap_src, note_zone,
     body_style, body_para, body_char, ref_el, para_cache: dict,
@@ -2020,7 +2025,8 @@ def _build_figure(
     # Hangul advances its table count for every object numbered as TABLE, caption or
     # not — so a figure table left at the add_table default pushed the next real
     # table to <표 Ⅳ-2> while {ref:…} said 표 Ⅳ-1 (hwp2pdf render). Number it as a
-    # picture; the picture inside is NONE so one figure is one figure.
+    # picture; once the pictures are grouped the group carries the number and the
+    # caption (#119) and the table goes to NONE, so one figure is one figure.
     tel.set("numberingType", "PICTURE")
     if ref_el is not None:
         gen_pos = tel.find(f"{{{_HP}}}pos")
@@ -2058,7 +2064,7 @@ def _build_figure(
     if loaded:
         page_h = body_height(section)
         max_h = int(page_h * 0.8) if page_h else None
-        gap = 400 if len(loaded) > 1 else 0  # HWPUNIT between neighbours
+        gap = FIGURE_GAP if len(loaded) > 1 else 0
         avail = tw - gap * (len(loaded) - 1)
         # common height h: sum(px_w_i * h / px_h_i) <= avail
         inv = sum(img.px_w / img.px_h for _, _, img in loaded)
@@ -2125,7 +2131,18 @@ def _build_figure(
         cap_src, fig.display, fig.caption if fig.caption is not None else fig.alt, tw, body_style=body_style, body_para=body_para,
         body_char=body_char, run_writer=run_writer,
     )
-    tel.find(f"{{{_HP}}}tr").addprevious(cap)
+    pics = cp.element.findall(f"{{{_HP}}}run/{{{_HP}}}pic")
+    if pics:
+        # the caption goes on a group of the pictures, which Hangul's 그림 차례
+        # collects (a figure table it does not, #119)
+        group_pictures(cp.element, pics, tw, cap, gap=FIGURE_GAP)
+        tel.set("numberingType", "NONE")
+        # The top cell keeps the picture height as its seed: Hangul grows the cell to
+        # fit the group's caption, and a larger guess (the caption extent overshoots
+        # by ~430 HWPUNIT) leaves the vertically centred figure lower and the 출처
+        # line ~1.5mm further down than the old table caption did (Hancom PDF, #119).
+    else:  # only placeholders: the table keeps the figure's number and caption
+        tel.find(f"{{{_HP}}}tr").addprevious(cap)
     _grow_rows_for_content(tel, [[""], ["\n".join(lines)]])
     _fit_table_height(tel)
     return table
@@ -3457,6 +3474,8 @@ def build_report(
                 "tables": len(toc_res.tables),
                 "figures": len(toc_res.figures),
                 "field": toc_res.in_field,
+                "table_field": toc_res.table_field,
+                "figure_field": toc_res.figure_field,
             }
         result.warnings += [f"[목차] {w}" for w in toc_res.warnings]
     finish_report_meta(

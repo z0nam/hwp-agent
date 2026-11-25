@@ -14,8 +14,9 @@ built report carried someone else's table of contents.
   ``--literal-numbering``) — otherwise a static list, since a 차례 새로 고침
   would find no outline headings to collect;
 * **표 차례 / 그림 차례** — one entry per captioned table / figure (``<hp:caption>``
-  on a ``numberingType`` TABLE / PICTURE object), linked to it
-  (``HWPHYPERLINK_TARGET_TABLE`` / ``…_FIGURE``).
+  on a ``numberingType`` TABLE / PICTURE object — a figure's is its picture group,
+  #119), linked to it (``HWPHYPERLINK_TARGET_TABLE`` / ``…_FIGURE``), each list
+  wrapped in Hangul's 표 차례 / 그림 차례 field.
 
 Page numbers are **not** computed: they exist only after Hangul lays the document
 out. Each entry ends with the template's right-aligned tab and an empty page slot
@@ -72,6 +73,11 @@ def toc_command(make: int, level: int, leader: int) -> str:
 def table_toc_command(leader: int = 0) -> str:
     return toc_command(2, 2, leader)
 
+
+#: a 그림 차례 field (ContentsMake 4; level as for 표 차례)
+def figure_toc_command(leader: int = 0) -> str:
+    return toc_command(4, 2, leader)
+
 #: hyperlink target kinds, as Hangul writes them in ``?#<id>;0;<kind>;0;``
 _TARGETS = {
     "outline": (1, "HWPHYPERLINK_TARGET_OUTLINE"),
@@ -115,6 +121,10 @@ class TocResult:
     #: the 표 차례 is a Hangul 차례 field (ContentsMake 2) — its page numbers fill in
     #: on 차례 새로 고침; Hangul then sets its entries in the 차례 1 style
     table_field: bool = False
+    #: the 그림 차례 is a Hangul 차례 field (ContentsMake 4) — only when every figure
+    #: carries its caption on a picture-numbered object Hangul collects (a picture or
+    #: a group, #119), not on a figure table
+    figure_field: bool = False
     #: level → (paraPr id, charPr id) of the form's sample entry (for the 차례 styles)
     looks: dict = field(default_factory=dict, repr=False)
     field_entries: list = field(default_factory=list, repr=False)
@@ -230,7 +240,7 @@ def _caption_entries(obj, kind: str, autonum: dict) -> TocEntry | None:
     if not text:
         return None
     target = obj.get("id", "")
-    if kind == "figure":
+    if kind == "figure" and obj.tag == _hp("tbl"):
         # Hangul links a 그림 차례 entry to the picture; our figures are 1×2 tables
         pic = next(obj.iter(_hp("pic")), None)
         if pic is not None and pic.get("id"):
@@ -421,7 +431,8 @@ def _fill_list(root, kind: str, items: list[TocEntry], *, toc_field: bool = Fals
     new = [_entry_para(tpl, it, kind) for it in items]
     if toc_field and new:
         leader = int(next(tpl.iter(_hp("tab"))).get("leader", "0") or 0)
-        new.append(_wrap_in_toc_field(new, table_toc_command(leader)))
+        command = table_toc_command if kind == "table" else figure_toc_command
+        new.append(_wrap_in_toc_field(new, command(leader)))
     for p in new:
         tpl.addprevious(p)
     # a sample list spanning two pages carries a page break + top spacers in between;
@@ -495,6 +506,7 @@ def fill_toc(
         autonum = _autonum_values(sections[n] for n in parts)
         headings: list[TocEntry] = []
         heading_pp: list[str] = []
+        figure_tables = 0
         for name in after:
             root = sections[name]
             for p in root.findall(_hp("p")):
@@ -510,13 +522,15 @@ def fill_toc(
                     overrides[name] = b""
                 headings.append(TocEntry(lvl, text, p.get("id")))
                 heading_pp.append(p.get("paraPrIDRef", ""))
-            for obj in root.iter(_hp("tbl"), _hp("pic")):
+            for obj in root.iter(_hp("tbl"), _hp("pic"), _hp("container")):
                 kind = {"TABLE": "table", "PICTURE": "figure"}.get(obj.get("numberingType"))
                 if kind is None or obj.get("id", "") in _NO_ID:
                     continue
                 entry = _caption_entries(obj, kind, autonum)
                 if entry is not None:
                     (result.tables if kind == "table" else result.figures).append(entry)
+                    if kind == "figure" and obj.tag == _hp("tbl"):
+                        figure_tables += 1
         toc_root = sections[toc_part]
         # Hangul's 차례 새로 고침 gathers outline paragraphs; wrapping non-outline
         # headings in the field would let a refresh empty the list
@@ -526,7 +540,10 @@ def fill_toc(
         result.table_field = filled and toc_field and bool(result.tables)
         if not filled and result.tables:
             result.warnings.append("목차 섹션에 '표 차례'가 없어 표 차례를 만들지 않았습니다")
-        if not _fill_list(toc_root, "figure", result.figures) and result.figures:
+        fig_field = toc_field and bool(result.figures) and not figure_tables
+        filled = _fill_list(toc_root, "figure", result.figures, toc_field=fig_field)
+        result.figure_field = filled and fig_field
+        if not filled and result.figures:
             result.warnings.append("목차 섹션에 '그림 차례'가 없어 그림 차례를 만들지 않았습니다")
         for p in toc_root.findall(_hp("p")):
             if _is_entry(p) and not _sample_level(p):
@@ -535,7 +552,7 @@ def fill_toc(
             result.warnings.append("본문에서 제목(HEADING_1·2) 문단을 찾지 못해 차례가 비었습니다")
         overrides[toc_part] = b""
 
-    if (result.in_field or result.table_field) and result.looks:
+    if (result.in_field or result.table_field or result.figure_field) and result.looks:
         with zipfile.ZipFile(src) as zf:
             hraw = zf.read(_HEADER)
         head = etree.fromstring(hraw)

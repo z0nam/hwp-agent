@@ -61,6 +61,12 @@ from .links import (
     should_left_align,
     unmask_escapes,
 )
+from .report_parts import (
+    fill_summary_form,
+    format_references,
+    pop_summary_table,
+    reference_headers,
+)
 from .styles import INSTRUCTION, bullet_glyph_name, read_style_system, role_map
 from .tablewidth import CHAR_W, compute_column_widths
 from .template import (
@@ -2668,6 +2674,15 @@ def fill_from_markdown(
     doc = HwpxDocument.open(str(template))
     result = AuthorResult()
 
+    # 요약 form rows / 참고문헌 group headers (#94): the form table's cells are filled
+    # after save, and the references part takes the template's reference styles
+    summary_rows: list[tuple[str, str]] = []
+    ref_headers: list[str] | None = None
+    if marker_token == SUMMARY_MARKER:
+        summary_rows, markdown = pop_summary_table(markdown)
+    elif marker_token == REFERENCES_MARKER:
+        ref_headers = reference_headers(markdown)
+
     # pull Markdown footnote definitions ([^id]: …) out of the body; the [^id]
     # references stay in the text and become Hangul footnote controls at emit time.
     markdown, fn_defs = extract_footnote_defs(markdown, math=math)
@@ -3222,7 +3237,12 @@ def fill_from_markdown(
                 f"unconsumed template marker(s) left in document: {toks}"
             )
 
+    part_name = target_section.part_name if result.inserted_at_marker else None
     doc.save_to_path(str(output or template))
+    if part_name and summary_rows:
+        result.warnings += fill_summary_form(output or template, part_name, summary_rows)
+    if part_name and ref_headers is not None:
+        format_references(output or template, part_name, ref_headers)
     return result
 
 

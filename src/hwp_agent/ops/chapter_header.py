@@ -286,9 +286,6 @@ _TEXTART_ORG = 14173
 #: the pictures set their titles tighter than the face's advances: "Ⅰ. 세계경제 전망"
 #: runs 188 px where the advances at its glyph size give 204 (hwp2pdf, 2026-11-25)
 _TITLE_TRACKING = 0.92
-#: outline (HWPUNIT) in the fill colour, bringing the 글맵시's weight up to the
-#: pictures' (ink per area at 300 dpi: picture 0.38, no outline 0.34)
-_TITLE_STROKE = 10
 #: shapeComment marking the title 글맵시 this module writes (see :func:`fit_title_art`)
 TITLE_ART_COMMENT = "쪽 제목 글맵시입니다."
 
@@ -366,7 +363,7 @@ def _title_art(
         f'<hc:scaMatrix e1="{w / org:.6f}" e2="0" e3="0" e4="0" e5="{h / org:.6f}" e6="0"/>'
         f'<hc:rotMatrix e1="{rot[0]}" e2="{rot[1]}" e3="{rot[2]}" e4="{rot[3]}" '
         f'e5="{rot[4]}" e6="{rot[5]}"/></hp:renderingInfo>'
-        f'<hp:lineShape color="{color}" width="{_TITLE_STROKE}" style="SOLID" '
+        f'<hp:lineShape color="{color}" width="0" style="NONE" '
         f'endCap="ROUND" headStyle="NORMAL" tailStyle="NORMAL" headfill="0" tailfill="0" '
         f'headSz="SMALL_SMALL" tailSz="SMALL_SMALL" outlineStyle="INNER" alpha="0"/>'
         f'<hc:fillBrush><hc:winBrush faceColor="{color}" hatchColor="#000000" alpha="0"/>'

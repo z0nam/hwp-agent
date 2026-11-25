@@ -114,6 +114,11 @@ def test_caption_goes_on_a_text_wide_picture_group(tmp_path: Path) -> None:
         assert group.find(f"{_HP}pos").get("treatAsChar") == "1"
         # group (and its caption) as wide as the text, held there by an invisible line
         assert int(group.find(f"{_HP}sz").get("width")) == tw
+        # the top cell's height seed is the pictures' height only: Hangul grows it
+        # for the caption, and a larger guess pushes the centred figure and the
+        # 출처 line down (Hancom PDF)
+        top = next(tbl.iter(f"{_HP}tc")).find(f"{_HP}cellSz")
+        assert top.get("height") == group.find(f"{_HP}sz").get("height")
         cap = group.find(f"{_HP}caption")
         assert cap.get("width") == cap.get("lastWidth") == str(tw)
         line = group.find(f"{_HP}line")

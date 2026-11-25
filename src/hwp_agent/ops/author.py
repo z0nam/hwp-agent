@@ -2135,10 +2135,12 @@ def _build_figure(
     if pics:
         # the caption goes on a group of the pictures, which Hangul's 그림 차례
         # collects (a figure table it does not, #119)
-        group = group_pictures(cp.element, pics, tw, cap, gap=FIGURE_GAP)
+        group_pictures(cp.element, pics, tw, cap, gap=FIGURE_GAP)
         tel.set("numberingType", "NONE")
-        if pic_sz is not None and pic_h:  # the caption now sits in the top cell
-            pic_sz.set("height", str(pic_h + _caption_extent(group)))
+        # The top cell keeps the picture height as its seed: Hangul grows the cell to
+        # fit the group's caption, and a larger guess (the caption extent overshoots
+        # by ~430 HWPUNIT) leaves the vertically centred figure lower and the 출처
+        # line ~1.5mm further down than the old table caption did (Hancom PDF, #119).
     else:  # only placeholders: the table keeps the figure's number and caption
         tel.find(f"{{{_HP}}}tr").addprevious(cap)
     _grow_rows_for_content(tel, [[""], ["\n".join(lines)]])

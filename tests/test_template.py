@@ -114,3 +114,34 @@ def test_default_does_not_overwrite_template(monkeypatch, tmp_path) -> None:
 )
 def test_real_user_default_smoke() -> None:  # pragma: no cover - env dependent
     assert resolve_template_path(None) == USER_DEFAULT
+
+
+def test_bundled_template_opens_its_section_in_the_first_paragraph(tmp_path) -> None:
+    """#137: Hangul reads a 구역's page settings only from its first paragraph, so the
+    bundled template keeps <hp:secPr> there (it used to sit on {{body}}, after the
+    AI:INSTRUCTION directions), and write hands it on as it strips the directions."""
+    import zipfile
+
+    from lxml import etree
+
+    from hwp_agent.ops import fill_from_markdown
+    from hwp_agent.ops.template import bundled_template_path
+
+    hp = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+
+    def top_paras(path):
+        with zipfile.ZipFile(path) as z:
+            root = etree.fromstring(z.read("Contents/section0.xml"))
+        return [p for p in root if p.tag == f"{hp}p"]
+
+    tpl = top_paras(bundled_template_path())
+    assert tpl[0].find(f".//{hp}secPr") is not None
+    assert sum(p.find(f".//{hp}secPr") is not None for p in tpl) == 1
+
+    out = tmp_path / "out.hwpx"
+    fill_from_markdown(bundled_template_path(), "첫 문장\n\n둘째 문장\n", output=out)
+    ps = top_paras(out)
+    assert ps[0].find(f".//{hp}secPr") is not None
+    assert sum(p.find(f".//{hp}secPr") is not None for p in ps) == 1
+    # no blank opener paragraph left behind: the first paragraph is the content
+    assert "".join(ps[0].itertext()) == "첫 문장"

@@ -49,16 +49,10 @@ def test_write_preserves_shared_bindata(tmp_path: Path) -> None:
     doc = HwpxDocument.open(str(_DEFAULT_TPL))
     sec = doc.sections[0]
     p_extra = sec.add_paragraph("다른 문단의 그림")
-    # Add a pic pointing to image1
-    from lxml import etree
-    _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
-    _HC = "http://www.hancom.co.kr/hwpml/2011/core"
-    pic_xml = (
-        f'<hp:run xmlns:hp="{_HP}" xmlns:hc="{_HC}">'
-        f'<hp:pic><hc:img binaryItemIDRef="image1"/></hp:pic>'
-        f'</hp:run>'
-    )
-    p_extra.element.append(etree.fromstring(pic_xml))
+    # Add a (complete) pic pointing to image1
+    from _pictures import picture_run
+
+    p_extra.element.append(picture_run(doc, item_id="image1"))
     doc.save_to_path(str(custom_tpl))
 
     out = tmp_path / "out_shared.hwpx"

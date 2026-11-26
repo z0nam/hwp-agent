@@ -203,8 +203,9 @@ def test_centered_note_is_left_alone(tmp_path: Path) -> None:
     for t in figs:
         tc = _note_cell(t)
         assert tc.find(f"{{{_HP}}}subList").get("vertAlign") == "CENTER"
+        # hasMargin=0: the cell uses the table's inner margin, whatever its own
+        # cellMargin says (python-hwpx >= 6 writes the table's values there)
         assert tc.get("hasMargin") == "0"
-        assert tc.find(f"{{{_HP}}}cellMargin").get("top") == "0"
 
 
 def test_tall_figure_is_capped_to_the_page(tmp_path: Path) -> None:

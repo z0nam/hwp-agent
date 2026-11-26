@@ -2602,6 +2602,29 @@ def _section_opener_run(para_el):
     return None
 
 
+def _hand_on_section_opener(para_el) -> bool:
+    """Move a paragraph's section-opener run onto the next paragraph (#137).
+
+    Hangul reads a 구역's page settings (``<hp:secPr>``) only from its first
+    paragraph, so a template whose first paragraph is an AI:INSTRUCTION direction
+    carries the secPr there. Deleting that direction must not take the secPr with
+    it: the opener run moves to the front of the next paragraph in the same 구역
+    (the next direction, or the insertion marker, whose own opener handling then
+    carries it onto the first authored paragraph). Returns False when the
+    paragraph opens its 구역 and has no next paragraph — it must then stay.
+    """
+    opener = _section_opener_run(para_el)
+    if opener is None:
+        return True
+    nxt = para_el.getnext()
+    while nxt is not None and nxt.tag != f"{{{_HP}}}p":
+        nxt = nxt.getnext()
+    if nxt is None:
+        return False
+    nxt.insert(0, opener)
+    return True
+
+
 def read_instructions(template: Path | str) -> dict:
     """Authoring directions a template carries: ``AI:INSTRUCTION`` text + slots."""
     roles = role_map(template)
@@ -2711,7 +2734,12 @@ def fill_from_markdown(
     inst_style = roles.get(INSTRUCTION)
     if inst_style is not None:
         for p in [p for p in doc.paragraphs if str(p.style_id_ref) == inst_style]:
-            p.remove()
+            if _hand_on_section_opener(p.element):
+                p.remove()
+            else:  # last paragraph of its 구역: keep only the opener run
+                for child in list(p.element):
+                    if child.tag != f"{{{_HP}}}run" or child.find(f"{{{_HP}}}secPr") is None:
+                        p.element.remove(child)
             result.instructions_removed += 1
 
     # insert at a marker if present, else append to the last section

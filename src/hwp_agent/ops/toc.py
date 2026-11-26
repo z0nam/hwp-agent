@@ -95,6 +95,10 @@ _LIST_HEADER_RE = re.compile(r"^\s*(표|그림)\s*차\s*례\s*$")
 _ARABIC_PAGE_RE = re.compile(r"^\s*\d+\s*$")
 #: paragraph ids Hangul treats as "none" (can't be a hyperlink target)
 _NO_ID = {"", "0", "2147483648"}
+#: front/back-matter section titles: the form's 차례 lists them as one unnumbered
+#: line each (요약 ⅰ · 참고문헌 · 부록; 들어가며 has none), so their own headings
+#: stay out of the 차례 (#132)
+_MATTER_TITLES = {"요약", "들어가며", "참고문헌", "부록"}
 
 
 def _hp(tag: str) -> str:
@@ -124,6 +128,9 @@ class TocResult:
     #: the 그림 차례 is a Hangul 차례 field (ContentsMake 4) — Hangul collects every
     #: captioned picture-numbered object, figure tables included (#128)
     figure_field: bool = False
+    #: a front/back-matter section (요약·들어가며·참고문헌·부록) has outline headings —
+    #: left out of the 차례, so the 차례 can't be a refreshable field (#132)
+    matter_outline: bool = False
     #: level → (paraPr id, charPr id) of the form's sample entry (for the 차례 styles)
     looks: dict = field(default_factory=dict, repr=False)
     field_entries: list = field(default_factory=list, repr=False)
@@ -131,6 +138,19 @@ class TocResult:
     @property
     def filled(self) -> bool:
         return self.section is not None
+
+    def summary(self) -> dict:
+        """Counts and field flags for a report result (``build`` / ``write``)."""
+        return {
+            "section": self.section,
+            "headings": len(self.headings),
+            "tables": len(self.tables),
+            "figures": len(self.figures),
+            "field": self.in_field,
+            "table_field": self.table_field,
+            "figure_field": self.figure_field,
+            "matter_outline": self.matter_outline,
+        }
 
 
 # --------------------------------------------------------------------------- #
@@ -215,6 +235,18 @@ def _linked_level(p, by_id: dict[str, int]) -> int | None:
 def _section_parts(names) -> list[str]:
     parts = [n for n in names if re.fullmatch(r"Contents/section\d+\.xml", n)]
     return sorted(parts, key=lambda n: int(re.search(r"(\d+)", n).group(1)))
+
+
+def _section_title(root) -> str:
+    """A section's first line of top-level text, spaces removed (``요 약`` → ``요약``).
+    Text inside controls (a chapter wing's text box) does not count."""
+    for p in root.findall(_hp("p")):
+        text = "".join(
+            t.text or "" for run in p.findall(_hp("run")) for t in run.findall(_hp("t"))
+        )
+        if text := re.sub(r"\s+", "", text):
+            return text
+    return ""
 
 
 def find_toc_section(sections: dict[str, etree._Element]) -> str | None:
@@ -502,9 +534,18 @@ def fill_toc(
         autonum = _autonum_values(sections[n] for n in parts)
         headings: list[TocEntry] = []
         heading_pp: list[str] = []
+        matter_sections: list[str] = []
         for name in after:
             root = sections[name]
-            for p in root.findall(_hp("p")):
+            if _section_title(root) in _MATTER_TITLES:
+                # a 차례 새로 고침 gathers every outline paragraph, these too
+                result.matter_outline |= any(
+                    p.get("styleIDRef", "") in levels
+                    and p.get("paraPrIDRef", "") in outline_pp
+                    for p in root.findall(_hp("p"))
+                )
+                matter_sections.append(name)
+            for p in [] if name in matter_sections else root.findall(_hp("p")):
                 lvl = levels.get(p.get("styleIDRef", ""))
                 text = re.sub(r"\s+", " ", _text(p)).strip()
                 if lvl is None or not text:
@@ -528,6 +569,13 @@ def fill_toc(
         # Hangul's 차례 새로 고침 gathers outline paragraphs; wrapping non-outline
         # headings in the field would let a refresh empty the list
         field_ok = bool(heading_pp) and all(pp in outline_pp for pp in heading_pp)
+        # …and outline headings in 요약·들어가며… would come back on a refresh (#132)
+        if field_ok and result.matter_outline:
+            field_ok = False
+            result.warnings.append(
+                "요약·들어가며·참고문헌·부록에 개요 제목이 있어(차례 새로 고침이 그 제목까지 "
+                "모음) 차례를 필드 없이 썼습니다 — 쪽 번호는 직접 입력하세요"
+            )
         _fill_headings(toc_root, headings, result, toc_field=toc_field and field_ok)
         filled = _fill_list(toc_root, "table", result.tables, toc_field=toc_field)
         result.table_field = filled and toc_field and bool(result.tables)

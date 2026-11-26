@@ -154,7 +154,7 @@ def test_build_rewrites_toc_from_headings_and_captions(tmp_path: Path, literal: 
     res, out = _build(tmp_path, literal_numbering=literal)
     assert res.toc == {"section": "Contents/section1.xml", "headings": 5, "tables": 3,
                        "figures": 2, "field": literal, "table_field": True,
-                       "figure_field": True}
+                       "figure_field": True, "matter_outline": False}
     texts, tables, figures = _lists(out)
     # the form's sample report is gone
     assert not any("세계경제" in t or "GDP" in t or "제주경제" in t for t in texts)
@@ -408,7 +408,7 @@ def test_golden_template_toc(tmp_path: Path, literal: bool) -> None:
     res, out = _build(tmp_path, template=str(GOLDEN), literal_numbering=literal)
     assert res.toc == {"section": "Contents/section1.xml", "headings": 5, "tables": 3,
                        "figures": 2, "field": literal, "table_field": True,
-                       "figure_field": True}
+                       "figure_field": True, "matter_outline": False}
     texts, tables, figures = _lists(out)
     assert texts[:6] == ["요약", *HEADINGS]
     assert tables == TABLES and figures == FIGURES
@@ -433,3 +433,69 @@ def test_golden_template_has_no_sample_report_text() -> None:
     assert words == {"요약", "Ⅰ. 장 제목", "1. 절 제목", "1) 항 제목", "Ⅱ. 장 제목",
                      "참고문헌", "부록", "표 차례", "<표 Ⅰ-1> 표 제목", "<표 Ⅰ-2> 표 제목",
                      "그림 차례", "[그림 Ⅰ-1] 그림 제목", "[그림 Ⅰ-2] 그림 제목"}
+
+
+#: front/back matter with headings of its own — the 차례 keeps them as one line (#132)
+MATTER = {
+    "summary": "## 1. 가상 요약 소제목\n\n요약 가상 문장\n",
+    "intro": "## 1. 가상 들어가며 소제목\n\n들어가며 가상 문장\n",
+    "references": "## 국내 문헌\n\n가상 문헌\n",
+}
+
+
+def test_build_toc_leaves_out_front_and_back_matter_headings(tmp_path: Path) -> None:
+    parts = {"body": "body.md"}
+    for key, md in MATTER.items():
+        (tmp_path / f"{key}.md").write_text(md, encoding="utf-8")
+        parts[key] = f"{key}.md"
+    res, out = _build(tmp_path, template=str(GOLDEN), parts=parts)
+    assert res.toc["headings"] == len(HEADINGS)
+    texts, _, _ = _lists(out)
+    assert texts[:6] == ["요약", *HEADINGS]
+    assert not any("가상" in t and "소제목" in t for t in texts)
+    assert "국내 문헌" not in texts and "참고문헌" in texts and "부록" in texts
+
+
+def test_write_rewrites_the_golden_toc(tmp_path: Path, capsys) -> None:
+    """`write` fills the 목차 like `build` — no sample 차례 left (#132)."""
+    _png(tmp_path / "fig.png")
+    md = tmp_path / "r.md"
+    md.write_text("# 요약\n\n" + MATTER["summary"] + "\n" + BODY, encoding="utf-8")
+    out = tmp_path / "w.hwpx"
+    assert main(["write", str(md), "--template", str(GOLDEN), "-o", str(out)]) == 0
+    assert "목차: 차례 5 · 표 차례 3 · 그림 차례 2" in capsys.readouterr().out
+    texts, tables, figures = _lists(out)
+    assert not any("장 제목" in t or "절 제목" in t or "표 제목" in t or "그림 제목" in t
+                   for t in texts)
+    assert texts[:6] == ["요약", *HEADINGS]
+    assert tables == TABLES and figures == FIGURES
+    assert audit_package_links(out)["broken"] == []
+    assert audit_package(out) == []
+
+    kept = tmp_path / "k.hwpx"
+    assert main(["write", str(md), "--template", str(GOLDEN), "-o", str(kept),
+                 "--no-toc"]) == 0
+    assert "목차:" not in capsys.readouterr().out
+    assert any(t.startswith("Ⅰ. 장 제목") for t in _texts(_sections(kept)["Contents/section1.xml"]))
+
+
+def test_write_without_a_toc_section_is_unchanged(tmp_path: Path, capsys) -> None:
+    md = tmp_path / "r.md"
+    md.write_text("# Ⅰ. 서론\n\n본문\n", encoding="utf-8")
+    out = tmp_path / "w.hwpx"
+    assert main(["write", str(md), "--template", str(DEFAULT_TPL), "-o", str(out)]) == 0
+    assert "목차:" not in capsys.readouterr().out
+
+
+def test_outline_matter_headings_keep_the_toc_static(tmp_path: Path) -> None:
+    """--literal-numbering 요약 subheadings are outline paragraphs: a 차례 새로 고침
+    would gather them back, so the 차례 is written without the field (#132)."""
+    (tmp_path / "summary.md").write_text(MATTER["summary"], encoding="utf-8")
+    res, out = _build(tmp_path, template=str(GOLDEN), literal_numbering=True,
+                      parts={"body": "body.md", "summary": "summary.md"})
+    assert res.toc["matter_outline"] and not res.toc["field"]
+    assert any("개요 제목이 있어" in w for w in res.warnings)
+    toc = _sections(out)["Contents/section1.xml"]
+    assert _toc_fields(toc) == ([], [])
+    assert _lists(out)[0][:6] == ["요약", *HEADINGS]
+    assert tuple(map(len, _toc_fields(toc, 2))) == (1, 1)  # 표 차례 still refreshes

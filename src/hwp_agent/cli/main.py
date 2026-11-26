@@ -1398,6 +1398,13 @@ def _cmd_write(args: argparse.Namespace) -> int:
             strip_other_markers=True, **opts,
         )
         body = markdown
+    if getattr(args, "toc", True):  # the golden 목차 section, as `build` does (#132)
+        from ..ops.toc import fill_toc
+
+        toc_res = fill_toc(gr.target)
+        if toc_res.filled:
+            result.toc = toc_res.summary()
+        result.warnings += [f"[목차] {w}" for w in toc_res.warnings]
     finish_report_meta(
         result, gr.target, meta,
         fallback_title=first_heading(body), author=args.author,
@@ -1418,6 +1425,7 @@ def _cmd_write(args: argparse.Namespace) -> int:
         print(f"  converted {result.equations} LaTeX math span(s) to equations")
     if result.figures:
         print(f"  placed {result.figures} figure(s)")
+    _print_toc(result.toc)
     if result.instructions_removed:
         print(f"  removed {result.instructions_removed} instruction paragraph(s)")
     if result.unmapped_roles:
@@ -1479,6 +1487,13 @@ def _add_meta_args(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _print_toc(t: dict | None) -> None:
+    """One line on the rewritten 목차 lists (`build`, `write`)."""
+    if t:
+        print(f"  목차: 차례 {t['headings']} · 표 차례 {t['tables']} · 그림 차례 {t['figures']} "
+              + _toc_page_hint(t))
+
+
 def _toc_page_hint(t: dict) -> str:
     """How each 목차 list gets its page numbers: a field fills them on Hangul's
     차례 새로 고침, a static list needs them typed in."""
@@ -1497,7 +1512,9 @@ def _toc_page_hint(t: dict) -> str:
     if not parts:
         return ""
     hint = f"(쪽 번호: {', '.join(parts)}"
-    if t["headings"] and not t.get("field"):
+    if t["headings"] and not t.get("field") and t.get("matter_outline"):
+        hint += " — 요약·들어가며 등의 개요 제목을 새로 고침이 다시 모으므로 차례는 필드 없이 씀"
+    elif t["headings"] and not t.get("field"):
         hint += (" — 제목이 개요 문단이 아니라 차례는 필드 없이 씀; "
                  "--literal-numbering이면 차례도 새로 고침")
     return hint + ")"
@@ -1555,10 +1572,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         print(f"  placed {result.figures} figure(s)")
     if wings is not None and wings.count:
         print(f"  set the side wing (쪽날개) of {wings.count} chapter(s)")
-    if result.toc:
-        t = result.toc
-        print(f"  목차: 차례 {t['headings']} · 표 차례 {t['tables']} · 그림 차례 {t['figures']} "
-              + _toc_page_hint(t))
+    _print_toc(result.toc)
     if result.unmapped_roles:
         print(f"  unmapped (fell back to BODY): {', '.join(result.unmapped_roles)}")
     for warning in result.warnings:
@@ -2273,6 +2287,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="leave the odd-page side wings (쪽날개) as the template has them "
         "(default: each chapter gets its own, like `build`)",
+    )
+    wr.add_argument(
+        "--no-toc",
+        dest="toc",
+        action="store_false",
+        default=True,
+        help="keep the template's 목차 as is (default: rewrite 차례·표 차례·그림 차례 "
+        "from the body headings and captions, like `build`; page numbers are left "
+        "for Hangul's 차례 새로 고침)",
     )
     _add_meta_args(wr)
     wr.add_argument("-o", "--output", type=Path, default=None, help="output file")

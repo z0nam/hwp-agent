@@ -236,7 +236,7 @@ class AuthorResult:
     figures: int = 0  # figure tables created (![alt](path))
     warnings: list[str] = field(default_factory=list)
     meta: dict | None = None  # cover/colophon fill summary (report_meta.MetaResult)
-    toc: dict | None = None  # 목차 fill summary (build only, toc.TocResult)
+    toc: dict | None = None  # 목차 fill summary (build / write, toc.TocResult.summary)
 
     def as_dict(self) -> dict:
         return {
@@ -3478,15 +3478,7 @@ def build_report(
 
         toc_res = fill_toc(out or template)
         if toc_res.filled:
-            result.toc = {
-                "section": toc_res.section,
-                "headings": len(toc_res.headings),
-                "tables": len(toc_res.tables),
-                "figures": len(toc_res.figures),
-                "field": toc_res.in_field,
-                "table_field": toc_res.table_field,
-                "figure_field": toc_res.figure_field,
-            }
+            result.toc = toc_res.summary()
         result.warnings += [f"[목차] {w}" for w in toc_res.warnings]
     finish_report_meta(
         result, out or template, meta_dict, fallback_title=fallback_title, author=author

@@ -19,7 +19,7 @@ from hwp_agent.ops.author import (
     build_report,
     parse_markdown,
 )
-from hwp_agent.ops.figures import figure_group, parse_figure_line, rebase_figure_paths
+from hwp_agent.ops.figures import parse_figure_line, rebase_figure_paths
 from hwp_agent.ops.template import bundled_template_path
 
 _DEFAULT_TPL = bundled_template_path()
@@ -89,15 +89,8 @@ def _figure_tables(out: Path):
     ]
 
 
-def _holder(tbl):
-    """The element carrying a figure's caption: its picture group (#119), or the
-    table itself when the figure has no picture (placeholder only)."""
-    group = figure_group(tbl)
-    return group if group is not None else tbl
-
-
 def _caption(tbl) -> str:
-    cap = _holder(tbl).find(f"{{{_HP}}}caption")
+    cap = tbl.find(f"{{{_HP}}}caption")
     return "".join(t.text or "" for t in cap.iter(f"{{{_HP}}}t"))
 
 
@@ -150,12 +143,9 @@ def test_write_builds_borderless_figure_tables(tmp_path: Path) -> None:
         header = etree.fromstring(z.read("Contents/header.xml"))
     fills = {b.get("id"): b for b in header.iter(f"{{{_HH}}}borderFill")}
     for t in figs:
-        # one column, picture on top, note row below; the picture group carries the
-        # figure number and caption, the table none (#119)
+        # one column, picture on top, note row below; numbered as a picture
         assert (t.get("rowCnt"), t.get("colCnt")) == ("2", "1")
-        assert t.get("numberingType") == "NONE"
-        assert t.find(f"{{{_HP}}}caption") is None
-        assert _holder(t).get("numberingType") == "PICTURE"
+        assert t.get("numberingType") == "PICTURE"
         assert t.find(f".//{{{_HP}}}autoNum") is None  # never advances Hangul's count
         for bf_id in {t.get("borderFillIDRef")} | {
             tc.get("borderFillIDRef") for tc in t.iter(f"{{{_HP}}}tc")
@@ -166,7 +156,7 @@ def test_write_builds_borderless_figure_tables(tmp_path: Path) -> None:
 
     # picture fills the text width, aspect kept
     first = figs[0]
-    pic_sz = first.find(f".//{{{_HP}}}pic/{{{_HP}}}curSz")
+    pic_sz = first.find(f".//{{{_HP}}}pic/{{{_HP}}}sz")
     w, h = int(pic_sz.get("width")), int(pic_sz.get("height"))
     assert w == int(first.find(f"{{{_HP}}}sz").get("width"))
     assert abs(w / h - 2.0) < 0.01
@@ -182,7 +172,7 @@ def test_write_builds_borderless_figure_tables(tmp_path: Path) -> None:
 def test_tall_figure_is_capped_to_the_page(tmp_path: Path) -> None:
     _, out = _write(tmp_path)
     tall = _figure_tables(out)[1]
-    pic_sz = tall.find(f".//{{{_HP}}}pic/{{{_HP}}}curSz")
+    pic_sz = tall.find(f".//{{{_HP}}}pic/{{{_HP}}}sz")
     w, h = int(pic_sz.get("width")), int(pic_sz.get("height"))
     assert w < int(tall.find(f"{{{_HP}}}sz").get("width"))  # narrowed to fit the height
     assert abs(h / w - 4.0) < 0.01
@@ -225,13 +215,13 @@ def test_caption_style_comes_from_figure_template(tmp_path: Path) -> None:
     want = ref_cap.find(f".//{{{_HP}}}p").get("styleIDRef")
     _, out = _write(tmp_path)
     for t in _figure_tables(out):
-        assert _holder(t).find(f"{{{_HP}}}caption//{{{_HP}}}p").get("styleIDRef") == want
+        assert t.find(f"{{{_HP}}}caption//{{{_HP}}}p").get("styleIDRef") == want
 
 
 def test_caption_links_use_the_shared_caption_path(tmp_path: Path) -> None:
     md = "![[기관](https://example.org) 자료](assets/a.png)\n"
     res, out = _write(tmp_path, md=md)
-    cap = _holder(_figure_tables(out)[0]).find(f"{{{_HP}}}caption")
+    cap = _figure_tables(out)[0].find(f"{{{_HP}}}caption")
     assert cap.find(f".//{{{_HP}}}fieldBegin[@type='HYPERLINK']") is not None
     assert res.links == 1
 
@@ -252,10 +242,8 @@ def test_missing_image_keeps_figure_and_numbering(tmp_path: Path) -> None:
     assert res.figures == 2
     assert any("image not found" in w and "그림 Ⅳ-1" in w for w in res.warnings)
     tables = [t for s in _sections(out) for t in s.iter(f"{{{_HP}}}tbl")
-              if _holder(t).get("numberingType") == "PICTURE"]
+              if t.get("numberingType") == "PICTURE"]
     assert [_caption(t) for t in tables] == ["[그림 Ⅳ-1] 없음", "[그림 Ⅳ-2] 있음"]
-    # no picture to group: the placeholder figure keeps the caption on its table
-    assert tables[0].get("numberingType") == "PICTURE" and figure_group(tables[0]) is None
     assert "[그림 없음: assets/none.png]" in "".join(tables[0].itertext())
 
 
@@ -328,7 +316,7 @@ def test_gif_embeds_without_pillow(tmp_path: Path) -> None:
     (tmp_path / "assets" / "g.gif").write_bytes(gif)
     res, out = _write(tmp_path, md="![움짤](assets/g.gif)\n")
     assert not any("image" in w for w in res.warnings)
-    pic_sz = _figure_tables(out)[0].find(f".//{{{_HP}}}pic/{{{_HP}}}curSz")
+    pic_sz = _figure_tables(out)[0].find(f".//{{{_HP}}}pic/{{{_HP}}}sz")
     assert abs(int(pic_sz.get("width")) / int(pic_sz.get("height")) - 1.5) < 0.01
     with zipfile.ZipFile(out) as z:
         assert any(n.endswith(".gif") for n in z.namelist())
@@ -349,7 +337,7 @@ def test_placeholder_figures_count_across_build_parts(tmp_path: Path) -> None:
     assert res.figures == 2
     caps = [
         _caption(t) for s in _sections(tmp_path / "out.hwpx") for t in s.iter(f"{{{_HP}}}tbl")
-        if _holder(t).get("numberingType") == "PICTURE"
+        if t.get("numberingType") == "PICTURE"
     ]
     assert caps == ["[그림 Ⅰ-1] 없음", "[그림 Ⅰ-2] 있음"]
 

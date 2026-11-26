@@ -14,10 +14,10 @@
 |------|------|
 | 표지 (section0) | 텍스트 → `{{report_number}}` `{{title}}` `{{subtitle}}` `{{authors}}` |
 | 목차 (section1) | 중립 샘플 차례·표 차례·그림 차례(`Ⅰ. 장 제목`…) + 한글 차례 스타일 — `build`가 실제 제목·캡션으로 다시 쓴다(`scripts/add-golden-toc.py`, #33, docs/toc.md) |
-| 요약 양식 (section2) | 빈 양식(구분/주요내용 표·□체크박스·구조 안내) 유지 + 끝에 `{{summary}}` 마커 |
-| 들어가며 (section3) | 예시 프로즈 제거 + `AI:INSTRUCTION` + `{{intro}}` 마커 |
+| 요약 양식 (section2) | 빈 양식(구분/주요내용 표·□체크박스) 유지 + 끝에 `{{summary}}` 마커. 표 뒤 견본 골격(`Ⅰ. 장 제목`…)·견본 칸 문구는 제거(`scripts/clean-golden-parts.py`) |
+| 들어가며 (section3) | 예시 프로즈·빈 글머리 문단 제거 + `AI:INSTRUCTION` + `{{intro}}` 마커 |
 | 본문 (section4) | `AI:INSTRUCTION` + `{{body}}` 마커 + 중립화한 `{{table_template}}` 참조표(3행) |
-| 참고문헌 (section5) | 예시 항목·정적 분류 헤더 제거 + `AI:INSTRUCTION` + `{{references}}` 마커 (분류는 md 에 `**해외 문헌**` 줄로 씀) |
+| 참고문헌 (section5) | 예시 항목·정적 분류 헤더 제거 + `AI:INSTRUCTION` + `{{references}}` 마커. 분류는 md 에 `**해외 문헌**` 줄로 쓰고, 원래 서식은 스타일 `참고문헌 분류`(문단 24·글자 27)·`참고문헌`(문단 29, 내어쓰기)로 남김 |
 | 판권지 (section6) | 텍스트 → `{{lead_researcher}}` `{{co_researcher}}` `{{pub_date}}` `{{publisher}}` `{{isbn}}` 등 |
 
 `normalize` 가 선언한 사다리: HEADING `로마자(Ⅰ.)→1.→1)`, BULLET `￭→⦁→-→-`.
@@ -69,11 +69,22 @@ hwp-agent form fill draft.hwpx --map meta.json -o final.hwpx
   `check` 를 진단에서 "수정 체크리스트/기계친화 점수"로 키우는 작업과 함께 간다
   (`docs/author-backlog.md`). 양식 미배정 기본값은 [default-template.md](default-template.md) 참조.
 
-## build 매니페스트 마커 (#94)
+## 요약·들어가며·참고문헌 채우기 (#94, #106-#108)
 
 `hwp-agent build` 의 `parts` 키는 템플릿 마커와 1:1 이다: `summary`→`{{summary}}`,
 `intro`→`{{intro}}`, `body`→`{{body}}`, `references`→`{{references}}`. 마커는
-`scripts/add-golden-markers.py` 가 골든 템플릿에 멱등으로 넣는다. 한계: 요약 양식의
-구분/주요내용 표 칸은 md 표로 채워지지 않는다(마커 뒤에 새 표가 생김 — 칸 채우기는
-`form fill`). 참고문헌 항목은 BODY 문단 모양을 쓰며 서식의 참고문헌 문단 모양(paraPr 29)
-적용은 후속 과제.
+`scripts/add-golden-markers.py` 가 골든 템플릿에 멱등으로 넣는다.
+
+`write` 는 원고 한 파일에서 번호 없는 H1 `# 요약` · `# 들어가며` · `# 참고문헌`(정확히 그
+제목) 구역을 떼어 각 마커로 보낸다. 그 H1 자체는 버린다(구역에 제목이 있음). 템플릿에
+해당 마커가 없거나 정책이슈브리프 템플릿이면 예전처럼 본문 한 곳에 쓴다.
+
+- **요약 양식 표**(#106): 요약 구역의 `| 구분 | 주요내용 |` md 표는 새 표가 되지 않고
+  양식 칸을 행 이름(연구 목표·연구 방법·연구결과·예상 정책 활용, 띄어쓰기·괄호 무시)으로
+  채운다. 칸 안 줄은 `<br>` 로 나누고 `  - `(들여쓴 글머리)는 2단 모양을 쓴다.
+  `정책 활용 분야` 행은 적힌 항목(쉼표 구분)의 □를 ■로 바꾸고 `기타(내용)` 은 괄호에
+  채운다. 표 밖의 요약 본문은 마커 자리에 들어간다.
+- **참고문헌**(#107, #108): 혼자 굵은 줄(`**해외 문헌**`)이나 소제목은 `참고문헌 분류`
+  스타일(앞뒤 빈 줄), 나머지 항목은 `참고문헌` 스타일(paraPr 29, 내어쓰기)을 쓴다.
+  두 스타일이 없는 템플릿은 쓴 그대로 둔다.
+- **빈 구역**: 원고에 없는 구역은 제목과 빈 양식 표만 남는다(견본 문구 없음).

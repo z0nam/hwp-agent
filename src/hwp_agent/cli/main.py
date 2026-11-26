@@ -1373,15 +1373,10 @@ def _cmd_write(args: argparse.Namespace) -> int:
     gr = _guard_output(default_out)
     section = getattr(args, "section", None)
     marker_token = ("{{" + section + "}}") if section else None
-    result = fill_from_markdown(
-        template,
-        markdown,
-        output=gr.target,
+    opts = dict(
         chapter=args.chapter,
         table_template=args.table_template,
-        marker_token=marker_token,
         equal_columns=getattr(args, "equal_columns", False),
-        strip_other_markers=True,
         links=getattr(args, "links", True),
         blue_links=getattr(args, "blue_links", False),
         math=getattr(args, "math", True),
@@ -1390,9 +1385,22 @@ def _cmd_write(args: argparse.Namespace) -> int:
         literal_bullets=getattr(args, "literal_bullets", False),
         base_dir=Path(args.md).parent,
     )
+    # bare '# 요약' / '# 들어가며' / '# 참고문헌' go to their own markers (#94)
+    parts = None if section else _report_parts(template, markdown)
+    if parts:
+        from ..ops import fill_sections
+
+        result = fill_sections(template, parts, output=gr.target, **opts)
+        body = next((md for tok, md in parts if tok == "{{body}}"), markdown)
+    else:
+        result = fill_from_markdown(
+            template, markdown, output=gr.target, marker_token=marker_token,
+            strip_other_markers=True, **opts,
+        )
+        body = markdown
     finish_report_meta(
         result, gr.target, meta,
-        fallback_title=first_heading(markdown), author=args.author,
+        fallback_title=first_heading(body), author=args.author,
     )
     wings = _finalize(gr.target, getattr(args, "chapter_header", True))
     if getattr(args, "fit_tails", False):
@@ -1417,6 +1425,26 @@ def _cmd_write(args: argparse.Namespace) -> int:
     for warning in result.warnings:
         print(f"  warning: {warning}", file=sys.stderr)
     return 0
+
+
+def _report_parts(template: Path, markdown: str) -> list[tuple[str, str]] | None:
+    """The manuscript split by bare 요약/들어가며/참고문헌 H1s, when the template has a
+    marker for every part found (and is not a 정책이슈브리프); else None (#94)."""
+    import zipfile
+
+    from ..ops.brief import is_brief_template
+    from ..ops.report_parts import split_report_parts
+
+    parts = split_report_parts(markdown)
+    if not parts or is_brief_template(template):
+        return None
+    with zipfile.ZipFile(template) as z:
+        xml = "".join(
+            z.read(n).decode("utf-8", "replace")
+            for n in z.namelist()
+            if n.startswith("Contents/section")
+        )
+    return parts if all(tok in xml for tok, _ in parts) else None
 
 
 def _print_meta(meta: dict | None) -> None:

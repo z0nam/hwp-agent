@@ -1512,7 +1512,9 @@ def _toc_page_hint(t: dict) -> str:
     if not parts:
         return ""
     hint = f"(쪽 번호: {', '.join(parts)}"
-    if t["headings"] and not t.get("field"):
+    if t["headings"] and not t.get("field") and t.get("matter_outline"):
+        hint += " — 요약·들어가며 등의 개요 제목을 새로 고침이 다시 모으므로 차례는 필드 없이 씀"
+    elif t["headings"] and not t.get("field"):
         hint += (" — 제목이 개요 문단이 아니라 차례는 필드 없이 씀; "
                  "--literal-numbering이면 차례도 새로 고침")
     return hint + ")"

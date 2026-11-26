@@ -45,15 +45,20 @@ def _make_hwpx(path: Path) -> None:
         zf.writestr("mimetype", "application/hwp+zip")
         zf.writestr(
             "version.xml",
+            # the attributes Hangul writes — python-hwpx >= 6 refuses to save a
+            # package whose HCFVersion lacks tagetApplication (#137)
             '<?xml version="1.0"?>'
-            '<hv:HCFVersion xmlns:hv="http://www.hancom.co.kr/hwpml/2011/version"/>',
+            '<hv:HCFVersion xmlns:hv="http://www.hancom.co.kr/hwpml/2011/version" '
+            'tagetApplication="WORDPROCESSOR" major="5" minor="1" micro="0" '
+            'buildNumber="1" os="10" xmlVersion="1.31" application="Hancom Office Hangul"/>',
         )
         zf.writestr("META-INF/container.xml", _CONTAINER)
         zf.writestr("Contents/content.hpf", _CONTENT_HPF)
         zf.writestr(
             "Contents/header.xml",
             '<?xml version="1.0"?>'
-            '<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"/>',
+            '<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" '
+            'version="1.31" secCnt="1"/>',
         )
         # python-hwpx >= 2.11 validates open-safety at save: the package must
         # declare at least one section part, so the fixture carries a stub one.

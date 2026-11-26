@@ -114,3 +114,70 @@ def test_default_does_not_overwrite_template(monkeypatch, tmp_path) -> None:
 )
 def test_real_user_default_smoke() -> None:  # pragma: no cover - env dependent
     assert resolve_template_path(None) == USER_DEFAULT
+
+
+def test_bundled_template_opens_its_section_in_the_first_paragraph(tmp_path) -> None:
+    """#137: Hangul reads a 구역's page settings only from its first paragraph, so the
+    bundled template keeps <hp:secPr> there (it used to sit on {{body}}, after the
+    AI:INSTRUCTION directions), and write hands it on as it strips the directions."""
+    import zipfile
+
+    from lxml import etree
+
+    from hwp_agent.ops import fill_from_markdown
+    from hwp_agent.ops.template import bundled_template_path
+
+    hp = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+
+    def top_paras(path):
+        with zipfile.ZipFile(path) as z:
+            root = etree.fromstring(z.read("Contents/section0.xml"))
+        return [p for p in root if p.tag == f"{hp}p"]
+
+    tpl = top_paras(bundled_template_path())
+    assert tpl[0].find(f".//{hp}secPr") is not None
+    assert sum(p.find(f".//{hp}secPr") is not None for p in tpl) == 1
+
+    out = tmp_path / "out.hwpx"
+    fill_from_markdown(bundled_template_path(), "첫 문장\n\n둘째 문장\n", output=out)
+    ps = top_paras(out)
+    assert ps[0].find(f".//{hp}secPr") is not None
+    assert sum(p.find(f".//{hp}secPr") is not None for p in ps) == 1
+    # no blank opener paragraph left behind: the first paragraph is the content
+    assert "".join(ps[0].itertext()) == "첫 문장"
+
+
+def _opener_template(tmp_path):
+    """Bundled template with direction text sharing the secPr run (Codex #139)."""
+    import zipfile
+
+    from hwp_agent.ops.template import bundled_template_path
+
+    src = bundled_template_path()
+    out = tmp_path / "tpl.hwpx"
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out, "w") as zout:
+        for it in zin.infolist():
+            data = zin.read(it.filename)
+            if it.filename == "Contents/section0.xml":
+                s = data.decode("utf-8")
+                # put a direction text inside the first paragraph's secPr run
+                end = "</hp:ctrl></hp:run>"
+                i = s.find(end)
+                s = s[:i] + "</hp:ctrl><hp:t>지침 글 비밀</hp:t></hp:run>" + s[i + len(end):]
+                data = s.encode("utf-8")
+            zout.writestr(it, data, compress_type=it.compress_type)
+    return out
+
+
+def test_handed_on_opener_drops_the_direction_text(tmp_path) -> None:
+    import zipfile
+
+    from hwp_agent.ops import fill_from_markdown
+
+    tpl = _opener_template(tmp_path)
+    out = tmp_path / "out.hwpx"
+    fill_from_markdown(tpl, "본문 문장\n", output=out)
+    with zipfile.ZipFile(out) as z:
+        xml = z.read("Contents/section0.xml").decode("utf-8")
+    assert "지침 글 비밀" not in xml
+    assert xml.count("<hp:secPr") == 1

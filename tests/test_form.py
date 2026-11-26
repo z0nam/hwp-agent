@@ -439,8 +439,9 @@ def test_section_slot_preserves_picture_paragraph(tmp_path: Path) -> None:
 
     # Paragraph with a picture object (no text)
     p_pic = etree.SubElement(sec, q("p"), {"paraPrIDRef": "0", "styleIDRef": "0"})
-    r_pic = etree.SubElement(p_pic, q("run"), {"charPrIDRef": "0"})
-    etree.SubElement(r_pic, q("pic"), {"id": "123"})
+    from _pictures import picture_run
+
+    p_pic.append(picture_run(doc))
 
     doc.sections[0].mark_dirty()
     fixture = tmp_path / "sec_pic.hwpx"

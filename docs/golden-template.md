@@ -13,7 +13,7 @@
 | 섹션 | 처리 |
 |------|------|
 | 표지 (section0) | 텍스트 → `{{report_number}}` `{{title}}` `{{subtitle}}` `{{authors}}` |
-| 목차 (section1) | 중립 샘플 차례·표 차례·그림 차례(`Ⅰ. 장 제목`…) + 한글 차례 스타일 — `build`가 실제 제목·캡션으로 다시 쓴다(`scripts/add-golden-toc.py`, #33, docs/toc.md) |
+| 목차 (section1) | 중립 샘플 차례·표 차례·그림 차례(`Ⅰ. 장 제목`…) + 한글 차례 스타일 — `build`·`write`가 본문 제목·캡션으로 다시 쓴다(`scripts/add-golden-toc.py`, #33·#132, docs/toc.md) |
 | 요약 양식 (section2) | 빈 양식(구분/주요내용 표·□체크박스) 유지 + 끝에 `{{summary}}` 마커. 표 뒤 견본 골격(`Ⅰ. 장 제목`…)·견본 칸 문구는 제거(`scripts/clean-golden-parts.py`) |
 | 들어가며 (section3) | 예시 프로즈·빈 글머리 문단 제거 + `AI:INSTRUCTION` + `{{intro}}` 마커 |
 | 본문 (section4) | `AI:INSTRUCTION` + `{{body}}` 마커 + 중립화한 `{{table_template}}` 참조표(3행) |

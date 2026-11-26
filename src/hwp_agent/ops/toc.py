@@ -95,6 +95,10 @@ _LIST_HEADER_RE = re.compile(r"^\s*(표|그림)\s*차\s*례\s*$")
 _ARABIC_PAGE_RE = re.compile(r"^\s*\d+\s*$")
 #: paragraph ids Hangul treats as "none" (can't be a hyperlink target)
 _NO_ID = {"", "0", "2147483648"}
+#: front/back-matter section titles: the form's 차례 lists them as one unnumbered
+#: line each (요약 ⅰ · 참고문헌 · 부록; 들어가며 has none), so their own headings
+#: stay out of the 차례 (#132)
+_MATTER_TITLES = {"요약", "들어가며", "참고문헌", "부록"}
 
 
 def _hp(tag: str) -> str:
@@ -131,6 +135,18 @@ class TocResult:
     @property
     def filled(self) -> bool:
         return self.section is not None
+
+    def summary(self) -> dict:
+        """Counts and field flags for a report result (``build`` / ``write``)."""
+        return {
+            "section": self.section,
+            "headings": len(self.headings),
+            "tables": len(self.tables),
+            "figures": len(self.figures),
+            "field": self.in_field,
+            "table_field": self.table_field,
+            "figure_field": self.figure_field,
+        }
 
 
 # --------------------------------------------------------------------------- #
@@ -215,6 +231,18 @@ def _linked_level(p, by_id: dict[str, int]) -> int | None:
 def _section_parts(names) -> list[str]:
     parts = [n for n in names if re.fullmatch(r"Contents/section\d+\.xml", n)]
     return sorted(parts, key=lambda n: int(re.search(r"(\d+)", n).group(1)))
+
+
+def _section_title(root) -> str:
+    """A section's first line of top-level text, spaces removed (``요 약`` → ``요약``).
+    Text inside controls (a chapter wing's text box) does not count."""
+    for p in root.findall(_hp("p")):
+        text = "".join(
+            t.text or "" for run in p.findall(_hp("run")) for t in run.findall(_hp("t"))
+        )
+        if text := re.sub(r"\s+", "", text):
+            return text
+    return ""
 
 
 def find_toc_section(sections: dict[str, etree._Element]) -> str | None:
@@ -504,7 +532,8 @@ def fill_toc(
         heading_pp: list[str] = []
         for name in after:
             root = sections[name]
-            for p in root.findall(_hp("p")):
+            matter = _section_title(root) in _MATTER_TITLES
+            for p in [] if matter else root.findall(_hp("p")):
                 lvl = levels.get(p.get("styleIDRef", ""))
                 text = re.sub(r"\s+", " ", _text(p)).strip()
                 if lvl is None or not text:

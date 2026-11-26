@@ -142,7 +142,7 @@ def _body_captions(out: Path) -> list[str]:
     for name, root in _sections(out).items():
         if name == "Contents/section1.xml":
             continue
-        for obj in root.iter(f"{_HP}tbl", f"{_HP}container"):  # figures: groups, #119
+        for obj in root.iter(f"{_HP}tbl"):
             cap = obj.find(f"{_HP}caption")
             if obj.get("numberingType") in ("TABLE", "PICTURE") and cap is not None:
                 caps.append(" ".join(t for t in _texts(cap.find(f"{_HP}subList")) if t))
@@ -187,7 +187,7 @@ def test_non_outline_headings_get_a_static_toc(tmp_path: Path) -> None:
     toc = _sections(out)["Contents/section1.xml"]
     assert _toc_fields(toc) == ([], [])
     assert len(_toc_fields(toc, 2)[0]) == 1  # the 표 차례 needs no outline
-    assert len(_toc_fields(toc, 4)[0]) == 1  # nor the 그림 차례 (#119)
+    assert len(_toc_fields(toc, 4)[0]) == 1  # nor the 그림 차례 (#119, #128)
     assert len(_commands(toc, "HYPERLINK")) == 5 + 3 + 2
     assert audit_package_links(out)["broken"] == []
     assert audit_package(out) == []
@@ -200,8 +200,9 @@ def test_entry_links_point_at_their_targets(tmp_path: Path, literal: bool) -> No
     toc = secs.pop("Contents/section1.xml")
     para_ids = {p.get("id") for r in secs.values() for p in r.iter(f"{_HP}p")}
     tbl_ids = {t.get("id") for r in secs.values() for t in r.iter(f"{_HP}tbl")}
-    # a figure's caption is on its picture group (#119)
-    pic_ids = {t.get("id") for r in secs.values() for t in r.iter(f"{_HP}container")}
+    # a figure's entry links to its figure table, as Hangul's refresh does (#128)
+    pic_ids = {t.get("id") for r in secs.values() for t in r.iter(f"{_HP}tbl")
+               if t.get("numberingType") == "PICTURE"}
     links = [re.fullmatch(r"\?#(\d+);0;(\d);0;", c) for c in _commands(toc, "HYPERLINK")]
     assert all(links)
     kinds = [m.group(2) for m in links]

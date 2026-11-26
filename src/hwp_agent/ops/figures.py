@@ -2,11 +2,9 @@
 
 A Markdown figure ``![alt](assets/x.png){#fig_X}`` becomes a **1-column, 2-row,
 borderless table**: the top cell holds the picture, the bottom cell the 출처/주
-lines written directly under the image line. The figure carries a ``[그림 Ⅳ-2] alt``
+lines written directly under the image line. The table carries a ``[그림 Ⅳ-2] alt``
 caption and is numbered in its own figure sequence, never as a table (see
-:func:`hwp_agent.ops.author._resolve_cross_refs`). Caption and picture number sit on a
-group of the top cell's pictures (:func:`group_pictures`, #119) so Hangul's 그림 차례
-collects the figure; only a figure whose image is missing keeps them on the table.
+:func:`hwp_agent.ops.author._resolve_cross_refs`).
 
 This module holds the pieces that don't depend on the author pipeline: parsing the
 image line, registering a new ``BinData`` part, the ``<hp:pic>`` markup, a
@@ -242,8 +240,8 @@ def picture_xml(
     """A ``<hp:run>`` holding one inline (treat-as-char) picture.
 
     The element order and attributes follow a picture Hangul saved itself (the
-    bundled template's figure), except ``numberingType="NONE"``: the group the
-    pictures go into (or, for a placeholder figure, the table) carries the number. ``imgDim``/``imgClip``/``orgSz`` are the native size
+    bundled template's figure), except ``numberingType="NONE"``: the enclosing
+    figure table carries the figure numbering. ``imgDim``/``imgClip``/``orgSz`` are the native size
     (pixels ×75), ``sz``/``curSz`` the fitted display box, and the scale matrix maps
     one onto the other. The alt text (shapeComment) follows Hangul's wording so
     :func:`.images.parse_alt_text` reads the source name back.
@@ -291,127 +289,6 @@ def picture_xml(
         f"<hp:shapeComment>{_esc(comment)}</hp:shapeComment>"
         f"</hp:pic><hp:t/></hp:run>"
     )
-
-
-#: alt text Hangul gives a group object; ``write`` appends each picture's own alt
-#: text (source name, size, ``{#id}``) after it — Hangul drops a grouped picture's
-#: own shapeComment, so the group keeps them for ``extract``
-GROUP_COMMENT = "묶음 개체입니다."
-_PIC_COMMENT_HEAD = "그림입니다."
-
-
-def group_pictures(para, pics: list, width: int, caption, *, gap: int) -> object:
-    """Wrap the inline pictures *pics* of *para* into one group object (#119).
-
-    Hangul's 그림 차례 collects captioned objects numbered as pictures — pictures and
-    groups, not tables. A figure's caption therefore goes on a group of its pictures
-    (#96: one or several, side by side) rather than on the figure table. The group is
-    as wide as the text (*width*), with the pictures centred in it: an invisible
-    full-width line keeps Hangul from shrinking the group to its pictures, so the
-    caption spans the text width exactly as the table caption did. Child markup
-    follows what Hangul writes when it saves such a group (child ``id`` 0, ``hc:img``
-    right after ``renderingInfo``, no own size/position/alt text).
-
-    The group takes the place of the first picture's run; the other picture runs and
-    the spacer runs between them go. Returns the group element.
-    """
-    from lxml import etree
-
-    hp, hc = f"{{{_HP}}}", f"{{{_HC}}}"
-    heights = [int(q.find(hp + "sz").get("height")) for q in pics]
-    widths = [int(q.find(hp + "sz").get("width")) for q in pics]
-    h = max(heights)
-    gid = random.randint(0x10000000, 0x7FFFFFFF)
-    matrices = (
-        '<hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>'
-        '<hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>'
-        '<hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>'
-    )
-    group = etree.fromstring(
-        f'<hp:container xmlns:hp="{_HP}" xmlns:hc="{_HC}" id="{gid}" zOrder="0" '
-        f'numberingType="PICTURE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" '
-        f'dropcapstyle="None" href="" groupLevel="0" instid="{gid ^ 0x5A5A5A5}">'
-        f'<hp:offset x="0" y="0"/><hp:orgSz width="{width}" height="{h}"/>'
-        f'<hp:curSz width="0" height="0"/><hp:flip horizontal="0" vertical="0"/>'
-        f'<hp:rotationInfo angle="0" centerX="{width // 2}" centerY="{h // 2}" rotateimage="1"/>'
-        f"<hp:renderingInfo>{matrices}</hp:renderingInfo>"
-        f'<hp:line id="0" zOrder="0" numberingType="NONE" textWrap="TOP_AND_BOTTOM" '
-        f'textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="1" '
-        f'instid="{gid ^ 0x1234567}" isReverseHV="0"><hp:offset x="0" y="0"/>'
-        f'<hp:orgSz width="{width}" height="0"/><hp:curSz width="0" height="0"/>'
-        f'<hp:flip horizontal="0" vertical="0"/>'
-        f'<hp:rotationInfo angle="0" centerX="{width // 2}" centerY="0" rotateimage="1"/>'
-        f"<hp:renderingInfo>{matrices}</hp:renderingInfo>"
-        f'<hp:lineShape color="#000000" width="0" style="NONE" endCap="FLAT" '
-        f'headStyle="NORMAL" tailStyle="NORMAL" headfill="1" tailfill="1" '
-        f'headSz="SMALL_SMALL" tailSz="SMALL_SMALL" outlineStyle="NORMAL" alpha="0"/>'
-        f'<hp:shadow type="NONE" color="#B2B2B2" offsetX="0" offsetY="0" alpha="0"/>'
-        f'<hc:startPt x="0" y="0"/><hc:endPt x="{width}" y="0"/></hp:line>'
-        f"</hp:container>"
-    )
-    first_run = pics[0].getparent()
-    comments = []
-    x = max(0, (width - (sum(widths) + gap * (len(pics) - 1))) // 2)
-    for q, w, qh in zip(pics, widths, heights, strict=True):
-        run = q.getparent()
-        run.remove(q)
-        if run is not first_run:
-            run.getparent().remove(run)
-        y = h - qh
-        q.set("id", "0")
-        q.set("groupLevel", "1")
-        q.find(hp + "offset").set("x", str(x))
-        q.find(hp + "offset").set("y", str(y))
-        trans = q.find(f"{hp}renderingInfo/{hc}transMatrix")
-        trans.set("e3", str(x))
-        trans.set("e6", str(y))
-        img = q.find(hc + "img")
-        q.remove(img)
-        q.find(hp + "renderingInfo").addnext(img)
-        for tag in ("sz", "pos", "outMargin", "shapeComment"):
-            el = q.find(hp + tag)
-            if el is not None:
-                if tag == "shapeComment" and el.text:
-                    comments.append(el.text)
-                q.remove(el)
-        group.append(q)
-        x += w + gap
-    # the spacer runs (a lone space) that sat between the pictures
-    for run in list(para.findall(hp + "run")):
-        if run is first_run or run.find(hp + "pic") is not None or len(run) != 1:
-            continue
-        t = run[0]
-        if t.tag == hp + "t" and t.text == " " and len(t) == 0:
-            para.remove(run)
-    for xml in (
-        f'<hp:sz xmlns:hp="{_HP}" width="{width}" widthRelTo="ABSOLUTE" height="{h}" '
-        f'heightRelTo="ABSOLUTE" protect="0"/>',
-        f'<hp:pos xmlns:hp="{_HP}" treatAsChar="1" affectLSpacing="0" flowWithText="1" '
-        f'allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" '
-        f'vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>',
-        f'<hp:outMargin xmlns:hp="{_HP}" left="0" right="0" top="0" bottom="0"/>',
-    ):
-        group.append(etree.fromstring(xml))
-    sc = etree.SubElement(group, hp + "shapeComment")
-    sc.text = "\n".join([GROUP_COMMENT, *comments])
-    caption.set("width", str(width))
-    caption.set("lastWidth", str(width))
-    group.append(caption)
-    first_run.insert(0, group)
-    return group
-
-
-def group_sources(group) -> list[tuple[str | None, str | None]]:
-    """``(source_path, label)`` per picture of a ``write`` figure group, left to right."""
-    comment = group.find(f"{{{_HP}}}shapeComment")
-    text = (comment.text or "") if comment is not None else ""
-    blocks = text.split(_PIC_COMMENT_HEAD)[1:]
-    out = []
-    for b in blocks:
-        name, _, _ = parse_alt_text(b)
-        m = _LABEL_LINE_RE.search(b)
-        out.append((name, m.group(1) if m else None))
-    return out
 
 
 def _esc(s: str) -> str:
@@ -589,52 +466,32 @@ def is_figure_table(tbl) -> bool:
     return (
         tbl.get("numberingType") == "PICTURE"
         and cap is not None
-        and FIGURE_FRAMING_RE.match(_caption_text(cap)) is not None
+        and FIGURE_FRAMING_RE.match("".join(t.text or "" for t in cap.iter(f"{{{_HP}}}t")))
+        is not None
     )
 
 
-def _caption_text(cap) -> str:
-    return "".join(t.text or "" for t in cap.iter(f"{{{_HP}}}t")).strip()
-
-
-def figure_group(tbl):
-    """The captioned picture group in *tbl*'s first cell (#119), else None."""
-    first = tbl.find(f"{{{_HP}}}tr/{{{_HP}}}tc")
-    if first is None:
-        return None
-    for group in first.iter(f"{{{_HP}}}container"):
-        cap = group.find(f"{{{_HP}}}caption")
-        if (group.get("numberingType") == "PICTURE" and cap is not None
-                and FIGURE_FRAMING_RE.match(_caption_text(cap))):
-            return group
-    return None
-
-
 def figure_parts(tbl) -> tuple[object, str] | None:
-    """``(caption_holder, caption_text)`` when *tbl* is a figure table ``write``
-    built, else None.
+    """``(pic, caption_text)`` when *tbl* is a figure table ``write`` built, else None.
 
     A figure table is one column, one or two rows, a picture in the first cell, and
-    a caption framed ``[그림 …]`` — on the picture group in that cell (#119) or, as
-    built before and as JRI reports lay out figures by hand, on the table itself
-    (those come back with the picture's original file name as the path). The holder
-    is the element carrying the caption: the group, or the table.
+    a caption framed ``[그림 …]`` — the shape ``write`` emits, which is also how JRI
+    reports lay out figures by hand (those come back with the picture's original
+    file name as the path).
     """
     if (tbl.get("colCnt") or "") != "1" or (tbl.get("rowCnt") or "") not in ("1", "2"):
         return None
-    group = figure_group(tbl)
-    holder = group if group is not None else tbl
-    cap = holder.find(f"{{{_HP}}}caption")
+    cap = tbl.find(f"{{{_HP}}}caption")
     if cap is None:
         return None
-    cap_text = _caption_text(cap)
+    cap_text = "".join(t.text or "" for t in cap.iter(f"{{{_HP}}}t")).strip()
     if not FIGURE_FRAMING_RE.match(cap_text):
         return None
     first = tbl.find(f"{{{_HP}}}tr/{{{_HP}}}tc")
     pic = first.find(f".//{{{_HP}}}pic") if first is not None else None
     if pic is None or pic.find(f"{{{_HC}}}img") is None:
         return None
-    return holder, cap_text
+    return pic, cap_text
 
 
 def figure_source(pic) -> tuple[str | None, str | None]:

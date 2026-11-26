@@ -11,7 +11,7 @@ puts ``mimetype`` first + STORED does **not** by itself trip Hangul's 보안경�
 a container-preserved file and a fully re-zipped one both opened cleanly and
 rendered pixel-identically (macOS Hangul, 보안수준 '높음'; a Windows strict
 verdict is still the last word). The real tamper trigger is a **missing part** or
-a **DOM re-serialization** (what ``HwpxDocument.save_to_path`` does), not the
+a **DOM re-serialization** (what ``HwpxDocument.save`` does), not the
 re-zip itself. We preserve the container for fidelity, not to dodge a warning.
 """
 

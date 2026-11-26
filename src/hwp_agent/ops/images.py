@@ -16,7 +16,7 @@ The replacement rules are verified against a real report (see the project memory
   and compression, ``mimetype`` first and ``STORED``. This is a **fidelity** guarantee —
   parts we don't touch stay byte-identical. (Issue #9: a full re-zip alone does not trip
   Hangul's 보안경고; the trigger is a dropped part or a DOM re-serialization, as in
-  ``HwpxDocument.save_to_path``.)
+  ``HwpxDocument.save``.)
 * **Slot format = extension.** The media-type is often ``image/unknown``, so Hangul
   keys off the file extension — a PNG slot needs PNG bytes, a BMP slot needs BMP. To
   change format we also rewrite the ``content.hpf`` href + extension and rename the part.

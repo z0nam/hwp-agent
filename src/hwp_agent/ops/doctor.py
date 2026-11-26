@@ -37,7 +37,7 @@ def _size_lookup(doc: HwpxDocument):
         if cps is None:
             return None
         try:
-            char = doc.style(style_id).char_pr_id_ref
+            char = doc.styles.get(style_id).char_pr_id_ref
         except Exception:
             return None
         if char is None:

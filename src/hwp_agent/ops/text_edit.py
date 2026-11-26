@@ -13,7 +13,7 @@ The rules below are the ones that make Hangul accept the result:
   order and compression, ``mimetype`` first and ``STORED`` (see :mod:`.container`).
   This is a **fidelity** guarantee — parts we don't touch stay byte-identical. For
   the same reason the section is edited as **text**, not through the DOM: a DOM
-  re-serialization (``HwpxDocument.save_to_path``) or a dropped part is what Hangul
+  re-serialization (``HwpxDocument.save``) or a dropped part is what Hangul
   flags as tampered — *not* the re-zip itself (issue #9, measured 2026-08-28; the CLI
   fingerprint step re-zips the whole archive and opens cleanly all the same).
 * **Style comes from a sibling, not from a role.** A hand-edited document's styles

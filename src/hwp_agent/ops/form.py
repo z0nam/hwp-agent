@@ -18,7 +18,7 @@ let an AI (or a saved profile) fill it to fit the form. Slot kinds:
 Table navigation reuses python-hwpx's span-aware logical grid (so merged cells
 and nested tables resolve correctly), then edits the located ``<hp:tc>`` lxml
 element directly for true overwrite (SET) semantics. Edited sections are marked
-dirty so ``HwpxDocument.save_to_path`` re-serializes them.
+dirty so ``HwpxDocument.save`` re-serializes them.
 """
 
 from __future__ import annotations
@@ -33,6 +33,8 @@ import hwpx.tools.table_navigation as _tn
 from hwpx.document import HwpxDocument
 from hwpx.opc.package import HwpxPackage
 
+from . import _label_nav
+from .docsave import save_document
 from .tablewidth import compute_column_widths
 
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
@@ -289,13 +291,13 @@ def _locate_label_cell(doc: HwpxDocument, label: str, direction: str):
         return None
     tables = _tn._collect_document_tables(doc)
     try:
-        cands = _tn._find_label_candidates(tables, label.strip())
+        cands = _label_nav.find_label_candidates(tables, label.strip())
     except ValueError:
         return None
     if len(cands) != 1:  # not found or ambiguous
         return None
     c = cands[0]
-    pos = _tn._move(c.table, c.row, c.col, d)
+    pos = _label_nav.move(c.table, c.row, c.col, d)
     if pos is None:
         return None
     try:
@@ -436,7 +438,7 @@ def autofit_table(
 
     for sec in doc.sections:
         sec.mark_dirty()
-    doc.save_to_path(str(output or hwpx_path))
+    save_document(doc, output or hwpx_path)
     return {
         "table_index": table_index,
         "ncols": ncols,
@@ -1344,5 +1346,5 @@ def fill_form(
 
     for sec in doc.sections:  # raw lxml edits don't set the dirty flag themselves
         sec.mark_dirty()
-    doc.save_to_path(str(output or hwpx_path))
+    save_document(doc, output or hwpx_path)
     return result

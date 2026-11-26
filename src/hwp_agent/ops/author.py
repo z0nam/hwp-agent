@@ -33,6 +33,7 @@ from pathlib import Path
 from hwpx.document import HwpxDocument
 from lxml import etree as ET
 
+from .docsave import save_document
 from .equation import equation_run_xml, latex_to_hwp, math_pieces, unescape_dollars
 from .figures import (
     FIGURE_FRAMING_RE,
@@ -42,7 +43,6 @@ from .figures import (
     borderless_fill,
     box_fill,
     centered_para_pr,
-    fit_extent,
     is_figure_table,
     load_image,
     parse_figure_line,
@@ -376,7 +376,7 @@ def _footnote_style(
         if info is not None and info.para_pr_id is not None:
             fn_para = info.para_pr_id
         try:
-            fn_char = doc.style(fn_sid).char_pr_id_ref
+            fn_char = doc.styles.get(fn_sid).char_pr_id_ref
         except Exception:
             fn_char = None
     return fn_sid, fn_para, fn_char
@@ -1451,12 +1451,41 @@ def _style_cell(
 TABLE_CELL_MARGIN = {"left": "0", "right": "0", "top": "0", "bottom": "0"}
 
 
-def _add_table(doc, rows: int, cols: int, **kwargs):
+def _add_paragraph(section, text: str = "", *, style_id_ref=None, **kwargs):
+    """``section.add_paragraph`` that tags the paragraph with *style_id_ref* only.
+
+    python-hwpx 7 dropped ``style_id_ref=``; its ``style=`` also applies the
+    style's paragraph/character shapes, which would override the explicit
+    ``para_pr_id_ref`` the writer chose. Set the style id on the result instead,
+    as 2.11 did (#137).
+    """
+    p = section.add_paragraph(text, **kwargs)
+    if style_id_ref is not None:
+        p.style_id_ref = style_id_ref
+    return p
+
+
+def _add_table(doc, rows: int, cols: int, *, style_id_ref=None, **kwargs):
     """``doc.add_table`` with the cell padding pinned to :data:`TABLE_CELL_MARGIN`
     (the table's ``inMargin`` and each cell's ``cellMargin``) — not the library's
-    default, which changed between python-hwpx versions."""
-    table = doc.add_table(rows, cols, **kwargs)
+    default, which changed between python-hwpx versions.
+
+    The margins also go in at creation (``in_margins``) so python-hwpx 7's minimum
+    new-column width is computed from them, not from its 510 default (#138).
+    *style_id_ref* tags the paragraph wrapping the table, as python-hwpx 2.11's
+    argument of that name did (7's ``style=`` would also apply the style's shapes).
+    """
+    from hwpx.objects import CellMargins
+
+    m = {k: int(v) for k, v in TABLE_CELL_MARGIN.items()}
+    table = doc.add_table(rows, cols, in_margins=CellMargins(**m), **kwargs)
     tel = table.element
+    if style_id_ref is not None:
+        host = tel.getparent()
+        while host is not None and host.tag != f"{{{_HP}}}p":
+            host = host.getparent()
+        if host is not None:
+            host.set("styleIDRef", str(style_id_ref))
     for el in (tel.find(f"{{{_HP}}}inMargin"), *tel.iter(f"{{{_HP}}}cellMargin")):
         if el is not None:
             for k, v in TABLE_CELL_MARGIN.items():
@@ -1901,7 +1930,7 @@ def _build_table(
         cap = _figure_caption(
             None, block.caption_label or "표", block.caption, 8504,
             body_style=body_style, body_para=body_para,
-            body_char=doc.style(body_style).char_pr_id_ref if body_style else None,
+            body_char=doc.styles.get(body_style).char_pr_id_ref if body_style else None,
             run_writer=run_writer,
         )
         for t in cap.iter(f"{{{_HP}}}t"):
@@ -2397,7 +2426,7 @@ def _ensure_blank_outline_numbering(doc: HwpxDocument, section) -> str | None:
         # a section that already holds auto-numbered outline headings keeps its
         # outline definition — swapping it would blank their numbers too
         for p in section.paragraphs:
-            pp = doc.paragraph_property(p.para_pr_id_ref)
+            pp = doc.styles.paragraph_property(p.para_pr_id_ref)
             if pp and pp.heading and pp.heading.type == "OUTLINE":
                 return None
         header = doc._root._headers[0]
@@ -2665,7 +2694,7 @@ def read_instructions(template: Path | str) -> dict:
             for p in doc.paragraphs
             if str(p.style_id_ref) == inst_style and p.text.strip()
         ]
-    slots = extract_placeholders(doc.export_text())
+    slots = extract_placeholders(doc.text.plain())
     return {"instructions": instructions, "slots": slots}
 
 
@@ -2848,7 +2877,7 @@ def fill_from_markdown(
     for i in infos.values():
         if "하이퍼링크" in (i.name or "") or "hyperlink" in (i.name or "").lower():
             try:
-                hl_char = doc.style(i.style_id).char_pr_id_ref
+                hl_char = doc.styles.get(i.style_id).char_pr_id_ref
             except Exception:
                 hl_char = None
             break
@@ -3018,7 +3047,7 @@ def fill_from_markdown(
         for p in doc.paragraphs:
             if marker is not None and p.element is marker.element:
                 break
-            pp = doc.paragraph_property(p.para_pr_id_ref)
+            pp = doc.styles.paragraph_property(p.para_pr_id_ref)
             if pp and pp.heading and pp.heading.type == "OUTLINE" and pp.heading.level == 0:
                 chapter_count += 1
 
@@ -3075,9 +3104,9 @@ def fill_from_markdown(
 
     def _emit_heading_gap(cur: Block) -> None:
         h_style = resolve(cur)[0] or body_style  # the heading's own style id
-        h_char = doc.style(h_style).char_pr_id_ref if h_style is not None else None
-        gap = target_section.add_paragraph(
-            "", style_id_ref=body_style, para_pr_id_ref=body_para, include_run=False
+        h_char = doc.styles.get(h_style).char_pr_id_ref if h_style is not None else None
+        gap = _add_paragraph(
+            target_section, "", style_id_ref=body_style, para_pr_id_ref=body_para, include_run=False
         )
         # an (empty) run carrying the heading's char so the blank line's height tracks
         # the heading size; the BODY paraPr keeps it out of the outline (no ghost number)
@@ -3100,7 +3129,7 @@ def fill_from_markdown(
                 cap_src=figure_cap_src,
                 note_zone=table_fmt.note if table_fmt is not None else None,
                 body_style=body_style, body_para=body_para,
-                body_char=doc.style(body_style).char_pr_id_ref if body_style else None,
+                body_char=doc.styles.get(body_style).char_pr_id_ref if body_style else None,
                 ref_el=ref_element_copy, para_cache=figure_para_cache,
                 text_writer=write_text, run_writer=add_runs, warnings=result.warnings,
             )
@@ -3112,7 +3141,7 @@ def fill_from_markdown(
         if _is_summary_box(block):
             table = _build_summary_box(
                 doc, target_section, block, body_style=body_style, body_para=body_para,
-                body_char=doc.style(body_style).char_pr_id_ref if body_style else None,
+                body_char=doc.styles.get(body_style).char_pr_id_ref if body_style else None,
                 text_writer=write_text,
             )
             place(table.paragraph.element)
@@ -3140,9 +3169,9 @@ def fill_from_markdown(
                     eq_sid = i.style_id
                     break
             eq_para_pr = infos[eq_sid].para_pr_id if eq_sid in infos else body_para
-            eq_char = doc.style(eq_sid).char_pr_id_ref if eq_sid is not None else None
-            eq_para = target_section.add_paragraph(
-                "", style_id_ref=eq_sid, para_pr_id_ref=eq_para_pr, include_run=False
+            eq_char = doc.styles.get(eq_sid).char_pr_id_ref if eq_sid is not None else None
+            eq_para = _add_paragraph(
+                target_section, "", style_id_ref=eq_sid, para_pr_id_ref=eq_para_pr, include_run=False
             )
             emit_equation(eq_para, block.text, eq_char)
             eq_para.add_run("", char_pr_id_ref=eq_char)
@@ -3154,8 +3183,8 @@ def fill_from_markdown(
             # a Markdown thematic break (`---`) → a full-width horizontal line, as its
             # own (BODY-styled) paragraph; spans the section's text column.
             width = _text_width(target_section) or 14400
-            rule_para = target_section.add_paragraph(
-                "", style_id_ref=body_style, para_pr_id_ref=body_para, include_run=False
+            rule_para = _add_paragraph(
+                target_section, "", style_id_ref=body_style, para_pr_id_ref=body_para, include_run=False
             )
             rule_para.add_line(0, 0, width, 0, treat_as_char=True)
             line_el = rule_para.element.find(f".//{{{_HP}}}line")
@@ -3183,7 +3212,7 @@ def fill_from_markdown(
             body_style_id = roles.get("BODY")
             style_id = body_style_id
             role = "BODY"
-            base_char = doc.style(style_id).char_pr_id_ref if style_id is not None else None
+            base_char = doc.styles.get(style_id).char_pr_id_ref if style_id is not None else None
             text = block.raw_text or block.text
             if bullet_levels:
                 target_bullet_role = _ranked("BULLET_", bullet_levels, block.level)
@@ -3205,7 +3234,7 @@ def fill_from_markdown(
                 if role not in result.unmapped_roles and role != "BODY":
                     result.unmapped_roles.append(role)
             para_pr = infos[style_id].para_pr_id if style_id in infos else None
-            base_char = doc.style(style_id).char_pr_id_ref if style_id is not None else None
+            base_char = doc.styles.get(style_id).char_pr_id_ref if style_id is not None else None
 
             info = infos.get(style_id)
             if block.kind == "heading":
@@ -3237,8 +3266,8 @@ def fill_from_markdown(
         # build the paragraph empty, then add one run per inline segment so
         # **bold** / *italic* become real runs (bold uses the same font family's
         # bold weight via ensure_run_style); plain text is a single run.
-        para = target_section.add_paragraph(
-            "", style_id_ref=style_id, para_pr_id_ref=effective_para, include_run=False
+        para = _add_paragraph(
+            target_section, "", style_id_ref=style_id, para_pr_id_ref=effective_para, include_run=False
         )
         add_runs(para, text, base_char)
         # headings: clone a linesegarray from a real same-style heading so Hangul
@@ -3322,7 +3351,7 @@ def fill_from_markdown(
             )
 
     part_name = target_section.part_name if result.inserted_at_marker else None
-    doc.save_to_path(str(output or template))
+    save_document(doc, output or template)
     if part_name and summary_rows:
         result.warnings += fill_summary_form(output or template, part_name, summary_rows)
     if part_name and ref_headers is not None:
@@ -3410,7 +3439,7 @@ def fill_sections(
         agg.warnings.append(
             f"unconsumed template marker(s) left in document: {toks}"
         )
-    doc.save_to_path(str(final_out))
+    save_document(doc, final_out)
     if n:
         agg.warnings.append(f"stripped {n} unfilled marker(s) not supplied by this build")
     return agg

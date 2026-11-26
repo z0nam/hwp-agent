@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from hwp_agent.ops import diagnose_template
+from hwp_agent.ops.author import _add_paragraph
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APPENDIX = REPO_ROOT / "tests" / "fixtures" / "sample_appendix.hwpx"
@@ -63,9 +64,9 @@ def test_marker_audit_reports_placement(tmp_path: Path) -> None:
 
     tmpl = tmp_path / "t.hwpx"
     doc = HwpxDocument.open(str(TYPE1))
-    doc.sections[0].add_paragraph("{{intro}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.sections[-1].add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.save_to_path(str(tmpl))
+    _add_paragraph(doc.sections[0], "{{intro}}", style_id_ref=0, para_pr_id_ref=0)
+    _add_paragraph(doc.sections[-1], "{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.save(str(tmpl))
 
     r = diagnose_template(str(tmpl))
     toks = {e["token"]: e for e in r["markers"]}
@@ -82,9 +83,9 @@ def test_marker_audit_flags_duplicate(tmp_path: Path) -> None:
 
     tmpl = tmp_path / "dup.hwpx"
     doc = HwpxDocument.open(str(TYPE1))
-    doc.sections[0].add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.sections[-1].add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.save_to_path(str(tmpl))
+    _add_paragraph(doc.sections[0], "{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    _add_paragraph(doc.sections[-1], "{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.save(str(tmpl))
 
     r = diagnose_template(str(tmpl))
     assert sum(e["count"] for e in r["markers"] if e["token"] == "{{body}}") == 2

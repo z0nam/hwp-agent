@@ -184,7 +184,10 @@ def test_fill_by_explicit_cell_path(tmp_path: Path) -> None:
     from hwpx.document import HwpxDocument
 
     doc = HwpxDocument.open(str(out))
-    target = doc.find_cell_by_label("연구요약")["matches"][0]["target_cell"]["text"]
+    from hwp_agent.ops.form import _locate_label_cell
+
+    cell = _locate_label_cell(doc, "연구요약", "right")
+    target = "".join(cell.itertext())
     assert "AI가 채운 값" in target
 
 
@@ -308,7 +311,7 @@ def _make_label_slots_fixture(path: Path) -> Path:
         sec.append(p)
 
     sec_obj.mark_dirty()
-    doc.save_to_path(str(path))
+    doc.save(str(path))
     return path
 
 
@@ -412,7 +415,7 @@ def test_label_slot_clears_tab_and_trailing_content(tmp_path: Path) -> None:
 
     doc.sections[0].mark_dirty()
     fixture = tmp_path / "tab_label.hwpx"
-    doc.save_to_path(str(fixture))
+    doc.save(str(fixture))
 
     out = tmp_path / "tab_label_out.hwpx"
     res = fill_form(fixture, {"label:기간": "2026. 10. 26."}, output=out)
@@ -445,7 +448,7 @@ def test_section_slot_preserves_picture_paragraph(tmp_path: Path) -> None:
 
     doc.sections[0].mark_dirty()
     fixture = tmp_path / "sec_pic.hwpx"
-    doc.save_to_path(str(fixture))
+    doc.save(str(fixture))
 
     out = tmp_path / "sec_pic_out.hwpx"
     res = fill_form(fixture, {"section:변경사유": "서술 내용"}, output=out)

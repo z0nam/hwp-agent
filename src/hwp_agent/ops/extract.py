@@ -101,7 +101,7 @@ def _classify(paragraph, doc, role_of: dict[str, str]) -> tuple[str, int]:
     if role == "BODY":
         return "BODY", 0
     # fallback: read the paragraph property directly
-    pp = doc.paragraph_property(paragraph.para_pr_id_ref)
+    pp = doc.styles.paragraph_property(paragraph.para_pr_id_ref)
     h = getattr(pp, "heading", None) if pp else None
     if h is None or not h.type:
         return "BODY", 0

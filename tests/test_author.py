@@ -14,6 +14,7 @@ from hwp_agent.ops import (
     plain_text,
     role_map,
 )
+from hwp_agent.ops.author import _add_paragraph
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TYPE1 = REPO_ROOT / "tests" / "fixtures" / "sample_hwpx.hwpx"
@@ -604,7 +605,7 @@ def test_inline_bold_preserves_base_size(tmp_path: Path) -> None:
         el = cps.find(f"{_HH}charPr[@id='{cid}']")
         return el.get("height") if el is not None else None
 
-    base_char = doc.style(role_map(str(TYPE1))["BODY"]).char_pr_id_ref
+    base_char = doc.styles.get(role_map(str(TYPE1))["BODY"]).char_pr_id_ref
     bold_run = None
     for p in doc.paragraphs:
         if "굵은말" in (p.text or ""):
@@ -812,7 +813,7 @@ def test_fill_ordered_list_uses_numbered_outline_style(tmp_path: Path) -> None:
     doc = HwpxDocument.open(str(out))
     item = next(p for p in doc.paragraphs if p.text == "첫 단계")
     # the ordered item resolves to an OUTLINE (auto-numbered) style, not Body
-    heading = doc.paragraph_property(item.para_pr_id_ref).heading
+    heading = doc.styles.paragraph_property(item.para_pr_id_ref).heading
     assert heading.type == "OUTLINE"
     assert str(item.style_id_ref) != role_map(TYPE1)["BODY"]
 
@@ -838,7 +839,7 @@ def test_fill_from_markdown_applies_outline_styles(tmp_path: Path) -> None:
 
     # heading paragraphs resolve to OUTLINE headings (auto-numbered by Hangul)
     h1 = by_text["새 장"]
-    heading = doc.paragraph_property(h1.para_pr_id_ref).heading
+    heading = doc.styles.paragraph_property(h1.para_pr_id_ref).heading
     assert heading.type == "OUTLINE" and heading.level == 0
 
     # output reopens with no replacement chars (non-BMP guard)
@@ -859,11 +860,11 @@ def test_fill_inserts_at_body_marker(tmp_path: Path) -> None:
     tmpl = tmp_path / "tmpl.hwpx"
     doc = HwpxDocument.open(str(TYPE1))
     sec = doc.sections[0]
-    marker = sec.add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    marker = _add_paragraph(sec, "{{body}}", style_id_ref=0, para_pr_id_ref=0)
     el = marker.element
     el.getparent().remove(el)
     sec.paragraphs[3].element.addprevious(el)
-    doc.save_to_path(str(tmpl))
+    doc.save(str(tmpl))
 
     out = tmp_path / "out.hwpx"
     result = fill_from_markdown(tmpl, "# 삽입장\n\n본문.\n", output=out)
@@ -901,11 +902,11 @@ def test_fill_at_marker_is_not_warned(tmp_path: Path) -> None:
     tmpl = tmp_path / "tmpl.hwpx"
     doc = HwpxDocument.open(str(TYPE1))
     sec = doc.sections[0]
-    marker = sec.add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    marker = _add_paragraph(sec, "{{body}}", style_id_ref=0, para_pr_id_ref=0)
     el = marker.element
     el.getparent().remove(el)
     sec.paragraphs[3].element.addprevious(el)
-    doc.save_to_path(str(tmpl))
+    doc.save(str(tmpl))
 
     out = tmp_path / "out.hwpx"
     result = fill_from_markdown(tmpl, "# 장 제목\n\n본문.\n", output=out)
@@ -924,9 +925,9 @@ def test_fill_sections_places_each_part(tmp_path: Path) -> None:
 
     tmpl = tmp_path / "t.hwpx"
     doc = HwpxDocument.open(str(TYPE1))
-    doc.sections[0].add_paragraph("{{summary}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.sections[-1].add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.save_to_path(str(tmpl))
+    _add_paragraph(doc.sections[0], "{{summary}}", style_id_ref=0, para_pr_id_ref=0)
+    _add_paragraph(doc.sections[-1], "{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.save(str(tmpl))
 
     out = tmp_path / "o.hwpx"
     res = fill_sections(
@@ -957,9 +958,9 @@ def test_write_default_prefers_body_over_earlier_intro(tmp_path: Path) -> None:
     tmpl = tmp_path / "t.hwpx"
     doc = HwpxDocument.open(str(TYPE1))
     # intro marker sits BEFORE body in document order
-    doc.sections[0].add_paragraph("{{intro}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.sections[0].add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.save_to_path(str(tmpl))
+    _add_paragraph(doc.sections[0], "{{intro}}", style_id_ref=0, para_pr_id_ref=0)
+    _add_paragraph(doc.sections[0], "{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.save(str(tmpl))
 
     out = tmp_path / "o.hwpx"
     # no marker_token, no strip — assert routing only
@@ -980,10 +981,10 @@ def test_write_strip_other_markers_removes_leftovers(tmp_path: Path) -> None:
 
     tmpl = tmp_path / "t.hwpx"
     doc = HwpxDocument.open(str(TYPE1))
-    doc.sections[0].add_paragraph("{{intro}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.sections[0].add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.sections[0].add_paragraph("{{references}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.save_to_path(str(tmpl))
+    _add_paragraph(doc.sections[0], "{{intro}}", style_id_ref=0, para_pr_id_ref=0)
+    _add_paragraph(doc.sections[0], "{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    _add_paragraph(doc.sections[0], "{{references}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.save(str(tmpl))
 
     out = tmp_path / "o.hwpx"
     result = fill_from_markdown(
@@ -1007,10 +1008,10 @@ def test_fill_sections_strips_unsupplied_markers(tmp_path: Path) -> None:
 
     tmpl = tmp_path / "t.hwpx"
     doc = HwpxDocument.open(str(TYPE1))
-    doc.sections[0].add_paragraph("{{intro}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.sections[-1].add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.sections[-1].add_paragraph("{{references}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.save_to_path(str(tmpl))
+    _add_paragraph(doc.sections[0], "{{intro}}", style_id_ref=0, para_pr_id_ref=0)
+    _add_paragraph(doc.sections[-1], "{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    _add_paragraph(doc.sections[-1], "{{references}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.save(str(tmpl))
 
     out = tmp_path / "o.hwpx"
     # supply body only — intro and references markers must not survive
@@ -1032,11 +1033,11 @@ def test_fill_inserts_at_appendix_marker(tmp_path: Path) -> None:
     tmpl = tmp_path / "tmpl.hwpx"
     doc = HwpxDocument.open(str(TYPE1))
     sec = doc.sections[0]
-    marker = sec.add_paragraph("{{appendix}}", style_id_ref=0, para_pr_id_ref=0)
+    marker = _add_paragraph(sec, "{{appendix}}", style_id_ref=0, para_pr_id_ref=0)
     el = marker.element
     el.getparent().remove(el)
     sec.paragraphs[3].element.addprevious(el)
-    doc.save_to_path(str(tmpl))
+    doc.save(str(tmpl))
 
     out = tmp_path / "out.hwpx"
     result = fill_from_markdown(tmpl, "# 부록 A\n\n부록 본문.\n", output=out)
@@ -1083,7 +1084,7 @@ def test_fill_preserves_section_opener_secpr(tmp_path: Path) -> None:
         pytest.skip("fixture has no secPr-bearing section opener")
     opener.add_run("{{appendix}}")  # turn the section opener into the marker
     tmpl = tmp_path / "tmpl.hwpx"
-    doc.save_to_path(str(tmpl))
+    doc.save(str(tmpl))
     before = count_secpr(HwpxDocument.open(str(tmpl)))
 
     out = tmp_path / "out.hwpx"
@@ -1313,9 +1314,9 @@ def test_build_report_assembles_from_manifest(tmp_path: Path) -> None:
 
     tmpl = tmp_path / "t.hwpx"
     doc = HwpxDocument.open(str(TYPE1))
-    doc.sections[0].add_paragraph("{{summary}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.sections[-1].add_paragraph("{{body}}", style_id_ref=0, para_pr_id_ref=0)
-    doc.save_to_path(str(tmpl))
+    _add_paragraph(doc.sections[0], "{{summary}}", style_id_ref=0, para_pr_id_ref=0)
+    _add_paragraph(doc.sections[-1], "{{body}}", style_id_ref=0, para_pr_id_ref=0)
+    doc.save(str(tmpl))
 
     (tmp_path / "s.md").write_text("# 요약장\n\n요약 AAA\n", encoding="utf-8")
     (tmp_path / "b1.md").write_text("# 본문1\n\n본문 BBB\n", encoding="utf-8")
@@ -1420,7 +1421,7 @@ def test_footnote_number_format_follows_section(tmp_path: Path) -> None:
             fmt.set("suffixChar", "")
             fmt.set("supscript", "1")
             s.mark_dirty()
-    d.save_to_path(str(tpl))
+    d.save(str(tpl))
 
     out = tmp_path / "fn.hwpx"
     fill_from_markdown(tpl, "본문[^a]\n\n[^a]: 각주\n", output=out)

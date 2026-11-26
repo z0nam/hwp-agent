@@ -61,7 +61,7 @@ def _make_form(path: Path) -> Path:
     p = trs[6].find(q("tc")).find(q("subList")).find(q("p"))
     lsa = etree.SubElement(p, q("linesegarray"))
     etree.SubElement(lsa, q("lineseg"), {"textpos": "0", "vertpos": "0"})
-    doc.save_to_path(str(path))
+    doc.save(str(path))
     return path
 
 

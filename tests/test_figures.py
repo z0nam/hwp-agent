@@ -169,6 +169,44 @@ def test_write_builds_borderless_figure_tables(tmp_path: Path) -> None:
     assert texts == ["출처: 제주연구원", "주: 2026년은 잠정치"]
 
 
+def _note_cell(tbl):
+    return tbl.findall(f"{{{_HP}}}tr")[1].find(f"{{{_HP}}}tc")
+
+
+def test_top_aligned_note_gets_a_real_top_margin(tmp_path: Path) -> None:
+    """#130: the bundled template's note zone is TOP-aligned with cellMargin 500 but
+    hasMargin=0, so Hangul dropped the margin and drew the 출처 line's glyph tops
+    under the picture. The note cell now carries its own top margin."""
+    _, out = _write(tmp_path)
+    for t in _figure_tables(out):
+        tc = _note_cell(t)
+        assert tc.find(f"{{{_HP}}}subList").get("vertAlign") == "TOP"
+        assert tc.get("hasMargin") == "1"
+        mg = tc.find(f"{{{_HP}}}cellMargin").attrib
+        assert (mg["left"], mg["right"], mg["top"], mg["bottom"]) == ("0", "0", "500", "0")
+        # the seeded row leaves room for the margin (rhwp does not auto-grow cells)
+        assert int(tc.find(f"{{{_HP}}}cellSz").get("height")) >= 1600 + 500
+
+
+_GOLDEN_TPL = Path("examples/정책과제-template.hwpx")
+
+
+def test_centered_note_is_left_alone(tmp_path: Path) -> None:
+    """The golden template's CENTER note zone already clears the picture — keep it."""
+    if not _GOLDEN_TPL.exists():
+        import pytest
+
+        pytest.skip("golden template not available")
+    _, out = _write(tmp_path, template=_GOLDEN_TPL)
+    figs = _figure_tables(out)
+    assert figs
+    for t in figs:
+        tc = _note_cell(t)
+        assert tc.find(f"{{{_HP}}}subList").get("vertAlign") == "CENTER"
+        assert tc.get("hasMargin") == "0"
+        assert tc.find(f"{{{_HP}}}cellMargin").get("top") == "0"
+
+
 def test_tall_figure_is_capped_to_the_page(tmp_path: Path) -> None:
     _, out = _write(tmp_path)
     tall = _figure_tables(out)[1]

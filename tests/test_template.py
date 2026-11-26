@@ -145,3 +145,39 @@ def test_bundled_template_opens_its_section_in_the_first_paragraph(tmp_path) -> 
     assert sum(p.find(f".//{hp}secPr") is not None for p in ps) == 1
     # no blank opener paragraph left behind: the first paragraph is the content
     assert "".join(ps[0].itertext()) == "첫 문장"
+
+
+def _opener_template(tmp_path):
+    """Bundled template with direction text sharing the secPr run (Codex #139)."""
+    import zipfile
+
+    from hwp_agent.ops.template import bundled_template_path
+
+    src = bundled_template_path()
+    out = tmp_path / "tpl.hwpx"
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out, "w") as zout:
+        for it in zin.infolist():
+            data = zin.read(it.filename)
+            if it.filename == "Contents/section0.xml":
+                s = data.decode("utf-8")
+                # put a direction text inside the first paragraph's secPr run
+                end = "</hp:ctrl></hp:run>"
+                i = s.find(end)
+                s = s[:i] + "</hp:ctrl><hp:t>지침 글 비밀</hp:t></hp:run>" + s[i + len(end):]
+                data = s.encode("utf-8")
+            zout.writestr(it, data, compress_type=it.compress_type)
+    return out
+
+
+def test_handed_on_opener_drops_the_direction_text(tmp_path) -> None:
+    import zipfile
+
+    from hwp_agent.ops import fill_from_markdown
+
+    tpl = _opener_template(tmp_path)
+    out = tmp_path / "out.hwpx"
+    fill_from_markdown(tpl, "본문 문장\n", output=out)
+    with zipfile.ZipFile(out) as z:
+        xml = z.read("Contents/section0.xml").decode("utf-8")
+    assert "지침 글 비밀" not in xml
+    assert xml.count("<hp:secPr") == 1

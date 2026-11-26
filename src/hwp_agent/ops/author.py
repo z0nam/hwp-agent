@@ -2611,11 +2611,17 @@ def _hand_on_section_opener(para_el) -> bool:
     it: the opener run moves to the front of the next paragraph in the same 구역
     (the next direction, or the insertion marker, whose own opener handling then
     carries it onto the first authored paragraph). Returns False when the
-    paragraph opens its 구역 and has no next paragraph — it must then stay.
+    paragraph opens its 구역 and has no next paragraph — it must then stay (its
+    opener run already stripped of the direction's text).
     """
     opener = _section_opener_run(para_el)
     if opener is None:
         return True
+    # the run may also hold the direction's own text: keep only the section-level
+    # controls (secPr, column/header/footer/page-number ctrls), never the text
+    for child in list(opener):
+        if child.tag not in (f"{{{_HP}}}secPr", f"{{{_HP}}}ctrl"):
+            opener.remove(child)
     nxt = para_el.getnext()
     while nxt is not None and nxt.tag != f"{{{_HP}}}p":
         nxt = nxt.getnext()

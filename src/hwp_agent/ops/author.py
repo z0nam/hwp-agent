@@ -1443,6 +1443,27 @@ def _style_cell(
         cp.add_run(unmask_escapes(plain_text(text)), char_pr_id_ref=zone.char)
 
 
+#: cell padding of every table write/build makes: python-hwpx 2.11's add_table wrote
+#: 0 on all four sides, and the layouts (figure tables, data-table column fit, the
+#: brief box which sets its own) were measured on that. python-hwpx 6.12+ writes
+#: Hancom's 510/510/141/141 instead, so the value is spelled out here rather than
+#: inherited from the library default.
+TABLE_CELL_MARGIN = {"left": "0", "right": "0", "top": "0", "bottom": "0"}
+
+
+def _add_table(doc, rows: int, cols: int, **kwargs):
+    """``doc.add_table`` with the cell padding pinned to :data:`TABLE_CELL_MARGIN`
+    (the table's ``inMargin`` and each cell's ``cellMargin``) — not the library's
+    default, which changed between python-hwpx versions."""
+    table = doc.add_table(rows, cols, **kwargs)
+    tel = table.element
+    for el in (tel.find(f"{{{_HP}}}inMargin"), *tel.iter(f"{{{_HP}}}cellMargin")):
+        if el is not None:
+            for k, v in TABLE_CELL_MARGIN.items():
+                el.set(k, v)
+    return table
+
+
 def _text_width(section) -> int | None:
     """Text-column width = page width − left/right margins (HWPUNIT), from secPr."""
     page = section.element.find(f".//{{{_HP}}}pagePr")
@@ -1717,8 +1738,8 @@ def _build_summary_box(
     Hangul re-flows on open.
     """
     tw = _text_width(section) or 33451
-    table = doc.add_table(
-        1, 1, section=section, border_fill_id_ref=box_fill(doc),
+    table = _add_table(
+        doc, 1, 1, section=section, border_fill_id_ref=box_fill(doc),
         style_id_ref=body_style, para_pr_id_ref=body_para,
     )
     tel = table.element
@@ -1793,7 +1814,8 @@ def _build_table(
     data_rows = block.rows
     has_note = fmt is not None and fmt.note is not None
     total_rows = len(data_rows) + (1 if has_note else 0)
-    table = doc.add_table(
+    table = _add_table(
+        doc,
         total_rows,
         ncols,
         section=section,
@@ -2055,8 +2077,8 @@ def _build_figure(
 
     tw = _text_width(section) or 42520
     nofill = borderless_fill(doc)
-    table = doc.add_table(
-        2, 1, section=section, border_fill_id_ref=nofill,
+    table = _add_table(
+        doc, 2, 1, section=section, border_fill_id_ref=nofill,
         style_id_ref=body_style, para_pr_id_ref=body_para,
     )
     tel = table.element

@@ -1997,6 +1997,42 @@ def _figure_caption(
     return cap
 
 
+_FIGURE_NOTE_GAP = 500  # HWPUNIT (5pt) between the picture and a top-aligned note
+
+
+def _figure_note_gap(tc) -> int:
+    """Give a top-aligned figure note cell a real top margin; return it (#130).
+
+    The note row borrows the reference table's note zone. In the bundled template
+    that zone is ``vertAlign="TOP"`` with ``cellMargin`` 500 — but its cells are
+    ``hasMargin="0"``, so Hangul ignores that margin and uses the table's inner
+    margin, which the figure table sets to 0. The note line then starts flush with
+    the row top, i.e. right at the picture's bottom edge, and Hancom draws the
+    glyph tops under the picture. A ``CENTER`` zone (the golden template) leaves
+    slack above the line inside the seeded row, so it is left untouched.
+
+    The cell gets ``hasMargin="1"`` with only a top margin — left/right/bottom stay
+    0 like the table's, so the note keeps its horizontal position. The template's
+    own top margin is used when it is a real value, else :data:`_FIGURE_NOTE_GAP`.
+    """
+    sub = tc.find(f"{{{_HP}}}subList")
+    if sub is None or sub.get("vertAlign") != "TOP":
+        return 0
+    mg = tc.find(f"{{{_HP}}}cellMargin")
+    if mg is None:
+        return 0
+    try:
+        top = int(mg.get("top", ""))
+    except ValueError:
+        top = -1
+    gap = top if 0 < top < 2**31 else _FIGURE_NOTE_GAP
+    for k in ("left", "right", "bottom"):
+        mg.set(k, "0")
+    mg.set("top", str(gap))
+    tc.set("hasMargin", "1")
+    return gap
+
+
 def _build_figure(
     doc, section, fig: FigureBlock, *, base_dir: Path, cap_src, note_zone,
     body_style, body_para, body_char, ref_el, para_cache: dict,
@@ -2123,8 +2159,10 @@ def _build_figure(
             adapter.add_run(plain_text(line), char_pr_id_ref=zone.char)
     note_sz = note_cell.element.find(f"{{{_HP}}}cellSz")
     seed = zone.height if zone.height and int(zone.height or 0) > 0 else None
+    seed_h = int(seed) if seed else int(CHAR_W * 1.6)
+    seed_h += _figure_note_gap(note_cell.element)
     if note_sz is not None:
-        note_sz.set("height", seed or str(int(CHAR_W * 1.6)))
+        note_sz.set("height", str(seed_h))
     for tc in tel.iter(f"{{{_HP}}}tc"):
         tc.set("borderFillIDRef", nofill)
 

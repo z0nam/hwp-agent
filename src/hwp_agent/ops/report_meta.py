@@ -32,6 +32,7 @@ from pathlib import Path
 
 from hwpx.document import HwpxDocument
 
+from .docsave import save_document
 from .template import RESIDUAL_TOKEN_RE
 
 _HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
@@ -304,7 +305,7 @@ def bake_meta_slots(path: Path | str, config: dict) -> list[str]:
     if errors:
         raise ValueError("meta_slots: " + "; ".join(errors))
     if done:
-        doc.save_to_path(str(path))
+        save_document(doc, path)
     done += _bake_masterpage_slots(path, config.get("masterpage") or {})
     return done
 
@@ -314,7 +315,6 @@ def _bake_masterpage_slots(path: Path | str, spec: dict) -> list[str]:
     string in the masterpage parts (the 머리말 쪽 제목) for a slot (#91). Each key must
     occur in exactly one masterpage part, once; a token already present is skipped."""
     import zipfile
-
     from xml.sax.saxutils import escape
 
     from .container import _rewrite_zip_preserving
@@ -766,7 +766,6 @@ def _fill_masterpage_slots(path: Path | str, values: dict[str, str]) -> list[str
     that were filled.
     """
     import zipfile
-
     from xml.sax.saxutils import escape
 
     from .container import _rewrite_zip_preserving
@@ -854,7 +853,7 @@ def _fit_cover_title(path: Path | str, line1: str, line2: str) -> bool:
             sec.mark_dirty()
             changed = True
     if changed:
-        doc.save_to_path(str(path))
+        save_document(doc, path)
     return changed
 
 
@@ -906,7 +905,7 @@ def apply_report_meta(
             res.blank.append("subtitle")
         if norm.get("authors") and _split_authors(doc, norm["authors"]):
             res.filled.append("authors")
-        doc.save_to_path(str(path))
+        save_document(doc, path)
         tokens = _meta_tokens(doc)  # re-read: lines were added / dropped
 
         mapping: dict[str, str] = dict(zip(co_names, co, strict=True)) if co_names else {}
@@ -942,7 +941,7 @@ def apply_report_meta(
         from .author import _update_preview_parts
 
         _update_preview_parts(doc)
-        doc.save_to_path(str(path))
+        save_document(doc, path)
 
     if meta is not None and norm.get("title_1"):
         _fit_cover_title(path, norm["title_1"], norm.get("title_2", ""))

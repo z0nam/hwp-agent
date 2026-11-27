@@ -311,11 +311,11 @@ def plan_normalization(path: str | Path) -> NormalizePlan:
         info = next((i for i in infos if i.style_id == style_id), None)
         if info is None or info.para_pr_id is None:
             return None
-        pp = doc.paragraph_property(info.para_pr_id)
+        pp = doc.styles.paragraph_property(info.para_pr_id)
         heading = pp.heading if pp else None
         if heading is None or heading.id_ref is None:
             return None
-        bullet = doc.bullet(heading.id_ref)
+        bullet = doc.styles.bullet(heading.id_ref)
         return bullet.char if bullet is not None else None
 
     plan = NormalizePlan(file=str(path))

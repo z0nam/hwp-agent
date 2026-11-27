@@ -145,7 +145,7 @@ def read_style_system(doc_or_path: HwpxDocument | Path | str) -> list[StyleInfo]
     )
     infos: list[StyleInfo] = []
     for sid, st in doc.styles.items():
-        pp = doc.paragraph_property(st.para_pr_id_ref)
+        pp = doc.styles.paragraph_property(st.para_pr_id_ref)
         heading = pp.heading if pp else None
         infos.append(
             StyleInfo(
@@ -232,7 +232,7 @@ def classify_document(doc_or_path: HwpxDocument | Path | str) -> str:
     outline_levels: set[int] = set()
     outline_paras = 0
     for p in paras:
-        pp = doc.paragraph_property(p.para_pr_id_ref)
+        pp = doc.styles.paragraph_property(p.para_pr_id_ref)
         h = pp.heading if pp else None
         if h and h.type == "OUTLINE":
             outline_paras += 1

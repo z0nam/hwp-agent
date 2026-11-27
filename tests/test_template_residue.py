@@ -53,7 +53,7 @@ def test_write_preserves_shared_bindata(tmp_path: Path) -> None:
     from _pictures import picture_run
 
     p_extra.element.append(picture_run(doc, item_id="image1"))
-    doc.save_to_path(str(custom_tpl))
+    doc.save(str(custom_tpl))
 
     out = tmp_path / "out_shared.hwpx"
     fill_from_markdown(custom_tpl, "# 본문\n\n내용\n", output=out)
@@ -158,7 +158,7 @@ def test_caption_residual_not_double_counted(tmp_path: Path) -> None:
                     f'<hp:run xmlns:hp="{_HP}"><hp:t> {{{{custom_cap}}}}</hp:t></hp:run>'
                 ))
                 break
-    doc.save_to_path(str(custom_tpl))
+    doc.save(str(custom_tpl))
 
     diag = diagnose_template(str(custom_tpl))
     toks = {m["token"]: m["count"] for m in diag["markers"]}

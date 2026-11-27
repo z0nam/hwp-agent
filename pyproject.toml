@@ -22,10 +22,9 @@ classifiers = [
     "Topic :: Text Processing :: Markup",
 ]
 dependencies = [
-    # Pure-Python HWPX read/write/validate.
-    # <2.12: 2.23의 open-safety 검증·linesegarray 변경으로 test_metadata 2건,
-    # test_author 1건이 깨짐 — 픽스처 보수 전까지 실사용 검증된 2.11대로 고정.
-    "python-hwpx>=2.11,<2.12",
+    # Pure-Python HWPX read/write/validate. 7.x: 공개 이름이 8.0까지 고정된 판(#137).
+    # 7.0.2는 CHANGELOG에만 있고 PyPI 미발행(2026-11-26) — 7.0.1부터.
+    "python-hwpx>=7.0.1,<8",
 ]
 
 [project.optional-dependencies]

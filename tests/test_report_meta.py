@@ -20,6 +20,7 @@ from lxml import etree
 
 from hwp_agent.cli.main import main
 from hwp_agent.ops import build_report, diagnose_template, read_metadata
+from hwp_agent.ops.author import _add_paragraph
 from hwp_agent.ops.report_meta import (
     apply_report_meta,
     bake_meta_slots,
@@ -83,7 +84,7 @@ def _build(tmp_path: Path, meta=None, body: str = "# Ⅰ. 서론\n\n본문.\n", 
 def _split_run_template(tmp_path: Path) -> Path:
     """Default template + a cover paragraph whose example spans two runs."""
     doc = HwpxDocument.open(str(DEFAULT_TPL))
-    p = doc.sections[0].add_paragraph("연구책임   ", style_id_ref=0, para_pr_id_ref=0)
+    p = _add_paragraph(doc.sections[0], "연구책임   ", style_id_ref=0, para_pr_id_ref=0)
     run = p.element.find(f"{_HP}run")
     run.set("charPrIDRef", "1")
     run2 = etree.SubElement(p.element, f"{_HP}run", charPrIDRef="2")
@@ -92,7 +93,7 @@ def _split_run_template(tmp_path: Path) -> Path:
     etree.SubElement(run3, f"{_HP}t").text = "동 연구위원"
     doc.sections[0].mark_dirty()
     out = tmp_path / "t.hwpx"
-    doc.save_to_path(str(out))
+    doc.save(str(out))
     return out
 
 
@@ -438,7 +439,7 @@ def test_padded_slot_tokens_fill_and_expand(tmp_path: Path) -> None:
                 if t.text and "{{" + slot + "}}" in t.text:
                     t.text = t.text.replace("{{" + slot + "}}", "{{ " + slot + " }}")
         sec.mark_dirty()
-    doc.save_to_path(str(tpl))
+    doc.save(str(tpl))
     apply_report_meta(tpl, META, use_profile=False)
     colophon = _texts(tpl, -1)
     left = " ".join(residual_tokens(tpl))  # only the never-written {{intro}}/{{body}}… remain
